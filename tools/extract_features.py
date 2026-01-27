@@ -13,7 +13,6 @@ from tools.utils import DatasetForFeatureExt, my_collate
 import timm
 from torchvision import transforms
 
-
 ds_lengths = {
     "cptac": 2_196_291,
     "gtex": 7_870_674,
@@ -29,17 +28,22 @@ def checkpoint_update(checkpoint_path, start_idx):
         f.write(str(start_idx))
 
 def extract_img_vae(args):
-    device = torch.device("cuda:0")
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     root = Path(args.root)
 
     ### load VAE ###
     vae_path = root / "pretrained_models/sd-3.5-vae"
-    vae = AutoencoderKL.from_pretrained(vae_path).to(device).eval()
+    vae_path = "stabilityai/stable-diffusion-3.5-large"
+    vae = AutoencoderKL.from_pretrained(
+        vae_path, 
+        subfolder="vae", 
+        use_auth_token=args.hf_token
+    ).to(device).eval()
 
     ### load UNI ###
 
     timm_kwargs = {
-        "model_name": "vit_giant_patch14_224",
+        #"model_name": "vit_giant_patch14_224",
         "img_size": 224,
         "patch_size": 14,
         "depth": 24,
@@ -55,11 +59,26 @@ def extract_img_vae(args):
         "dynamic_img_size": True,
     }
 
-    uni_model = timm.create_model(pretrained=False, **timm_kwargs).to(device).eval()
+    #uni_model = timm.create_model(pretrained=False, **timm_kwargs).to(device).eval()
+    #uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, use_auth_token=args.hf_token, **timm_kwargs)
+    from huggingface_hub import hf_hub_download
+
+    # Download the specific weight file using your token
+    weights_path = hf_hub_download(
+        repo_id="MahmoodLab/UNI2-h", 
+        filename="pytorch_model.bin", 
+        token=args.hf_token
+    )
+
+    # Create the model locally
+    uni_model = timm.create_model(
+        "vit_giant_patch14_224", # Use the base architecture name
+        pretrained=False, 
+        **timm_kwargs
+    ).to(device).eval()
     local_path = root / "pretrained_models/uni2/pytorch_model.bin"
-    uni_model.load_state_dict(
-        torch.load(local_path, map_location="cpu"),
-        strict=True,)
+    local_path = "hf-hub:MahmoodLab/UNI2-h"
+    #uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, use_auth_token=args.hf_token, **timm_kwargs)
     
     tf_uni = transforms.Compose(
         [
@@ -172,6 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=-1)
+    parser.add_argument("--hf_token", type=str, default=None)
 
     args = parser.parse_args()
 
