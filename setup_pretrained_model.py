@@ -156,64 +156,6 @@ def download_sd3_vae(save_dir="./pretrained_models"):
         return None
 
 
-def download_cellvit_sam_h(save_dir="./pretrained_models"):
-    """
-    Download CellViT-SAM-H cell segmentation model from HuggingFace
-    
-    Args:
-        save_dir: Directory to save the model
-        
-    Returns:
-        str: Path to downloaded model
-    """
-    save_path = Path(save_dir) / "cellvit-sam-h"
-    
-    if save_path.exists() and any(save_path.glob("*.pth")):
-        print(f"✓ CellViT-SAM-H already exists at: {save_path}")
-        return str(save_path)
-    
-    save_path.mkdir(parents=True, exist_ok=True)
-    
-    print(f"\n{'='*70}")
-    print(f"Downloading CellViT-SAM-H from HuggingFace...")
-    print(f"{'='*70}")
-    print(f"Repository: MahmoodLab/CellViT-SAM-H-x20")
-    print(f"Save location: {save_path}")
-    print(f"Note: This model is for cell segmentation in 20x histopathology images...")
-    
-    try:
-        model_path = snapshot_download(
-            repo_id="MahmoodLab/CellViT-SAM-H-x20",
-            local_dir=save_path,
-            local_dir_use_symlinks=False,
-        )
-        
-        print(f"\n✓ CellViT-SAM-H downloaded successfully")
-        
-        # List downloaded files
-        model_files = list(save_path.glob("*.pth")) + list(save_path.glob("*.pt"))
-        if model_files:
-            print(f"  Model files:")
-            for file in model_files:
-                size_mb = file.stat().st_size / (1024**2)
-                print(f"    - {file.name} ({size_mb:.1f} MB)")
-        
-        # Check for config files
-        config_files = list(save_path.glob("*.yaml")) + list(save_path.glob("*.json"))
-        if config_files:
-            print(f"  Config files:")
-            for file in config_files:
-                print(f"    - {file.name}")
-        
-        return str(save_path)
-    except Exception as e:
-        print(f"\n❌ Error downloading CellViT-SAM-H: {e}")
-        print(f"Note: This model may require git-lfs or special access.")
-        print(f"Alternative: You can download manually from:")
-        print(f"  https://huggingface.co/MahmoodLab/CellViT-SAM-H-x20")
-        return None
-
-
 def download_all_models(save_dir="./pretrained_models"):
     """
     Download all required pretrained models
@@ -228,8 +170,9 @@ def download_all_models(save_dir="./pretrained_models"):
     print("  1. PixCell-256 base model (~600MB)")
     print("  2. UNI-2h foundation model (~2GB)")
     print("  3. Stable Diffusion 3.5 VAE (~300MB)")
-    print("  4. CellViT-SAM-H segmentation model (~400MB)")
     print(f"\nAll models will be saved to: {save_dir}")
+    print("\nNote: For cell segmentation consistency, install Cellpose separately:")
+    print("  pip install git+https://www.github.com/mouseland/cellpose.git")
     print("="*70)
     
     results = {}
@@ -238,7 +181,6 @@ def download_all_models(save_dir="./pretrained_models"):
     results['pixcell'] = download_pixcell_256(save_dir)
     results['uni2h'] = download_uni_2h(save_dir)
     results['sd3_vae'] = download_sd3_vae(save_dir)
-    results['cellvit'] = download_cellvit_sam_h(save_dir)
     
     # Summary
     print("\n" + "="*70)
@@ -256,20 +198,17 @@ def download_all_models(save_dir="./pretrained_models"):
     if success_count == len(results):
         print("\n✓ All models downloaded successfully!")
         print("\nNext steps:")
-        print("  1. Generate VAE features and UNI embeddings:")
+        print("  1. Install Cellpose for segmentation consistency:")
+        print("     pip install git+https://www.github.com/mouseland/cellpose.git")
+        print("  2. Generate VAE features and UNI embeddings:")
         print("     python extract_features.py --image-dir ./patches")
-        print("  2. Create metadata file:")
+        print("  3. Create metadata file:")
         print("     python create_metadata.py")
-        print("  3. Start training:")
+        print("  4. Start training:")
         print("     python train_controlnet.py config_controlnet_full.py")
     else:
         print(f"\n⚠ {len(results) - success_count} model(s) failed to download")
         print("Please check the error messages above and try again.")
-        
-        if results['cellvit'] is None:
-            print("\nNote: CellViT-SAM-H is optional for mask consistency.")
-            print("You can still train without it using the lightweight U-Net:")
-            print("  In config: cellvit_model_path = None")
     
     return results
 
@@ -288,7 +227,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        choices=['pixcell', 'uni2h', 'sd3_vae', 'cellvit', 'all'],
+        choices=['pixcell', 'uni2h', 'sd3_vae', 'all'],
         default='all',
         help="Which model to download (default: all)"
     )
@@ -303,5 +242,3 @@ if __name__ == "__main__":
         download_uni_2h(args.save_dir)
     elif args.model == 'sd3_vae':
         download_sd3_vae(args.save_dir)
-    elif args.model == 'cellvit':
-        download_cellvit_sam_h(args.save_dir)

@@ -1,15 +1,15 @@
 # Core Vision & Modeling
 mmcv==1.7.0
-timm==0.6.12
+timm>=0.9.0
 einops
 opencv-python
 yapf==0.40.1
 
 # Generative AI & Transformers
-git+https://github.com/huggingface/diffusers
-transformers==4.36.1
-accelerate==0.25.0
-peft
+diffusers @ git+https://github.com/huggingface/diffusers.git
+transformers>=4.38.0
+accelerate>=0.28.0
+peft>=0.9.0
 optimum
 xformers>=0.0.20
 came-pytorch
@@ -24,3 +24,6 @@ protobuf==3.20.2
 tensorboard
 tensorboardX
 gradio==4.1.1
+
+# Cell Segmentation
+cellpose @ git+https://github.com/mouseland/cellpose.git

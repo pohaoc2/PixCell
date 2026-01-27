@@ -30,16 +30,28 @@ class UNI2hExtractor:
             model_path: Path to UNI-2h model directory
             device: Device to run model on
         """
-        self.device = device
+        self.device = device if torch.cuda.is_available() else 'cpu'
         print(f"Loading UNI-2h model from {model_path}...")
         
         # Load UNI-2h model (ViT architecture)
         # The model is a Vision Transformer pretrained on histopathology
-        self.model = timm.create_model(
-            "vit_large_patch16_224.mae", 
-            pretrained=False,
-            num_classes=0,  # Remove classification head
-        )
+        timm_kwargs = {
+                    'img_size': 224,
+                    'patch_size': 14,
+                    'depth': 24,
+                    'num_heads': 24,
+                    'init_values': 1e-5,
+                    'embed_dim': 1536,
+                    'mlp_ratio': 2.66667*2,
+                    'num_classes': 0,
+                    'no_embed_class': True,
+                    'mlp_layer': timm.layers.SwiGLUPacked,
+                    'act_layer': torch.nn.SiLU,
+                    'reg_tokens': 8,
+                    'dynamic_img_size': True
+                }
+        #uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
+        self.model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
         
         # Load pretrained weights
         model_path = Path(model_path)
@@ -390,7 +402,7 @@ def main():
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda",
+        default="cuda" if torch.cuda.is_available() else 'cpu',
         help="Device to use (default: cuda)"
     )
     parser.add_argument(
