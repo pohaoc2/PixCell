@@ -463,13 +463,15 @@ if __name__ == '__main__':
         init_train = 'DDP'
         fsdp_plugin = None
 
+    from accelerate import Accelerator, DataLoaderConfiguration
+    dataloader_config = DataLoaderConfiguration(dispatch_batches=True)
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         log_with=args.report_to,
         project_dir=os.path.join(config.work_dir, "logs"),
         fsdp_plugin=fsdp_plugin,
-        even_batches=True,
+        dataloader_config=dataloader_config,
         kwargs_handlers=[init_handler]
     )
 
@@ -574,19 +576,36 @@ if __name__ == '__main__':
                 logger.info("✓ Using lightweight U-Net segmentation model (frozen)")
 
     # Load pretrained base model if specified
+    from safetensors.torch import load_file as load_safetensors
     if args.load_from is not None:
         config.load_from = args.load_from
-    if config.load_from is not None:
-        missing, unexpected = load_checkpoint(
-            config.load_from, 
-            model, 
-            load_ema=config.get('load_ema', False), 
-            max_length=max_length, 
-            ignore_keys=config.get('ignore_keys', [])
-        )
-        logger.warning(f'Missing keys: {missing}')
-        logger.warning(f'Unexpected keys: {unexpected}')
+            
+        if config.load_from is not None:
+            load_path = Path(config.load_from)
+            
+            # If config.load_from is a directory, look for the safetensors file inside
+            if load_path.is_dir():
+                st_file = load_path / "transformer/diffusion_pytorch_model.safetensors"
+                if st_file.exists():
+                    config.load_from = str(st_file)
+                else:
+                    # Fallback to look for any .pth file if safetensors isn't found
+                    pth_files = list(load_path.glob("*.pth"))
+                    if pth_files:
+                        config.load_from = str(pth_files[0])
 
+            logger.info(f"Loading weights from: {config.load_from}")
+
+            # Now pass the corrected path to your loader
+            missing, unexpected = load_checkpoint(
+                model, 
+                config.load_from, 
+                load_ema=config.get('load_ema', False), 
+                max_length=max_length, 
+                ignore_keys=config.get('ignore_keys', [])
+            )
+            logger.warning(f'Missing keys: {missing}')
+            logger.warning(f'Unexpected keys: {unexpected}')
     # Initialize EMA with current model state
     ema_update(model_ema, model, 0.)
 
@@ -611,6 +630,7 @@ if __name__ == '__main__':
         batch_size=config.train_batch_size, 
         shuffle=True
     )
+
 
     # Build optimizer - only optimize ControlNet parameters if specified
     lr_scale_ratio = 1

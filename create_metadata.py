@@ -157,7 +157,7 @@ def main():
     parser.add_argument(
         "--mask-prefix",
         type=str,
-        default="cellvit_mask",
+        default="mask",
         help="Prefix for mask files (default: cellvit_mask)"
     )
     
