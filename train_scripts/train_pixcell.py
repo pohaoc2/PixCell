@@ -264,16 +264,18 @@ if __name__ == '__main__':
         init_train = 'DDP'
         fsdp_plugin = None
 
-
+    from accelerate import Accelerator, DataLoaderConfiguration
+    dataloader_config = DataLoaderConfiguration(dispatch_batches=True)
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         log_with=args.report_to,
         project_dir=os.path.join(config.work_dir, "logs"),
         fsdp_plugin=fsdp_plugin,
-        even_batches=True,
+        dataloader_config=dataloader_config,
         kwargs_handlers=[init_handler]
     )
+
 
     log_name = 'train_log.log'
     if accelerator.is_main_process:

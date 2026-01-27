@@ -14,7 +14,7 @@ yapf==0.40.1
 opencv-python
 bs4
 einops
-xformers==0.0.19
+xformers>=0.0.20
 optimum
 peft
 came-pytorch

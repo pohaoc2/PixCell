@@ -2,7 +2,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 
 image_size = 256
 
-root = "/path/to/dataset"
+root = "./"
 
 data = dict(
     type="PanCancerDataLowRes",

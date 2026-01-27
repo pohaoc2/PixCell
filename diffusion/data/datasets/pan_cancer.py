@@ -97,7 +97,8 @@ class PanCancerData(Dataset):
 
     def __len__(self):
         """Return the total number of samples in the dataset."""
-        return self.cumulative_lengths[-1]
+        
+        return int(self.cumulative_lengths[-1])
 
     @staticmethod
     def _vae_feat_loader(path):
@@ -112,6 +113,8 @@ class PanCancerData(Dataset):
         # Load VAE and SSL features
         vae_path = img_name.replace(".jpeg", f"_{self.vae_prefix}.npy")
         ssl_path = img_name.replace(".jpeg", f"_{self.ssl_prefix}.npy")
+        vae_path = img_name.replace(".png", f"_{self.vae_prefix}.npy")
+        ssl_path = img_name.replace(".png", f"_{self.ssl_prefix}.npy")
 
         vae_feat = self._vae_feat_loader(self.features_dir / vae_path)
         ssl_feat = torch.from_numpy(np.load(self.features_dir / ssl_path))
