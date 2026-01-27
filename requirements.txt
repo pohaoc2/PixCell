@@ -1,20 +1,26 @@
+# Core Vision & Modeling
 mmcv==1.7.0
-git+https://github.com/huggingface/diffusers
 timm==0.6.12
-accelerate==0.25.0
-tensorboard
-tensorboardX
+einops
+opencv-python
+yapf==0.40.1
+
+# Generative AI & Transformers
+git+https://github.com/huggingface/diffusers
 transformers==4.36.1
+accelerate==0.25.0
+peft
+optimum
+xformers>=0.0.20
+came-pytorch
+
+# NLP & Processing
 sentencepiece~=0.1.99
 ftfy
 beautifulsoup4
 protobuf==3.20.2
+
+# Logging & UI
+tensorboard
+tensorboardX
 gradio==4.1.1
-yapf==0.40.1
-opencv-python
-bs4
-einops
-xformers>=0.0.20
-optimum
-peft
-came-pytorch
