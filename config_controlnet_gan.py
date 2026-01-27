@@ -102,11 +102,16 @@ adversarial_weight = 0.1  # Balance with diffusion loss
 # =====================================================================
 use_segmentation_consistency = True
 
-# Path to CellViT-SAM-H model
-# After running: python setup_pretrained_model.py
-cellvit_model_path = f"{root}/pretrained_models/cellvit-sam-h/model.pth"
-# If you don't have CellViT or want to use lightweight U-Net, set to None:
-# cellvit_model_path = None
+# Cellpose configuration
+# Model types: 'cyto', 'cyto2', 'cyto3', 'nuclei'
+# - 'cyto2': General purpose cytoplasm model (recommended for histology)
+# - 'nuclei': Specialized for nucleus segmentation
+# - 'cyto3': Latest cytoplasm model with improved performance
+cellpose_model_type = 'cyto2'  
+
+# Expected cell diameter in pixels (for 20x magnification, ~30 pixels is typical)
+# Set to None for automatic diameter estimation
+cell_diameter = 30
 
 # Consistency loss configuration
 consistency_loss_type = 'combined'  # 'bce', 'dice', 'focal', or 'combined'

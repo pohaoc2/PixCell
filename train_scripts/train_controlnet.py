@@ -552,23 +552,26 @@ if __name__ == '__main__':
     # Build segmentation consistency checker if enabled
     segmentation_checker = None
     if config.get('use_segmentation_consistency', False):
-        logger.info("Building cell segmentation consistency checker...")
+        logger.info("Building cell segmentation consistency checker with Cellpose...")
         
         from cell_segmentation_consistency import CellSegmentationConsistency
         segmentation_checker = CellSegmentationConsistency(
-            cellvit_model_path=config.get('cellvit_model_path', None),
+            model_type=config.get('cellpose_model_type', 'cyto2'),
             device=accelerator.device,
             image_size=image_size,
-            use_cache=True,
+            use_gpu=True,
+            diameter=config.get('cell_diameter', 30),
         )
         
         if segmentation_checker.model is not None:
-            logger.info(f"Segmentation Model Parameters: {sum(p.numel() for p in segmentation_checker.model.parameters()):,}")
-            # Freeze segmentation model
-            for param in segmentation_checker.model.parameters():
-                param.requires_grad = False
-        else:
-            logger.info("Using trainable lightweight segmentation model")
+            if hasattr(segmentation_checker.model, 'eval'):
+                logger.info(f"✓ Using Cellpose model: {config.get('cellpose_model_type', 'cyto2')}")
+            else:
+                logger.info(f"Segmentation Model Parameters: {sum(p.numel() for p in segmentation_checker.model.parameters()):,}")
+                # Freeze segmentation model
+                for param in segmentation_checker.model.parameters():
+                    param.requires_grad = False
+                logger.info("✓ Using lightweight U-Net segmentation model (frozen)")
 
     # Load pretrained base model if specified
     if args.load_from is not None:
