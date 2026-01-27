@@ -10,7 +10,11 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 
-def download_pixcell_256(save_dir="./pretrained_models"):
+def download_pixcell_256(save_dir="./pretrained_models", token=None):
+    if token is None:
+        token = os.getenv("HF_TOKEN")
+    if token is None:
+        raise ValueError("HF_TOKEN environment variable is not set")
     """
     Download PixCell-256 base model from HuggingFace
     
@@ -39,6 +43,7 @@ def download_pixcell_256(save_dir="./pretrained_models"):
             repo_id="StonyBrook-CVLab/PixCell-256",
             local_dir=save_path,
             local_dir_use_symlinks=False,
+            token=token,
         )
         
         print(f"\n✓ PixCell-256 downloaded successfully")
@@ -57,7 +62,12 @@ def download_pixcell_256(save_dir="./pretrained_models"):
         return None
 
 
-def download_uni_2h(save_dir="./pretrained_models"):
+def download_uni_2h(save_dir="./pretrained_models", token=None):
+    if token is None:
+        token = os.getenv("HF_TOKEN")
+    if token is None:
+        raise ValueError("HF_TOKEN environment variable is not set")
+    
     """
     Download UNI-2h foundation model from HuggingFace
     
@@ -87,6 +97,7 @@ def download_uni_2h(save_dir="./pretrained_models"):
             repo_id="MahmoodLab/UNI2-h",
             local_dir=save_path,
             local_dir_use_symlinks=False,
+            token=token,
         )
         
         print(f"\n✓ UNI-2h downloaded successfully")
@@ -105,7 +116,11 @@ def download_uni_2h(save_dir="./pretrained_models"):
         return None
 
 
-def download_sd3_vae(save_dir="./pretrained_models"):
+def download_sd3_vae(save_dir="./pretrained_models", token=None):
+    if token is None:
+        token = os.getenv("HF_TOKEN")
+    if token is None:
+        raise ValueError("HF_TOKEN environment variable is not set")
     """
     Download Stable Diffusion 3.5 VAE from HuggingFace
     
@@ -137,6 +152,7 @@ def download_sd3_vae(save_dir="./pretrained_models"):
             local_dir=save_path,
             local_dir_use_symlinks=False,
             allow_patterns=["vae/*", "*.json", "*.txt"],  # Only download VAE
+            token=token,
         )
         
         print(f"\n✓ SD3.5 VAE downloaded successfully")
@@ -156,7 +172,11 @@ def download_sd3_vae(save_dir="./pretrained_models"):
         return None
 
 
-def download_all_models(save_dir="./pretrained_models"):
+def download_all_models(save_dir="./pretrained_models", token=None):
+    if token is None:
+        token = os.getenv("HF_TOKEN")
+    if token is None:
+        raise ValueError("HF_TOKEN environment variable is not set")
     """
     Download all required pretrained models
     
@@ -178,9 +198,9 @@ def download_all_models(save_dir="./pretrained_models"):
     results = {}
     
     # Download each model
-    results['pixcell'] = download_pixcell_256(save_dir)
-    results['uni2h'] = download_uni_2h(save_dir)
-    results['sd3_vae'] = download_sd3_vae(save_dir)
+    results['pixcell'] = download_pixcell_256(save_dir, token)
+    results['uni2h'] = download_uni_2h(save_dir, token)
+    results['sd3_vae'] = download_sd3_vae(save_dir, token)
     
     # Summary
     print("\n" + "="*70)
@@ -231,14 +251,19 @@ if __name__ == "__main__":
         default='all',
         help="Which model to download (default: all)"
     )
-    
+    parser.add_argument(
+        "--token",
+        type=str,
+        default=None,
+        help="HuggingFace token to use for downloading models"
+    )
     args = parser.parse_args()
     
     if args.model == 'all':
-        download_all_models(args.save_dir)
+        download_all_models(args.save_dir, args.token)
     elif args.model == 'pixcell':
-        download_pixcell_256(args.save_dir)
+        download_pixcell_256(args.save_dir, args.token)
     elif args.model == 'uni2h':
-        download_uni_2h(args.save_dir)
+        download_uni_2h(args.save_dir, args.token)
     elif args.model == 'sd3_vae':
-        download_sd3_vae(args.save_dir)
+        download_sd3_vae(args.save_dir, args.token)

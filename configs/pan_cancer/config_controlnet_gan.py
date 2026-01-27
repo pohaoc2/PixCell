@@ -20,12 +20,13 @@ data = dict(
     resolution=image_size,
     vae_prefix="sd3_vae",
     ssl_prefix="uni",
-    mask_prefix="cellvit_mask",
+    mask_prefix="mask",
     patch_names_file="patch_names_controlnet.hdf5",
 )
 
 # Model setting
 model = "PixArt_XL_2_UNI_ControlNet"
+model = "PixArt_XL_2_UNI"
 model_max_length = 1
 
 mixed_precision = 'fp16'  
@@ -35,13 +36,13 @@ fp32_attention = True
 load_from = f"{root}/pretrained_models/pixcell-256/model.pth"
 resume_from = None
 
-vae_pretrained = f"{root}/pretrained_models/sd-3.5-vae"
+vae_pretrained = f"{root}/pretrained_models/sd-3.5-vae/vae"
 pe_interpolation = 0.5
 
 # Training setting
 num_workers = 16
 train_batch_size = 4  # Paper uses batch size of 4
-num_epochs = 25
+num_epochs = 1
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
@@ -60,7 +61,7 @@ auto_lr = None
 
 log_interval = 20
 save_model_epochs = 1
-save_model_steps = 1000
+save_model_steps = 10
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 
 # VAE configuration
@@ -77,7 +78,7 @@ controlnet_config = dict(
 # =====================================================================
 # Discriminator Configuration (for perceptual quality)
 # =====================================================================
-use_discriminator = True
+use_discriminator = False #True
 
 discriminator = dict(
     type='latent',  # Efficient latent-space discrimination
@@ -100,7 +101,7 @@ adversarial_weight = 0.1  # Balance with diffusion loss
 # =====================================================================
 # Cell Segmentation Consistency (for mask adherence)
 # =====================================================================
-use_segmentation_consistency = True
+use_segmentation_consistency = False #True
 
 # Cellpose configuration
 # Model types: 'cyto', 'cyto2', 'cyto3', 'nuclei'
