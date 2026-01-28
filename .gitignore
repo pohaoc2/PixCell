@@ -10,7 +10,6 @@
 *.zip
 *.npy
 *.svs
-data/
 pretrained_models/
 # Editors
 .vscode/
