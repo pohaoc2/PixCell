@@ -33,6 +33,165 @@ from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
 
 warnings.filterwarnings("ignore")
 
+def _initialize_controlnet_from_base(model):
+    """
+    Initialize ControlNet weights by copying from the pretrained base model.
+    This ensures ControlNet starts with the same understanding as the base model.
+    
+    Args:
+        model: PixArt_UNI_ControlNet instance
+    """
+    if not hasattr(model, 'controlnet'):
+        return
+    
+    logger = get_root_logger()
+    logger.info("Copying base model weights to ControlNet...")
+    logger.info(f"ControlNet has {len(model.controlnet.control_blocks)} blocks, "
+                f"Base model has {len(model.blocks)} blocks")
+    
+    with torch.no_grad():
+        # Initialize control_x_embedder
+        nn.init.xavier_uniform_(model.controlnet.control_x_embedder.proj.weight.view(
+            [model.controlnet.control_x_embedder.proj.weight.shape[0], -1]
+        ))
+        
+        # Copy positional embeddings
+        model.controlnet.pos_embed.data.copy_(model.pos_embed.data)
+        
+        # Copy transformer block weights from base model to ControlNet
+        # Use the block mapping to determine which base blocks to copy from
+        for control_idx, control_block in enumerate(model.controlnet.control_blocks):
+            # Find which base block this controlnet block should copy from
+            # For even distribution: base_idx = control_idx * (base_depth / control_depth)
+            base_depth = len(model.blocks)
+            control_depth = len(model.controlnet.control_blocks)
+            base_idx = int(control_idx * base_depth / control_depth)
+            base_idx = min(base_idx, base_depth - 1)  # Ensure we don't go out of bounds
+            
+            base_block = model.blocks[base_idx]
+            
+            logger.info(f"  Copying base block {base_idx} -> control block {control_idx}")
+            
+            # Copy attention weights
+            control_block.attn.qkv.weight.data.copy_(base_block.attn.qkv.weight.data)
+            if base_block.attn.qkv.bias is not None:
+                control_block.attn.qkv.bias.data.copy_(base_block.attn.qkv.bias.data)
+            control_block.attn.proj.weight.data.copy_(base_block.attn.proj.weight.data)
+            if base_block.attn.proj.bias is not None:
+                control_block.attn.proj.bias.data.copy_(base_block.attn.proj.bias.data)
+            
+            # Copy Q/K norm if present
+            if hasattr(control_block.attn, 'q_norm') and not isinstance(control_block.attn.q_norm, nn.Identity):
+                if hasattr(base_block.attn.q_norm, 'weight') and base_block.attn.q_norm.weight is not None:
+                    control_block.attn.q_norm.weight.data.copy_(base_block.attn.q_norm.weight.data)
+                if hasattr(base_block.attn.q_norm, 'bias') and base_block.attn.q_norm.bias is not None:
+                    control_block.attn.q_norm.bias.data.copy_(base_block.attn.q_norm.bias.data)
+                if hasattr(base_block.attn.k_norm, 'weight') and base_block.attn.k_norm.weight is not None:
+                    control_block.attn.k_norm.weight.data.copy_(base_block.attn.k_norm.weight.data)
+                if hasattr(base_block.attn.k_norm, 'bias') and base_block.attn.k_norm.bias is not None:
+                    control_block.attn.k_norm.bias.data.copy_(base_block.attn.k_norm.bias.data)
+            
+            # Copy KV compression if present
+            if hasattr(control_block.attn, 'sr') and control_block.attn.sr_ratio > 1:
+                control_block.attn.sr.weight.data.copy_(base_block.attn.sr.weight.data)
+                control_block.attn.sr.bias.data.copy_(base_block.attn.sr.bias.data)
+                if hasattr(control_block.attn, 'norm'):
+                    control_block.attn.norm.weight.data.copy_(base_block.attn.norm.weight.data)
+                    control_block.attn.norm.bias.data.copy_(base_block.attn.norm.bias.data)
+            
+            # Copy cross-attention weights
+            control_block.cross_attn.q_linear.weight.data.copy_(base_block.cross_attn.q_linear.weight.data)
+            if base_block.cross_attn.q_linear.bias is not None:
+                control_block.cross_attn.q_linear.bias.data.copy_(base_block.cross_attn.q_linear.bias.data)
+            control_block.cross_attn.kv_linear.weight.data.copy_(base_block.cross_attn.kv_linear.weight.data)
+            if base_block.cross_attn.kv_linear.bias is not None:
+                control_block.cross_attn.kv_linear.bias.data.copy_(base_block.cross_attn.kv_linear.bias.data)
+            control_block.cross_attn.proj.weight.data.copy_(base_block.cross_attn.proj.weight.data)
+            if base_block.cross_attn.proj.bias is not None:
+                control_block.cross_attn.proj.bias.data.copy_(base_block.cross_attn.proj.bias.data)
+            
+            # Copy MLP weights
+            control_block.mlp.fc1.weight.data.copy_(base_block.mlp.fc1.weight.data)
+            if base_block.mlp.fc1.bias is not None:
+                control_block.mlp.fc1.bias.data.copy_(base_block.mlp.fc1.bias.data)
+            control_block.mlp.fc2.weight.data.copy_(base_block.mlp.fc2.weight.data)
+            if base_block.mlp.fc2.bias is not None:
+                control_block.mlp.fc2.bias.data.copy_(base_block.mlp.fc2.bias.data)
+            
+            # Copy scale_shift_table
+            control_block.scale_shift_table.data.copy_(base_block.scale_shift_table.data)
+        
+        # Verify zero convs remain zero
+        for i, zero_conv in enumerate(model.controlnet.zero_convs):
+            if not torch.allclose(zero_conv.weight, torch.zeros_like(zero_conv.weight)):
+                logger.info(f"Re-initializing zero conv {i} to zero")
+                nn.init.constant_(zero_conv.weight, 0)
+                nn.init.constant_(zero_conv.bias, 0)
+    
+    logger.info("ControlNet initialization complete!")
+    logger.info(f"Copied {len(model.controlnet.control_blocks)} transformer blocks from base model to ControlNet")
+
+def _print_trainable_parameters(model, logger):
+    """
+    Print statistics about frozen vs trainable parameters.
+    
+    Args:
+        model: PixArt_UNI_ControlNet instance
+        logger: Logger instance
+    """
+    total_params = 0
+    trainable_params = 0
+    frozen_params = 0
+    
+    param_groups = {
+        'base_embedders': 0,
+        'base_blocks': 0,
+        'base_final': 0,
+        'controlnet_embedder': 0,
+        'controlnet_blocks': 0,
+        'controlnet_zero_convs': 0,
+    }
+    
+    for name, param in model.named_parameters():
+        num_params = param.numel()
+        total_params += num_params
+        
+        if param.requires_grad:
+            trainable_params += num_params
+            
+            # Categorize trainable parameters
+            if 'controlnet.control_x_embedder' in name:
+                param_groups['controlnet_embedder'] += num_params
+            elif 'controlnet.control_blocks' in name:
+                param_groups['controlnet_blocks'] += num_params
+            elif 'controlnet.zero_convs' in name:
+                param_groups['controlnet_zero_convs'] += num_params
+        else:
+            frozen_params += num_params
+            
+            # Categorize frozen parameters
+            if any(x in name for x in ['x_embedder', 't_embedder', 't_block', 'y_embedder', 'pos_embed']):
+                param_groups['base_embedders'] += num_params
+            elif 'blocks.' in name and 'controlnet' not in name:
+                param_groups['base_blocks'] += num_params
+            elif 'final_layer' in name:
+                param_groups['base_final'] += num_params
+    
+    logger.info("=" * 80)
+    logger.info("Parameter Statistics:")
+    logger.info(f"Total Parameters: {total_params:,}")
+    logger.info(f"Trainable Parameters: {trainable_params:,} ({100*trainable_params/total_params:.2f}%)")
+    logger.info(f"Frozen Parameters: {frozen_params:,} ({100*frozen_params/total_params:.2f}%)")
+    logger.info("-" * 80)
+    logger.info("Parameter Breakdown:")
+    logger.info(f"  Base Embedders (frozen): {param_groups['base_embedders']:,}")
+    logger.info(f"  Base Blocks (frozen): {param_groups['base_blocks']:,}")
+    logger.info(f"  Base Final Layer (frozen): {param_groups['base_final']:,}")
+    logger.info(f"  ControlNet Embedder (trainable): {param_groups['controlnet_embedder']:,}")
+    logger.info(f"  ControlNet Blocks (trainable): {param_groups['controlnet_blocks']:,}")
+    logger.info(f"  ControlNet Zero Convs (trainable): {param_groups['controlnet_zero_convs']:,}")
+    logger.info("=" * 80)
+
 
 def set_fsdp_env():
     os.environ["ACCELERATE_USE_FSDP"] = 'true'
@@ -52,7 +211,7 @@ def ema_update(model_dest: nn.Module, model_src: nn.Module, rate):
 
 def train():
     if config.get('debug_nan', False):
-        DebugUnderflowOverflow(model)
+        DebugUnderflowOverflow(base_model)
         logger.info('NaN debugger registered. Start to detect overflow during training.')
     time_start, last_tic = time.time(), time.time()
     log_buffer = LogBuffer()
@@ -190,7 +349,7 @@ def train():
             # =====================================================================
             # Train Generator (Diffusion Model + Adversarial Loss + Consistency)
             # =====================================================================
-            with accelerator.accumulate(model):
+            with accelerator.accumulate(base_model):
                 # Predict the noise residual with ControlNet conditioning
                 optimizer.zero_grad()
                 
@@ -198,9 +357,9 @@ def train():
                 # The mask is provided through model_kwargs
                 model_kwargs = dict(
                     y=y,  # UNI embeddings
-                    mask=0, #None,  # No attention mask for embeddings (model_max_length=1)
+                    control_input=cell_mask_latent,  # CRITICAL: Cell mask for ControlNet
+                    mask=None,  # No attention mask for embeddings
                     data_info=data_info,
-                    #controlnet_cond=cell_mask_latent  # Cell mask for ControlNet
                 )
                 
                 # Diffusion loss
@@ -220,7 +379,14 @@ def train():
                     noise = torch.randn_like(clean_images)
                     noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
                     
-                    model_output = base_model(noisy_images, timesteps, **model_kwargs)
+                    model_output = base_model(
+                        noisy_images, 
+                        timesteps, 
+                        y=y,
+                        control_input=cell_mask_latent,
+                        mask=None,
+                        data_info=data_info
+                    )
                     
                     if hasattr(config, 'pred_sigma') and config.pred_sigma:
                         pred_noise, _ = model_output.chunk(2, dim=1)
@@ -527,10 +693,10 @@ if __name__ == '__main__':
     logger.info("Building PixCell model architecture...")
     # Use config-based building instead of just from_pretrained to ensure ControlNet blocks are created
     from diffusion.model.builder import build_model
+    # Build the combined model (base + controlnet)
     base_model = build_model(config.model, **model_kwargs).to(accelerator.device)
 
-    # 2. Fix: Correctly Load Pretrained Base/ControlNet Weights
-    # Determine the file to load
+    # 2. Load Pretrained Base Model Weights and Initialize ControlNet
     if config.load_from is not None:
         load_path = Path(config.load_from)
         if load_path.is_dir():
@@ -540,18 +706,52 @@ if __name__ == '__main__':
         else:
             load_file = str(config.load_from)
 
-        logger.info(f"Loading pretrained weights from {load_file}")
-        # Use our updated load_checkpoint that handles Safetensors
-        load_checkpoint(
+        logger.info(f"Loading pretrained base model weights from {load_file}")
+        
+        # Load pretrained weights into base model components
+        missing, unexpect = load_checkpoint(
             load_file,
-            base_model,
+            base_model,  # This loads into the PixArt_UNI_ControlNet
             load_ema=config.get('load_ema', False),
             max_length=max_length
         )
+
+        logger.info(f"Missing keys: {len(missing)}")
+        logger.info(f"Unexpected keys: {len(unexpect)}")
+
+        # Log details if there are concerning missing/unexpected keys
+        if missing:
+            logger.warning(f"Missing keys (first 10): {missing[:10]}")
+        if unexpect:
+            logger.warning(f"Unexpected keys (first 10): {unexpect[:10]}")
+        
+        # 3. Initialize ControlNet by copying base model weights
+        logger.info("Initializing ControlNet from base model weights...")
+        _initialize_controlnet_from_base(base_model)
+        
+        # Verify frozen/trainable parameters
+        _print_trainable_parameters(base_model, logger)
+    if hasattr(base_model, 'controlnet'):
+        # Enable gradient checkpointing for ControlNet blocks
+        for block in base_model.controlnet.control_blocks:
+            block.gradient_checkpointing = True
     logger.info(f"{base_model.__class__.__name__} Model Parameters: {sum(p.numel() for p in base_model.parameters()):,}")
-    
+    logger.info(f"Trainable Parameters: {sum(p.numel() for p in base_model.parameters() if p.requires_grad):,}")
+
     # Create EMA model
-    model_ema = deepcopy(base_model).to(accelerator.device).eval()
+    # 1. Re-build the same architecture for EMA
+    logger.info("Initializing EMA model architecture...")
+    model_ema = build_model(config.model, **model_kwargs).to(accelerator.device)
+
+    # 2. Copy the current weights from the base_model to the EMA model
+    model_ema.load_state_dict(base_model.state_dict())
+
+    # 3. Set to eval mode and freeze parameters
+    model_ema.eval()
+    for param in model_ema.parameters():
+        param.requires_grad = False
+
+    logger.info("✓ EMA model initialized via state_dict copy.")
     for param in model_ema.parameters():
         param.requires_grad = False
 
@@ -677,4 +877,5 @@ if __name__ == '__main__':
     logger.info("Starting ControlNet training...")
     if discriminator is not None:
         logger.info("Adversarial training enabled with discriminator")
+    
     train()
