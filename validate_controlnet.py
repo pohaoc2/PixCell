@@ -52,9 +52,15 @@ class PixCellValidator:
             config_path: Optional config file (not needed if loading from HF)
             device: Device to run on
         """
-        from pixcell_transformer_2d import PixCellTransformer2DModel
         from diffusers import DPMSolverMultistepScheduler
-        
+
+        # Add the transformer folder to the path
+        model_dir = os.path.join(os.getcwd(), "pretrained_models/pixcell-256/transformer")
+        if model_dir not in sys.path:
+            sys.path.append(model_dir)
+
+        # Now you can import the file name directly
+        from pixcell_transformer_2d import PixCellTransformer2DModel
         self.device = device
         
         # Load VAE
@@ -96,13 +102,13 @@ class PixCellValidator:
     @torch.no_grad()
     def generate(self, uni_embedding, num_inference_steps=14, guidance_scale=4.5, mask=None):
         """
-        Generate image from UNI embedding (and optional mask for ControlNet compatibility)
+        Generate image from UNI embedding
         
         Args:
             uni_embedding: UNI embedding (1024,) or (1, 1024)
             num_inference_steps: Number of denoising steps
             guidance_scale: CFG guidance scale
-            mask: Optional cell mask for ControlNet (ignored for vanilla PixCell)
+            mask: Optional (ignored for vanilla PixCell)
             
         Returns:
             Generated image (H, W, 3) as numpy array [0, 255]
@@ -112,7 +118,6 @@ class PixCellValidator:
             uni_embedding = uni_embedding.unsqueeze(0)
         
         # Check if we need to expand to match caption_num_tokens
-        # UNI outputs (1, 1536), PixCell expects (1, num_tokens, 1536)
         if hasattr(self.model.config, 'caption_num_tokens'):
             num_tokens = self.model.config.caption_num_tokens
             if uni_embedding.ndim == 2:
@@ -121,10 +126,12 @@ class PixCellValidator:
         
         uni_embedding = uni_embedding.to(self.device)
         
-        # Initial noise
+        # Initial noise - use model's in_channels (should be 16 for PixCell)
         latent_size = self.config.image_size // 8
-        z = torch.randn(1, 4, latent_size, latent_size, device=self.device)  # 4 channels for latent
-        z = z * self.scheduler.init_noise_sigma  # Scale by scheduler
+        latent_channels = self.model.config.in_channels
+        
+        z = torch.randn(1, latent_channels, latent_size, latent_size, device=self.device)
+        z = z * self.scheduler.init_noise_sigma
         
         # Get unconditional embedding for CFG
         if guidance_scale > 1.0:
@@ -170,14 +177,14 @@ class PixCellValidator:
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
             
             # Handle learned sigma (if model predicts variance)
-            if self.model.config.out_channels // 2 == 4:  # latent_channels = 4
+            if self.model.config.out_channels // 2 == latent_channels:
                 noise_pred = noise_pred.chunk(2, dim=1)[0]
             
             # Denoise step
             latent = self.scheduler.step(noise_pred, t, latent, return_dict=False)[0]
         
-        # Decode
-        latent = latent.float()  # Convert to float32 for VAE
+        # Decode with PixCell's 16-channel VAE
+        latent = latent.float()
         latent = (latent / self.scale_factor) + self.shift_factor
         
         image = self.vae.decode(latent).sample
@@ -268,101 +275,61 @@ class PixCellValidator:
             print(f"✓ Saved: {save_path}")
         
         return fig
-    
-    def compute_metrics(self, real_image, generated_image, mask):
-        """
-        Compute quantitative metrics
-        
-        Args:
-            real_image: Ground truth (H, W, 3)
-            generated_image: Generated (H, W, 3)
-            mask: Input mask (H, W)
-            
-        Returns:
-            Dictionary of metrics
-        """
-        from skimage.metrics import structural_similarity as ssim
-        from skimage.metrics import peak_signal_noise_ratio as psnr
-        
-        # Convert to grayscale for some metrics
-        real_gray = real_image.mean(axis=2)
-        gen_gray = generated_image.mean(axis=2)
-        
-        metrics = {}
-        
-        # PSNR
-        metrics['psnr'] = psnr(real_image, generated_image, data_range=255)
-        
-        # SSIM
-        metrics['ssim'] = ssim(real_image, generated_image, 
-                              channel_axis=2, data_range=255)
-        
-        # MSE
-        metrics['mse'] = ((real_image - generated_image) ** 2).mean()
-        
-        # Mask coverage (how much of mask region looks realistic)
-        if isinstance(mask, torch.Tensor):
-            mask = mask.cpu().numpy()
-        if mask.ndim == 3:
-            mask = mask[0]
-        
-        # Resize mask if needed
-        if mask.shape != real_image.shape[:2]:
-            from scipy.ndimage import zoom
-            factors = (real_image.shape[0] / mask.shape[0], real_image.shape[1] / mask.shape[1])
-            mask = zoom(mask, factors, order=0)
-        
-        mask_bool = mask > 0.5
-        if mask_bool.any():
-            metrics['mse_in_mask'] = (
-                (real_image[mask_bool] - generated_image[mask_bool]) ** 2
-            ).mean()
-        
-        return metrics
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Validate PixCell ControlNet')
-    parser.add_argument('--checkpoint', type=str, required=True,
-                       help='Path to model checkpoint')
-    parser.add_argument('--config', type=str, required=True,
-                       help='Path to config file')
+    parser = argparse.ArgumentParser(description='Validate PixCell (Vanilla)')
+    parser.add_argument('--model-path', type=str, 
+                       default='StonyBrook-CVLab/PixCell-256',
+                       help='HuggingFace model path or local checkpoint')
     parser.add_argument('--test-data-dir', type=str, default='./patches',
                        help='Directory with test images')
     parser.add_argument('--features-dir', type=str, default='./features',
-                       help='Directory with precomputed features')
-    parser.add_argument('--masks-dir', type=str, default='./masks',
-                       help='Directory with cell masks')
+                       help='Directory with precomputed UNI features')
     parser.add_argument('--output-dir', type=str, default='./validation_results',
                        help='Output directory for results')
     parser.add_argument('--num-samples', type=int, default=20,
                        help='Number of samples to validate')
-    parser.add_argument('--num-inference-steps', type=int, default=14,
+    parser.add_argument('--num-inference-steps', type=int, default=20,
                        help='Number of denoising steps')
-    parser.add_argument('--guidance-scale', type=float, default=4.5,
-                       help='CFG guidance scale')
+    parser.add_argument('--guidance-scale', type=float, default=1.5,
+                       help='CFG guidance scale (1.0 = no guidance)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to use')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for reproducibility')
     
     args = parser.parse_args()
+    
+    # Set seed
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
     
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print("="*70)
-    print("PixCell ControlNet Validation")
+    print("PixCell Validation (Vanilla - UNI-conditioned generation)")
     print("="*70)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Model: {args.model_path}")
+    print(f"Inference steps: {args.num_inference_steps}")
+    print(f"Guidance scale: {args.guidance_scale}")
+    print(f"Device: {args.device}")
+    print("="*70)
+    
+    device = args.device if torch.cuda.is_available() else 'cpu'
+    
     # Initialize validator
-    validator = ControlNetValidator(
-        args.checkpoint,
-        args.config,
-        device=args.device
+    print("\nInitializing model...")
+    validator = PixCellValidator(
+        model_path=args.model_path,
+        device=device
     )
     
     # Get test images
-    test_images = list(Path(args.test_data_dir).glob('*.png'))[:args.num_samples]
+    test_images = sorted(list(Path(args.test_data_dir).glob('*.png')))[:args.num_samples]
     
     if len(test_images) == 0:
         print(f"❌ No images found in {args.test_data_dir}")
@@ -372,88 +339,69 @@ def main():
     print("="*70)
     
     all_metrics = []
+    successful_generations = 0
     
     for idx, img_path in enumerate(tqdm(test_images, desc="Generating")):
         base_name = img_path.stem
         
-        # Load real image
-        real_image = Image.open(img_path).convert('RGB')
-        # Resize to match generated size (256x256)
-        real_image = real_image.resize((256, 256), Image.LANCZOS)
-        real_image = np.array(real_image)
-        
-        # Load mask
-        mask_path = Path(args.masks_dir) / f"{base_name}_cellvit_mask.png"
-        if not mask_path.exists():
-            mask_path = Path(args.masks_dir) / f"{base_name}_mask.png"
-        
-        if not mask_path.exists():
-            print(f"⚠ Mask not found for {base_name}, skipping")
+        try:
+            # Load real image
+            real_image = Image.open(img_path).convert('RGB')
+            # Resize to match generated size (256x256)
+            real_image = real_image.resize((256, 256), Image.LANCZOS)
+            real_image_np = np.array(real_image)
+            
+            # Load UNI embedding
+            uni_path = Path(args.features_dir) / f"{base_name}_uni.npy"
+            if not uni_path.exists():
+                # Try alternative naming
+                uni_path = Path(args.features_dir) / f"{base_name}.npy"
+            
+            if not uni_path.exists():
+                print(f"⚠ UNI embedding not found for {base_name}, skipping")
+                continue
+            
+            uni_embedding = torch.from_numpy(np.load(uni_path))
+            
+            # Generate image from UNI embedding only (no mask)
+            generated_image = validator.generate(
+                uni_embedding=uni_embedding,
+                num_inference_steps=args.num_inference_steps,
+                guidance_scale=args.guidance_scale,
+            )
+            
+            # Save individual results
+            Image.fromarray(generated_image).save(
+                output_dir / f"{base_name}_generated.png"
+            )
+            
+            # Create comparison (without mask overlay for vanilla PixCell)
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            
+            axes[0].imshow(real_image_np)
+            axes[0].set_title('Real Image', fontsize=14)
+            axes[0].axis('off')
+            
+            axes[1].imshow(generated_image)
+            axes[1].set_title('Generated Image', fontsize=14)
+            axes[1].axis('off')
+            
+            # Difference map
+            diff = np.abs(real_image_np.astype(float) - generated_image.astype(float)).mean(axis=2)
+            im = axes[2].imshow(diff, cmap='hot')
+            axes[2].set_title('Difference Map', fontsize=14)
+            axes[2].axis('off')
+            plt.colorbar(im, ax=axes[2])
+            
+            plt.tight_layout()
+            plt.savefig(output_dir / f"{base_name}_comparison.png", dpi=150, bbox_inches='tight')
+            plt.close('all')
+            
+            successful_generations += 1
+            
+        except Exception as e:
+            print(f"❌ Error processing {base_name}: {str(e)}")
             continue
-        
-        mask = np.array(Image.open(mask_path).convert('L')) > 127
-        mask = torch.from_numpy(mask.astype(np.float32))
-        
-        # Load UNI embedding
-        uni_path = Path(args.features_dir) / f"{base_name}_uni.npy"
-        if not uni_path.exists():
-            print(f"⚠ UNI embedding not found for {base_name}, skipping")
-            continue
-        
-        uni_embedding = torch.from_numpy(np.load(uni_path))
-        
-        # Generate
-        generated_image = validator.generate(
-            mask,
-            uni_embedding,
-            num_inference_steps=args.num_inference_steps,
-            guidance_scale=args.guidance_scale
-        )
-        
-        # Save individual results
-        Image.fromarray(generated_image).save(
-            output_dir / f"{base_name}_generated.png"
-        )
-        
-        # Create comparison
-        validator.create_comparison_grid(
-            real_image,
-            generated_image,
-            mask,
-            save_path=output_dir / f"{base_name}_comparison.png"
-        )
-        plt.close('all')
-        
-        # Compute metrics
-        metrics = validator.compute_metrics(real_image, generated_image, mask)
-        metrics['image_name'] = base_name
-        all_metrics.append(metrics)
-    
-    # Aggregate metrics
-    print("\n" + "="*70)
-    print("Quantitative Results")
-    print("="*70)
-    
-    avg_metrics = {}
-    for key in ['psnr', 'ssim', 'mse', 'mse_in_mask']:
-        values = [m[key] for m in all_metrics if key in m]
-        if values:
-            avg_metrics[key] = np.mean(values)
-            print(f"{key.upper():15s}: {avg_metrics[key]:.4f} ± {np.std(values):.4f}")
-    
-    # Save metrics
-    import json
-    with open(output_dir / 'metrics.json', 'w') as f:
-        json.dump({
-            'individual': all_metrics,
-            'average': avg_metrics
-        }, f, indent=2)
-    
-    print(f"\n✓ Validation complete!")
-    print(f"  Results saved to: {output_dir}")
-    print(f"  - Individual images: *_generated.png")
-    print(f"  - Comparisons: *_comparison.png")
-    print(f"  - Metrics: metrics.json")
 
 
 if __name__ == "__main__":
