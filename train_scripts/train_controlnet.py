@@ -140,7 +140,7 @@ def train():
                             data_info=data_info,
                             controlnet_cond=cell_mask_latent
                         )
-                        model_output = model(noisy_images, timesteps, **model_kwargs_disc)
+                        model_output = base_model(noisy_images, timesteps, **model_kwargs_disc)
                         
                         # Get predicted clean image (x0)
                         if hasattr(config, 'pred_sigma') and config.pred_sigma:
@@ -198,14 +198,14 @@ def train():
                 # The mask is provided through model_kwargs
                 model_kwargs = dict(
                     y=y,  # UNI embeddings
-                    mask=0#None,  # No attention mask for embeddings (model_max_length=1)
+                    mask=0, #None,  # No attention mask for embeddings (model_max_length=1)
                     data_info=data_info,
                     #controlnet_cond=cell_mask_latent  # Cell mask for ControlNet
                 )
                 
                 # Diffusion loss
                 loss_term = train_diffusion.training_losses(
-                    model, 
+                    base_model, 
                     clean_images, 
                     timesteps, 
                     model_kwargs=model_kwargs
@@ -220,7 +220,7 @@ def train():
                     noise = torch.randn_like(clean_images)
                     noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
                     
-                    model_output = model(noisy_images, timesteps, **model_kwargs)
+                    model_output = base_model(noisy_images, timesteps, **model_kwargs)
                     
                     if hasattr(config, 'pred_sigma') and config.pred_sigma:
                         pred_noise, _ = model_output.chunk(2, dim=1)
@@ -260,7 +260,7 @@ def train():
                             if 'fake_images' not in locals():
                                 noise = torch.randn_like(clean_images)
                                 noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
-                                model_output = model(noisy_images, timesteps, **model_kwargs)
+                                model_output = base_model(noisy_images, timesteps, **model_kwargs)
                                 
                                 if hasattr(config, 'pred_sigma') and config.pred_sigma:
                                     pred_noise, _ = model_output.chunk(2, dim=1)
@@ -303,11 +303,11 @@ def train():
                 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                    grad_norm = accelerator.clip_grad_norm_(base_model.parameters(), config.gradient_clip)
                 optimizer.step()
                 lr_scheduler.step()
                 if accelerator.sync_gradients:
-                    ema_update(model_ema, model, config.ema_rate)
+                    ema_update(model_ema, base_model, config.ema_rate)
 
             lr = lr_scheduler.get_last_lr()[0]
             logs = {args.loss_report_name: accelerator.gather(loss).mean().item()}
@@ -338,7 +338,7 @@ def train():
 
                 info = f"Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}]:total_eta: {eta}, " \
                     f"epoch_eta:{eta_epoch}, time_all:{t:.3f}, time_data:{t_d:.3f}, lr:{lr:.3e}, "
-                info += f's:({model.module.h}, {model.module.w}), ' if hasattr(model, 'module') else f's:({model.h}, {model.w}), '
+                info += f's:({base_model.module.h}, {base_model.module.w}), ' if hasattr(base_model, 'module') else f's:({base_model.h}, {base_model.w}), '
 
                 info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
                 logger.info(info)
@@ -382,7 +382,6 @@ def parse_args():
     parser.add_argument("config", type=str, help="config")
     parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument('--resume-from', help='the dir to resume the training')
-    parser.add_argument('--load-from', default=None, help='the dir to load a ckpt for training')
     parser.add_argument('--local-rank', type=int, default=-1)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--batch-size', type=int, default=None)
@@ -519,22 +518,42 @@ if __name__ == '__main__':
 
     # Build models - base model + ControlNet
     train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
-    
-    # Build base model (will be copied for ControlNet)
-    model = build_model(
-        config.model,
-        config.grad_checkpointing,
-        config.get('fp32_attention', False),
-        input_size=latent_size,
-        learn_sigma=learn_sigma,
-        pred_sigma=pred_sigma,
-        **model_kwargs
-    ).train()
-    
-    logger.info(f"{model.__class__.__name__} Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    # IMPORTANT: Ensure the transformer directory is in the path BEFORE importing
+    model_dir = os.path.join(os.getcwd(), "pretrained_models/pixcell-256/transformer")
+    if model_dir not in sys.path:
+        sys.path.append(model_dir)
+    from pixcell_transformer_2d import PixCellTransformer2DModel
+
+    logger.info("Building PixCell model architecture...")
+    # Use config-based building instead of just from_pretrained to ensure ControlNet blocks are created
+    from diffusion.model.builder import build_model
+    base_model = build_model(config.model, **model_kwargs).to(accelerator.device)
+
+    # 2. Fix: Correctly Load Pretrained Base/ControlNet Weights
+    # Determine the file to load
+    if config.load_from is not None:
+        load_path = Path(config.load_from)
+        if load_path.is_dir():
+            # Automatically find the safetensors file in the directory
+            st_files = list(load_path.glob("**/diffusion_pytorch_model.safetensors"))
+            load_file = str(st_files[0]) if st_files else str(config.load_from)
+        else:
+            load_file = str(config.load_from)
+
+        logger.info(f"Loading pretrained weights from {load_file}")
+        # Use our updated load_checkpoint that handles Safetensors
+        load_checkpoint(
+            load_file,
+            base_model,
+            load_ema=config.get('load_ema', False),
+            max_length=max_length
+        )
+    logger.info(f"{base_model.__class__.__name__} Model Parameters: {sum(p.numel() for p in base_model.parameters()):,}")
     
     # Create EMA model
-    model_ema = deepcopy(model).eval()
+    model_ema = deepcopy(base_model).to(accelerator.device).eval()
+    for param in model_ema.parameters():
+        param.requires_grad = False
 
     # Build discriminator if enabled
     discriminator = None
@@ -575,39 +594,9 @@ if __name__ == '__main__':
                     param.requires_grad = False
                 logger.info("✓ Using lightweight U-Net segmentation model (frozen)")
 
-    # Load pretrained base model if specified
-    from safetensors.torch import load_file as load_safetensors
-    if args.load_from is not None:
-        config.load_from = args.load_from
-            
-        if config.load_from is not None:
-            load_path = Path(config.load_from)
-            
-            # If config.load_from is a directory, look for the safetensors file inside
-            if load_path.is_dir():
-                st_file = load_path / "transformer/diffusion_pytorch_model.safetensors"
-                if st_file.exists():
-                    config.load_from = str(st_file)
-                else:
-                    # Fallback to look for any .pth file if safetensors isn't found
-                    pth_files = list(load_path.glob("*.pth"))
-                    if pth_files:
-                        config.load_from = str(pth_files[0])
 
-            logger.info(f"Loading weights from: {config.load_from}")
-
-            # Now pass the corrected path to your loader
-            missing, unexpected = load_checkpoint(
-                model, 
-                config.load_from, 
-                load_ema=config.get('load_ema', False), 
-                max_length=max_length, 
-                ignore_keys=config.get('ignore_keys', [])
-            )
-            logger.warning(f'Missing keys: {missing}')
-            logger.warning(f'Unexpected keys: {unexpected}')
     # Initialize EMA with current model state
-    ema_update(model_ema, model, 0.)
+    ema_update(model_ema, base_model, 0.)
 
     # Prepare for FSDP clip grad norm calculation
     if accelerator.distributed_type == DistributedType.FSDP:
@@ -642,7 +631,7 @@ if __name__ == '__main__':
         )
     
     # Optimizer setup
-    optimizer = build_optimizer(model, config.optimizer)
+    optimizer = build_optimizer(base_model, config.optimizer)
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
 
     timestamp = time.strftime("%Y-%m-%d_%H:%M:%S", time.localtime())
@@ -666,7 +655,7 @@ if __name__ == '__main__':
         start_step = int(path.replace('.pth', '').split("_")[3])
         _, missing, unexpected = load_checkpoint(
             **config.resume_from,
-            model=model,
+            model=base_model,
             model_ema=model_ema,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
@@ -677,7 +666,7 @@ if __name__ == '__main__':
         logger.warning(f'Unexpected keys: {unexpected}')
         
     # Prepare everything
-    model, model_ema = accelerator.prepare(model, model_ema)
+    base_model, model_ema = accelerator.prepare(base_model, model_ema)
     
     if discriminator is not None:
         discriminator = accelerator.prepare(discriminator)

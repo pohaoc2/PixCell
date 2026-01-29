@@ -27,13 +27,14 @@ data = dict(
 # Model setting
 model = "PixArt_XL_2_UNI_ControlNet"
 model = "PixArt_XL_2_UNI"
+model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 
 mixed_precision = 'fp16'  
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
-load_from = f"{root}/pretrained_models/pixcell-256/model.pth"
+load_from = f"{root}/pretrained_models/pixcell-256/transformer"
 resume_from = None
 
 vae_pretrained = f"{root}/pretrained_models/sd-3.5-vae/vae"
