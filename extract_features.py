@@ -313,7 +313,7 @@ def extract_features_from_images(
     # Initialize extractors
     print("\nInitializing feature extractors...")
     uni_extractor = UNI2hExtractor(uni_model_path, device=device)
-    #vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
+    vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
     
     # Process images
     print(f"\nExtracting features (batch_size={batch_size})...")

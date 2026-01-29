@@ -811,6 +811,128 @@ def generate_image_with_diffusion(model, vae, uni_feature_path, num_steps=50, de
     
     return image
 
+
+@torch.no_grad()
+def compare_before_after_one_step(model, vae, device='cuda'):
+    """
+    Compare outputs before and after one training step
+    """
+    model.eval()
+    
+    # Create test inputs
+    x = torch.randn(1, 16, 32, 32, device=device)
+    timestep = torch.tensor([500], device=device)
+    y = torch.randn(1, 1, 120, 1536, device=device)
+    control = torch.randn(1, 4, 32, 32, device=device)
+    
+    print("\n" + "="*70)
+    print("TESTING OUTPUT SIMILARITY AFTER ONE TRAINING STEP")
+    print("="*70)
+    
+    # Get output BEFORE training
+    print("\n1. Output before training:")
+    with torch.no_grad():
+        output_before = model(x, timestep, y, control)
+        if model.pred_sigma:
+            output_before = output_before.chunk(2, dim=1)[0]
+    
+    print(f"   Mean: {output_before.mean():.6f}")
+    print(f"   Std:  {output_before.std():.6f}")
+    
+    # Check zero conv weights before
+    zero_conv_weights_before = [
+        zc.weight.abs().mean().item() 
+        for zc in model.controlnet.zero_convs
+    ]
+    print(f"   Zero conv weights (mean): {sum(zero_conv_weights_before)/len(zero_conv_weights_before):.10f}")
+    
+    # Simulate ONE training step
+    print("\n2. Performing one training step...")
+    model.train()
+    
+    optimizer = torch.optim.AdamW(
+        model.controlnet.parameters(),  # Only train ControlNet
+        lr=1e-4
+    )
+    
+    # Forward pass
+    output = model(x, timestep, y, control)
+    
+    # Fake loss (just for demonstration)
+    target = torch.randn_like(output)
+    loss = F.mse_loss(output, target)
+    
+    # Backward and update
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    print(f"   Loss: {loss.item():.6f}")
+    
+    # Get output AFTER one step
+    print("\n3. Output after one training step:")
+    model.eval()
+    with torch.no_grad():
+        output_after = model(x, timestep, y, control)
+        if model.pred_sigma:
+            output_after = output_after.chunk(2, dim=1)[0]
+    
+    print(f"   Mean: {output_after.mean():.6f}")
+    print(f"   Std:  {output_after.std():.6f}")
+    
+    # Check zero conv weights after
+    zero_conv_weights_after = [
+        zc.weight.abs().mean().item() 
+        for zc in model.controlnet.zero_convs
+    ]
+    print(f"   Zero conv weights (mean): {sum(zero_conv_weights_after)/len(zero_conv_weights_after):.10f}")
+    
+    # Compare outputs
+    print("\n4. Comparison:")
+    diff_abs = (output_after - output_before).abs()
+    diff_rel = diff_abs / (output_before.abs() + 1e-8)
+    
+    print(f"   Max absolute difference:  {diff_abs.max():.10f}")
+    print(f"   Mean absolute difference: {diff_abs.mean():.10f}")
+    print(f"   Max relative difference:  {diff_rel.max():.6f}")
+    print(f"   Mean relative difference: {diff_rel.mean():.10f}")
+    
+    # Weight change
+    weight_changes = [
+        abs(after - before) 
+        for before, after in zip(zero_conv_weights_before, zero_conv_weights_after)
+    ]
+    print(f"\n   Zero conv weight changes:")
+    print(f"   Max change:  {max(weight_changes):.10f}")
+    print(f"   Mean change: {sum(weight_changes)/len(weight_changes):.10f}")
+    
+    # Decode and visualize
+    if vae is not None:
+        print("\n5. Decoding images...")
+        vae.eval()
+        vae_dtype = next(vae.parameters()).dtype
+        
+        with torch.no_grad():
+            img_before = vae.decode(output_before.to(vae_dtype) / vae.config.scaling_factor).sample
+            img_after = vae.decode(output_after.to(vae_dtype) / vae.config.scaling_factor).sample
+        
+        from torchvision.utils import save_image
+        save_image((img_before + 1) / 2, 'before_training.png')
+        save_image((img_after + 1) / 2, 'after_one_step.png')
+        
+        img_diff = (img_after - img_before).abs()
+        print(f"   Image difference (pixels): max={img_diff.max():.6f}, mean={img_diff.mean():.6f}")
+        print(f"   💾 Saved: before_training.png, after_one_step.png")
+    
+    print("\n" + "="*70)
+    print("CONCLUSION:")
+    if diff_abs.mean() < 1e-3:
+        print("✅ Outputs are nearly IDENTICAL after one step (as expected!)")
+        print("   This proves zero convs are working correctly.")
+    else:
+        print("⚠️  Outputs differ more than expected - check initialization")
+    print("="*70)
+
 if __name__ == '__main__':
     args = parse_args()
     config = read_config(args.config)
@@ -973,7 +1095,8 @@ if __name__ == '__main__':
     # Usage
     verify_controlnet_initialization(base_model)
 
-
+    compare_before_after_one_step(model, vae, accelerator.device)
+    asd()
     # Create EMA model
     # 1. Re-build the same architecture for EMA
     logger.info("Initializing EMA model architecture...")
