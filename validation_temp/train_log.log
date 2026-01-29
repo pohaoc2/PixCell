@@ -1,0 +1,3 @@
+2026-01-28 15:34:52,409 - PixArt - WARNING - position embed interpolation: 0.5, base size: 16
+2026-01-28 15:34:52,410 - PixArt - WARNING - kv compress config: {'sampling': None, 'scale_factor': 1, 'kv_compress_layer': []}
+2026-01-28 15:34:52,569 - PixArt - INFO - Load checkpoint from ./pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors. Load ema: True.

@@ -198,9 +198,9 @@ def train():
                 # The mask is provided through model_kwargs
                 model_kwargs = dict(
                     y=y,  # UNI embeddings
-                    mask=None,  # No attention mask for embeddings (model_max_length=1)
+                    mask=0#None,  # No attention mask for embeddings (model_max_length=1)
                     data_info=data_info,
-                    controlnet_cond=cell_mask_latent  # Cell mask for ControlNet
+                    #controlnet_cond=cell_mask_latent  # Cell mask for ControlNet
                 )
                 
                 # Diffusion loss
