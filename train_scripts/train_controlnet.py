@@ -524,7 +524,7 @@ def train():
                     save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
                                     epoch=epoch,
                                     step=global_step,
-                                    model=accelerator.unwrap_model(model),
+                                    model=accelerator.unwrap_model(base_model),
                                     model_ema=accelerator.unwrap_model(model_ema),
                                     optimizer=optimizer,
                                     lr_scheduler=lr_scheduler)
