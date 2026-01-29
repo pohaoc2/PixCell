@@ -41,8 +41,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 16
-train_batch_size = 4  # Paper uses batch size of 4
-num_epochs = 1
+train_batch_size = 16 
+num_epochs = 25
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
@@ -60,8 +60,8 @@ lr_schedule_args = dict(num_warmup_steps=500)
 auto_lr = None
 
 log_interval = 20
-save_model_epochs = 1
-save_model_steps = 10
+save_model_epochs = 5
+save_model_steps = 500
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 
 # VAE configuration
@@ -128,7 +128,7 @@ class_dropout_prob = 0.1
 ema_rate = 0.9999
 
 # Training sampling steps
-train_sampling_steps = 1000
+train_sampling_steps = 500
 snr_loss = True
 
 seed = 42

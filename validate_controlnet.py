@@ -40,143 +40,147 @@ from diffusion.utils.misc import read_config
 from diffusers.models import AutoencoderKL
 
 
-class ControlNetValidator:
-    """Validator for PixCell ControlNet"""
+class PixCellValidator:
+    """Validator for PixCell (Vanilla, not ControlNet)"""
     
-    def __init__(self, checkpoint_path, config_path, device='cuda'):
+    def __init__(self, model_path="StonyBrook-CVLab/PixCell-256", config_path=None, device='cuda'):
         """
         Initialize validator
         
         Args:
-            checkpoint_path: Path to trained model checkpoint
-            config_path: Path to config file
+            model_path: Path or HF repo for PixCell model
+            config_path: Optional config file (not needed if loading from HF)
             device: Device to run on
         """
+        from pixcell_transformer_2d import PixCellTransformer2DModel
+        from diffusers import DPMSolverMultistepScheduler
+        
         self.device = device
-        self.config = read_config(config_path)
         
         # Load VAE
         print("Loading VAE...")
         self.vae = AutoencoderKL.from_pretrained(
-            self.config.vae_pretrained, 
-            torch_dtype=torch.float16
+            "stabilityai/stable-diffusion-3.5-large",
+            subfolder="vae",
+            torch_dtype=torch.float32  # Use float32 for stability
         ).to(device)
         self.vae.eval()
         
-        self.scale_factor = self.config.scale_factor
-        self.shift_factor = getattr(self.config, 'shift_factor', 0.0)
-        
-        # Build model
-        print("Building model...")
-        image_size = self.config.image_size
-        latent_size = image_size // 8
-        
-        model_kwargs = {
-            "pe_interpolation": self.config.pe_interpolation,
-            "config": self.config,
-            "model_max_length": self.config.model_max_length,
-            "qk_norm": self.config.qk_norm,
-            "micro_condition": self.config.micro_condition,
-        }
-        
-        self.model = build_model(
-            self.config.model,
-            grad_checkpointing=False,
-            fp32_attention=False,
-            input_size=latent_size,
-            **model_kwargs
+        # Load PixCell Model
+        print("Loading PixCell model...")
+        self.model = PixCellTransformer2DModel.from_pretrained(
+            model_path,
+            subfolder="transformer"
         ).to(device)
         self.model.eval()
         
-        # Load checkpoint
-        print(f"Loading checkpoint: {checkpoint_path}")
-        load_checkpoint(
-            checkpoint_path,
-            self.model,
-            load_ema=True,  # Use EMA weights for best quality
-            max_length=self.config.model_max_length
+        # Load Scheduler
+        print("Loading scheduler...")
+        self.scheduler = DPMSolverMultistepScheduler.from_pretrained(
+            model_path,
+            subfolder="scheduler"
         )
+        
+        # Get config from model
+        self.config = type('Config', (), {
+            'image_size': 256,
+            'scale_factor': self.vae.config.scaling_factor,
+            'shift_factor': getattr(self.vae.config, 'shift_factor', 0.0)
+        })()
+        
+        self.scale_factor = self.config.scale_factor
+        self.shift_factor = self.config.shift_factor
         
         print("✓ Model loaded successfully")
     
     @torch.no_grad()
-    def generate(self, mask, uni_embedding, num_inference_steps=14, guidance_scale=4.5):
+    def generate(self, uni_embedding, num_inference_steps=14, guidance_scale=4.5, mask=None):
         """
-        Generate image from mask and UNI embedding
+        Generate image from UNI embedding (and optional mask for ControlNet compatibility)
         
         Args:
-            mask: Cell mask (1, 1, H, W) or (H, W)
             uni_embedding: UNI embedding (1024,) or (1, 1024)
             num_inference_steps: Number of denoising steps
             guidance_scale: CFG guidance scale
+            mask: Optional cell mask for ControlNet (ignored for vanilla PixCell)
             
         Returns:
             Generated image (H, W, 3) as numpy array [0, 255]
         """
-        # Prepare inputs
-        if mask.ndim == 2:
-            mask = mask.unsqueeze(0).unsqueeze(0)
-        elif mask.ndim == 3:
-            mask = mask.unsqueeze(0)
-        mask = mask.to(self.device).float()
-        
+        # Prepare UNI embedding
         if uni_embedding.ndim == 1:
-            uni_embedding = uni_embedding.unsqueeze(0).unsqueeze(0)
-        elif uni_embedding.ndim == 2:
-            uni_embedding = uni_embedding.unsqueeze(1)
+            uni_embedding = uni_embedding.unsqueeze(0)
+        
+        # Check if we need to expand to match caption_num_tokens
+        # UNI outputs (1, 1536), PixCell expects (1, num_tokens, 1536)
+        if hasattr(self.model.config, 'caption_num_tokens'):
+            num_tokens = self.model.config.caption_num_tokens
+            if uni_embedding.ndim == 2:
+                # Expand (1, 1536) -> (1, num_tokens, 1536)
+                uni_embedding = uni_embedding.unsqueeze(1).repeat(1, num_tokens, 1)
+        
         uni_embedding = uni_embedding.to(self.device)
         
-        # Prepare mask at latent resolution
-        latent_size = self.config.image_size // 8
-        if mask.shape[-1] != latent_size:
-            mask_latent = F.max_pool2d(
-                mask, 
-                kernel_size=mask.shape[-1] // latent_size,
-                stride=mask.shape[-1] // latent_size
-            )
-        else:
-            mask_latent = mask
-        
         # Initial noise
-        z = torch.randn(1, 16, latent_size, latent_size, device=self.device)
+        latent_size = self.config.image_size // 8
+        z = torch.randn(1, 4, latent_size, latent_size, device=self.device)  # 4 channels for latent
+        z = z * self.scheduler.init_noise_sigma  # Scale by scheduler
         
-        # Prepare model kwargs
-        hw = torch.tensor([[self.config.image_size, self.config.image_size]], 
-                         dtype=torch.float, device=self.device)
-        ar = torch.tensor([[1.0]], device=self.device)
+        # Get unconditional embedding for CFG
+        if guidance_scale > 1.0:
+            null_y = self.model.caption_projection.uncond_embedding.clone().unsqueeze(0)
+            null_y = null_y.to(device=uni_embedding.device, dtype=uni_embedding.dtype)
+        else:
+            null_y = None
         
-        model_kwargs = {
-            'data_info': {'img_hw': hw, 'aspect_ratio': ar},
-            'mask': None,
-            'controlnet_cond': mask_latent
-        }
+        # Setup scheduler
+        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+        timesteps = self.scheduler.timesteps
         
-        # Null conditioning for CFG
-        null_y = torch.zeros_like(uni_embedding)
-        
-        # Sampling
-        sampler = DPMS(
-            self.model.forward_with_dpmsolver,
-            condition=uni_embedding,
-            uncondition=null_y,
-            cfg_scale=guidance_scale,
-            model_kwargs=model_kwargs
-        )
-        
-        latent = sampler.sample(
-            z,
-            steps=num_inference_steps,
-            order=2,
-            skip_type="time_uniform",
-            method="multistep",
-        )
+        # Denoising loop
+        latent = z
+        for i, t in enumerate(timesteps):
+            # Expand latent for CFG
+            if guidance_scale > 1.0:
+                latent_model_input = torch.cat([latent] * 2)
+                encoder_hidden_states = torch.cat([null_y, uni_embedding], dim=0)
+            else:
+                latent_model_input = latent
+                encoder_hidden_states = uni_embedding
+            
+            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+            
+            # Prepare timestep
+            timestep = t
+            if not torch.is_tensor(timestep):
+                timestep = torch.tensor([timestep], dtype=torch.float32, device=self.device)
+            timestep = timestep.expand(latent_model_input.shape[0])
+            
+            # Predict noise
+            noise_pred = self.model(
+                latent_model_input,
+                encoder_hidden_states=encoder_hidden_states,
+                timestep=timestep,
+                return_dict=False,
+            )[0]
+            
+            # Perform CFG
+            if guidance_scale > 1.0:
+                noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            
+            # Handle learned sigma (if model predicts variance)
+            if self.model.config.out_channels // 2 == 4:  # latent_channels = 4
+                noise_pred = noise_pred.chunk(2, dim=1)[0]
+            
+            # Denoise step
+            latent = self.scheduler.step(noise_pred, t, latent, return_dict=False)[0]
         
         # Decode
-        latent = latent / self.scale_factor
-        if self.shift_factor != 0:
-            latent = latent + self.shift_factor
+        latent = latent.float()  # Convert to float32 for VAE
+        latent = (latent / self.scale_factor) + self.shift_factor
         
-        image = self.vae.decode(latent.to(torch.float16)).sample
+        image = self.vae.decode(latent).sample
         image = torch.clamp(127.5 * image + 128.0, 0, 255)
         image = image.permute(0, 2, 3, 1).cpu().numpy()[0].astype(np.uint8)
         
@@ -349,7 +353,7 @@ def main():
     print("="*70)
     print("PixCell ControlNet Validation")
     print("="*70)
-    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # Initialize validator
     validator = ControlNetValidator(
         args.checkpoint,
