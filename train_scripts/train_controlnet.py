@@ -577,6 +577,100 @@ def parse_args():
     
     return parser.parse_args()
 
+    
+def verify_pixcell_checkpoint(model):
+    """Load checkpoint directly and verify key values"""
+    from safetensors.torch import load_file
+    
+    checkpoint_path = "pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors"
+    state_dict = load_file(checkpoint_path)
+    
+    # Check a specific weight from the checkpoint
+    original_timestep_weight = state_dict['adaln_single.emb.timestep_embedder.linear_1.weight']
+    print(f"Original checkpoint timestep embedder weight (first 5 values):")
+    print(original_timestep_weight[0, :5])
+    
+    # After loading into your model, check if it matches
+    model_timestep_weight = model.t_embedder.mlp[0].weight
+    print(f"\nModel timestep embedder weight (first 5 values):")
+    print(model_timestep_weight[0, :5])
+    
+    # Check if they match
+    if torch.allclose(original_timestep_weight, model_timestep_weight, atol=1e-6):
+        print("\n✅ Weights match! PixCell loaded correctly.")
+    else:
+        print("\n❌ Weights don't match! Something went wrong.")
+
+@torch.no_grad()
+def test_pixcell_generation(model, vae=None, device='cpu'):
+    """Test PixCell base model loading by providing dummy control input"""
+    
+    model.eval()
+    model.to(device)
+    
+    print("\n" + "="*70)
+    print("Testing PixCell Base Model Generation")
+    print("="*70)
+    
+    # Create dummy inputs
+    batch_size = 1
+    latent_size = 32  # 256//8
+    
+    # Random noise (NOISY LATENT)
+    x = torch.randn(batch_size, 16, latent_size, latent_size).to(device)
+    
+    # Timestep
+    timestep = torch.tensor([500]).to(device)
+    
+    # UNI embedding (random for testing)
+    y = torch.randn(batch_size, 1, 120, 1536).to(device)
+    
+    # DUMMY control input (zeros = no control)
+    control_input = torch.zeros(batch_size, 1, latent_size, latent_size).to(device)
+    
+    # Forward pass
+    try:
+        print("\n1. Testing forward pass...")
+        output = model(x, timestep, y, control_input)
+        
+        print(f"   ✅ Forward pass successful!")
+        print(f"   Input shape: {x.shape}")
+        print(f"   Output shape: {output.shape}")
+        print(f"   Output mean: {output.mean().item():.4f}")
+        print(f"   Output std: {output.std().item():.4f}")
+        
+        # Decode with VAE if available
+        if vae is not None:
+            print("\n2. Testing VAE decoding...")
+            vae.eval()
+            vae.to(device)
+            
+            # Split output if pred_sigma is True
+            if model.pred_sigma:
+                output = output.chunk(2, dim=1)[0]  # Take first half (predicted x0)
+            
+            with torch.no_grad():
+                image = vae.decode(output / vae.config.scaling_factor).sample
+                print(f"   ✅ VAE decoding successful!")
+                print(f"   Decoded image shape: {image.shape}")
+                print(f"   Image range: [{image.min().item():.2f}, {image.max().item():.2f}]")
+                
+                # Save test image
+                from torchvision.utils import save_image
+                save_image((image + 1) / 2, 'pixcell_base_test.png')
+                print(f"   💾 Saved test image to: pixcell_base_test.png")
+        
+        print("\n" + "="*70)
+        print("✅ ALL TESTS PASSED - PixCell loaded correctly!")
+        print("="*70)
+        return True
+        
+    except Exception as e:
+        print(f"\n❌ Test failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 
 if __name__ == '__main__':
     args = parse_args()
@@ -721,7 +815,7 @@ if __name__ == '__main__':
 
         # Log details if there are concerning missing/unexpected keys
         if missing:
-            logger.warning(f"Missing keys (first 10): {missing[:10]}")
+            logger.warning(f"Missing keys (first 10): {missing[:]}")
         if unexpect:
             logger.warning(f"Unexpected keys (first 10): {unexpect[:10]}")
         
@@ -731,6 +825,15 @@ if __name__ == '__main__':
         
         # Verify frozen/trainable parameters
         _print_trainable_parameters(base_model, logger)
+    verify_pixcell_checkpoint(base_model)
+    # Usage
+    test_pixcell_generation(base_model, vae, device='cpu')
+    x = torch.randn(1, 16, 32, 32).to('cpu')
+    timestep = torch.tensor([500]).to('cpu')
+    y = torch.randn(1, 1, 120, 1536).to('cpu')
+    output = base_model.forward_without_controlnet(x, timestep, y)
+    print(output.shape)
+    asd()
     if hasattr(base_model, 'controlnet'):
         # Enable gradient checkpointing for ControlNet blocks
         for block in base_model.controlnet.control_blocks:

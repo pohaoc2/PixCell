@@ -296,15 +296,24 @@ class PixArt_UNI_ControlNet(nn.Module):
         Forward pass combining base model and ControlNet.
         
         Args:
-            x: (N, C, H, W) base input (UNI features)
-            timestep: (N,) diffusion timesteps
-            y: (N, 1, 120, C) condition embeddings
-            control_input: (N, C_control, H, W) cell mask input
-            mask: Optional mask
-            data_info: Additional data information
+            x: (N, C, H, W) NOISY LATENT IMAGE (not UNI features!)
+            - This is the denoising diffusion input at timestep t
+            - C=16 for PixCell's latent space
             
-        Returns:
-            Generated output
+            timestep: (N,) diffusion timesteps
+            - Controls noise level in diffusion process
+            
+            y: (N, 1, 120, C) UNI EMBEDDINGS (semantic condition, not just "condition")
+            - Extracted from UNI foundation model
+            - Provides biological/semantic context
+            - C=1536 (UNI embedding dimension)
+            
+            control_input: (N, C_control, H, W) cell mask input
+            - Binary or instance segmentation masks
+            - Provides spatial/structural guidance
+            
+            mask: Optional attention mask
+            data_info: Additional data information
         """
         x = x.to(self.dtype)
         timestep = timestep.to(self.dtype)
@@ -440,7 +449,55 @@ class PixArt_UNI_ControlNet(nn.Module):
     @property
     def dtype(self):
         return next(self.parameters()).dtype
-
+    
+    
+    @torch.no_grad()
+    def forward_without_controlnet(self, x, timestep, y, mask=None, data_info=None):
+        """
+        Forward pass WITHOUT ControlNet for testing base model loading.
+        Uses zero control features.
+        """
+        x = x.to(self.dtype)
+        timestep = timestep.to(self.dtype)
+        y = y.to(self.dtype)
+        
+        # Process conditioning
+        if len(y.shape) == 2:
+            y = y.unsqueeze(1).unsqueeze(1)
+        if len(y.shape) == 3:
+            y = y.unsqueeze(1)
+        
+        if hasattr(self, 'y_pos_embed'):
+            y_pos_embed = self.y_pos_embed.to(self.dtype)
+            y = y + y_pos_embed.unsqueeze(0)
+        
+        # Base model forward
+        pos_embed = self.pos_embed.to(self.dtype)
+        self.h, self.w = x.shape[-2] // self.patch_size, x.shape[-1] // self.patch_size
+        x = self.x_embedder(x) + pos_embed
+        t = self.t_embedder(timestep.to(x.dtype))
+        t0 = self.t_block(t)
+        y = self.y_embedder(y, self.training)
+        
+        # Process mask
+        if mask is not None and data_info is not None and set(data_info["mask_type"]) != {"null"}:
+            if mask.shape[0] != y.shape[0]:
+                mask = mask.repeat(y.shape[0] // mask.shape[0], 1)
+            mask = mask.squeeze(1).squeeze(1)
+            y = y.squeeze(1).masked_select(mask.unsqueeze(-1) != 0).view(1, -1, x.shape[-1])
+            y_lens = mask.sum(dim=1).tolist()
+        else:
+            y_lens = [y.shape[2]] * y.shape[0]
+            y = y.squeeze(1).view(1, -1, x.shape[-1])
+        
+        # Forward through base blocks WITHOUT ControlNet
+        for i, block in enumerate(self.blocks):
+            x = auto_grad_checkpoint(block, x, y, t0, y_lens)
+            # NO control features added
+        
+        x = self.final_layer(x, t)
+        x = self.unpatchify(x)
+        return x
 
 # Register the model
 @MODELS.register_module()
