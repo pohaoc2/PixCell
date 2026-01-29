@@ -26,7 +26,8 @@ data = dict(
 
 # Model setting
 model = "PixArt_XL_2_UNI_ControlNet"
-model = "PixArt_XL_2_UNI"
+#model = "PixArt_XL_2_UNI"
+
 model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 
@@ -42,7 +43,7 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 16
-train_batch_size = 16 
+train_batch_size = 1
 num_epochs = 25
 gradient_accumulation_steps = 1
 grad_checkpointing = True

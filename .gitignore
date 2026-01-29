@@ -12,6 +12,8 @@
 *.svs
 *.txt
 *.pyc
+*.hdf5
+*.log
 pretrained_models/
 # Editors
 .vscode/
