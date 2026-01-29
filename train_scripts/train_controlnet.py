@@ -131,6 +131,158 @@ def _initialize_controlnet_from_base(model):
     logger.info("ControlNet initialization complete!")
     logger.info(f"Copied {len(model.controlnet.control_blocks)} transformer blocks from base model to ControlNet")
 
+@torch.no_grad()
+def verify_controlnet_initialization(model):
+    """
+    Verify that ControlNet weights were correctly copied from base model
+    
+    Args:
+        model: PixArt_UNI_ControlNet instance
+        
+    Returns:
+        bool: True if verification passes
+    """
+    logger = get_root_logger()
+    
+    print("\n" + "="*70)
+    print("VERIFYING CONTROLNET INITIALIZATION")
+    print("="*70)
+    
+    base_depth = len(model.blocks)
+    control_depth = len(model.controlnet.control_blocks)
+    
+    print(f"\nBase model blocks: {base_depth}")
+    print(f"ControlNet blocks: {control_depth}")
+    
+    all_passed = True
+    
+    # 1. Verify positional embeddings
+    print("\n1. Checking positional embeddings...")
+    if torch.allclose(model.controlnet.pos_embed, model.pos_embed, atol=1e-6):
+        print("   ✅ Positional embeddings match")
+    else:
+        print("   ❌ Positional embeddings DON'T match")
+        all_passed = False
+    
+    # 2. Verify transformer blocks
+    print("\n2. Checking transformer block weights...")
+    
+    for control_idx in range(control_depth):
+        # Calculate which base block should have been copied
+        base_idx = int(control_idx * base_depth / control_depth)
+        base_idx = min(base_idx, base_depth - 1)
+        
+        control_block = model.controlnet.control_blocks[control_idx]
+        base_block = model.blocks[base_idx]
+        
+        checks = []
+        
+        # Check self-attention QKV
+        qkv_match = torch.allclose(
+            control_block.attn.qkv.weight, 
+            base_block.attn.qkv.weight, 
+            atol=1e-6
+        )
+        checks.append(("Self-attn QKV", qkv_match))
+        
+        # Check self-attention projection
+        proj_match = torch.allclose(
+            control_block.attn.proj.weight,
+            base_block.attn.proj.weight,
+            atol=1e-6
+        )
+        checks.append(("Self-attn Proj", proj_match))
+        
+        # Check cross-attention Q
+        q_match = torch.allclose(
+            control_block.cross_attn.q_linear.weight,
+            base_block.cross_attn.q_linear.weight,
+            atol=1e-6
+        )
+        checks.append(("Cross-attn Q", q_match))
+        
+        # Check cross-attention KV
+        kv_match = torch.allclose(
+            control_block.cross_attn.kv_linear.weight,
+            base_block.cross_attn.kv_linear.weight,
+            atol=1e-6
+        )
+        checks.append(("Cross-attn KV", kv_match))
+        
+        # Check MLP fc1
+        fc1_match = torch.allclose(
+            control_block.mlp.fc1.weight,
+            base_block.mlp.fc1.weight,
+            atol=1e-6
+        )
+        checks.append(("MLP FC1", fc1_match))
+        
+        # Check MLP fc2
+        fc2_match = torch.allclose(
+            control_block.mlp.fc2.weight,
+            base_block.mlp.fc2.weight,
+            atol=1e-6
+        )
+        checks.append(("MLP FC2", fc2_match))
+        
+        # Check scale_shift_table
+        scale_match = torch.allclose(
+            control_block.scale_shift_table,
+            base_block.scale_shift_table,
+            atol=1e-6
+        )
+        checks.append(("Scale-shift", scale_match))
+        
+        # Report for this block
+        block_passed = all(match for _, match in checks)
+        if block_passed:
+            print(f"   ✅ Control block {control_idx} ← Base block {base_idx}: ALL weights match")
+        else:
+            print(f"   ❌ Control block {control_idx} ← Base block {base_idx}: MISMATCHES:")
+            for name, match in checks:
+                if not match:
+                    print(f"      ✗ {name}")
+            all_passed = False
+    
+    # 3. Verify zero convs are still zero
+    print("\n3. Checking zero convolutions...")
+    zero_convs_ok = True
+    for i, zero_conv in enumerate(model.controlnet.zero_convs):
+        is_zero = torch.allclose(zero_conv.weight, torch.zeros_like(zero_conv.weight), atol=1e-8)
+        if is_zero:
+            print(f"   ✅ Zero conv {i}: initialized to zero")
+        else:
+            print(f"   ❌ Zero conv {i}: NOT zero (mean: {zero_conv.weight.abs().mean():.6f})")
+            zero_convs_ok = False
+    
+    if not zero_convs_ok:
+        all_passed = False
+    
+    # 4. Verify control_x_embedder is different (not copied)
+    print("\n4. Checking control_x_embedder (should be different)...")
+    control_x_weight = model.controlnet.control_x_embedder.proj.weight
+    base_x_weight = model.x_embedder.proj.weight
+    
+    # They should have different shapes (different input channels)
+    if control_x_weight.shape != base_x_weight.shape:
+        print(f"   ✅ Different shapes: control={control_x_weight.shape[1]} vs base={base_x_weight.shape[1]} channels")
+    else:
+        # Same shape - check if they're different values
+        if not torch.allclose(control_x_weight, base_x_weight, atol=1e-6):
+            print(f"   ✅ Different weights (as expected)")
+        else:
+            print(f"   ⚠️  Weights are identical (might be ok if both use same init)")
+    
+    # Summary
+    print("\n" + "="*70)
+    if all_passed:
+        print("✅ ALL VERIFICATIONS PASSED - ControlNet correctly initialized!")
+    else:
+        print("❌ SOME VERIFICATIONS FAILED - Check logs above")
+    print("="*70)
+    
+    return all_passed
+
 def _print_trainable_parameters(model, logger):
     """
     Print statistics about frozen vs trainable parameters.
@@ -578,7 +730,7 @@ def parse_args():
     return parser.parse_args()
 
     
-def verify_pixcell_checkpoint(model):
+def verify_pixcell_checkpoint(model, device='cuda'):
     """Load checkpoint directly and verify key values"""
     from safetensors.torch import load_file
     
@@ -596,81 +748,68 @@ def verify_pixcell_checkpoint(model):
     print(model_timestep_weight[0, :5])
     
     # Check if they match
-    if torch.allclose(original_timestep_weight, model_timestep_weight, atol=1e-6):
+    if torch.allclose(original_timestep_weight.to(device), model_timestep_weight.to(device), atol=1e-6):
         print("\n✅ Weights match! PixCell loaded correctly.")
     else:
         print("\n❌ Weights don't match! Something went wrong.")
 
 @torch.no_grad()
-def test_pixcell_generation(model, vae=None, device='cpu'):
-    """Test PixCell base model loading by providing dummy control input"""
+def generate_image_with_diffusion(model, vae, uni_feature_path, num_steps=50, device='cuda'):
+    """
+    Proper image generation using diffusion sampling
+    """
+    from diffusers import DDPMScheduler  # or DDIMScheduler for faster sampling
     
     model.eval()
-    model.to(device)
+    vae.eval()
     
-    print("\n" + "="*70)
-    print("Testing PixCell Base Model Generation")
-    print("="*70)
+    # Load UNI features
+    y = torch.from_numpy(np.load(uni_feature_path))
+    y = y.view(1, 1, 1, 1536).expand(1, 1, 120, 1536).to(device)
     
-    # Create dummy inputs
-    batch_size = 1
-    latent_size = 32  # 256//8
+    # Initialize scheduler
+    scheduler = DDPMScheduler(
+        num_train_timesteps=1000,
+        beta_schedule="linear",
+    )
+    scheduler.set_timesteps(num_steps)
     
-    # Random noise (NOISY LATENT)
-    x = torch.randn(batch_size, 16, latent_size, latent_size).to(device)
+    # Start with random noise
+    latent_shape = (1, 16, 32, 32)
+    latents = torch.randn(latent_shape, device=device)
     
-    # Timestep
-    timestep = torch.tensor([500]).to(device)
+    print(f"Starting diffusion sampling with {num_steps} steps...")
     
-    # UNI embedding (random for testing)
-    y = torch.randn(batch_size, 1, 120, 1536).to(device)
-    
-    # DUMMY control input (zeros = no control)
-    control_input = torch.zeros(batch_size, 1, latent_size, latent_size).to(device)
-    
-    # Forward pass
-    try:
-        print("\n1. Testing forward pass...")
-        output = model(x, timestep, y, control_input)
+    # Iterative denoising
+    for i, t in enumerate(scheduler.timesteps):
+        print(f"Step {i+1}/{num_steps}, timestep: {t}", end='\r')
         
-        print(f"   ✅ Forward pass successful!")
-        print(f"   Input shape: {x.shape}")
-        print(f"   Output shape: {output.shape}")
-        print(f"   Output mean: {output.mean().item():.4f}")
-        print(f"   Output std: {output.std().item():.4f}")
+        timestep = torch.tensor([t], device=device)
         
-        # Decode with VAE if available
-        if vae is not None:
-            print("\n2. Testing VAE decoding...")
-            vae.eval()
-            vae.to(device)
-            
-            # Split output if pred_sigma is True
-            if model.pred_sigma:
-                output = output.chunk(2, dim=1)[0]  # Take first half (predicted x0)
-            
-            with torch.no_grad():
-                image = vae.decode(output / vae.config.scaling_factor).sample
-                print(f"   ✅ VAE decoding successful!")
-                print(f"   Decoded image shape: {image.shape}")
-                print(f"   Image range: [{image.min().item():.2f}, {image.max().item():.2f}]")
-                
-                # Save test image
-                from torchvision.utils import save_image
-                save_image((image + 1) / 2, 'pixcell_base_test.png')
-                print(f"   💾 Saved test image to: pixcell_base_test.png")
+        # Predict noise
+        noise_pred = model.forward_without_controlnet(latents, timestep, y)
         
-        print("\n" + "="*70)
-        print("✅ ALL TESTS PASSED - PixCell loaded correctly!")
-        print("="*70)
-        return True
+        # Handle pred_sigma
+        if model.pred_sigma:
+            noise_pred = noise_pred.chunk(2, dim=1)[0]
         
-    except Exception as e:
-        print(f"\n❌ Test failed with error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
+        # Denoise one step
+        latents = scheduler.step(noise_pred, t, latents).prev_sample
+    
+    print("\nSampling complete! Decoding...")
+    
+    # Decode final latents
+    vae_dtype = next(vae.parameters()).dtype
+    latents = latents.to(vae_dtype)
+    
+    image = vae.decode(latents / vae.config.scaling_factor).sample
+    
+    # Save
+    from torchvision.utils import save_image
+    save_image((image + 1) / 2, 'pixcell_generated.png')
+    print("✅ Saved generated image to: pixcell_generated.png")
+    
+    return image
 
 if __name__ == '__main__':
     args = parse_args()
@@ -757,11 +896,8 @@ if __name__ == '__main__':
     learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
     max_length = config.model_max_length
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
-    vae = None
-
-    if not config.data.load_vae_feat:
-        vae = AutoencoderKL.from_pretrained(config.vae_pretrained, torch_dtype=torch.float16).to(accelerator.device)
-        config.scale_factor = vae.config.scaling_factor
+    vae = AutoencoderKL.from_pretrained(config.vae_pretrained, torch_dtype=torch.float16).to(accelerator.device);
+    config.scale_factor = vae.config.scaling_factor
 
     logger.info(f"vae scale factor: {config.scale_factor}")
 
@@ -778,14 +914,12 @@ if __name__ == '__main__':
 
     # Build models - base model + ControlNet
     train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
-    # IMPORTANT: Ensure the transformer directory is in the path BEFORE importing
     model_dir = os.path.join(os.getcwd(), "pretrained_models/pixcell-256/transformer")
     if model_dir not in sys.path:
         sys.path.append(model_dir)
     from pixcell_transformer_2d import PixCellTransformer2DModel
 
     logger.info("Building PixCell model architecture...")
-    # Use config-based building instead of just from_pretrained to ensure ControlNet blocks are created
     from diffusion.model.builder import build_model
     # Build the combined model (base + controlnet)
     base_model = build_model(config.model, **model_kwargs).to(accelerator.device)
@@ -825,21 +959,20 @@ if __name__ == '__main__':
         
         # Verify frozen/trainable parameters
         _print_trainable_parameters(base_model, logger)
-    verify_pixcell_checkpoint(base_model)
-    # Usage
-    test_pixcell_generation(base_model, vae, device='cpu')
-    x = torch.randn(1, 16, 32, 32).to('cpu')
-    timestep = torch.tensor([500]).to('cpu')
-    y = torch.randn(1, 1, 120, 1536).to('cpu')
-    output = base_model.forward_without_controlnet(x, timestep, y)
-    print(output.shape)
-    asd()
+    if 0:
+        verify_pixcell_checkpoint(base_model, device=accelerator.device)
+        generate_image_with_diffusion(base_model, vae, 'features/sample_0_uni.npy', device=accelerator.device)
+        
     if hasattr(base_model, 'controlnet'):
         # Enable gradient checkpointing for ControlNet blocks
         for block in base_model.controlnet.control_blocks:
             block.gradient_checkpointing = True
     logger.info(f"{base_model.__class__.__name__} Model Parameters: {sum(p.numel() for p in base_model.parameters()):,}")
     logger.info(f"Trainable Parameters: {sum(p.numel() for p in base_model.parameters() if p.requires_grad):,}")
+
+    # Usage
+    verify_controlnet_initialization(base_model)
+
 
     # Create EMA model
     # 1. Re-build the same architecture for EMA
