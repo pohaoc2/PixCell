@@ -313,12 +313,11 @@ def extract_features_from_images(
     # Initialize extractors
     print("\nInitializing feature extractors...")
     uni_extractor = UNI2hExtractor(uni_model_path, device=device)
-    vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
+    #vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
     
     # Process images
     print(f"\nExtracting features (batch_size={batch_size})...")
     print("="*70)
-    
     for i in tqdm(range(0, len(images), batch_size), desc="Processing"):
         batch_images_paths = images[i:i+batch_size]
         batch_images = []
@@ -339,7 +338,6 @@ def extract_features_from_images(
         try:
             # UNI-2h embeddings
             uni_features = uni_extractor.extract_batch(batch_images)
-            
             # VAE features (mean + std)
             vae_features = vae_extractor.extract_batch(batch_images)
             
@@ -354,7 +352,7 @@ def extract_features_from_images(
                 # Save UNI embeddings
                 uni_output = output_dir / f"{base_name}_{uni_prefix}.npy"
                 np.save(uni_output, uni_features[j])
-        
+            
         except Exception as e:
             print(f"\n⚠ Error processing batch: {e}")
             continue

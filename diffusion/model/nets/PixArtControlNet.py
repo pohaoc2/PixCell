@@ -477,18 +477,15 @@ class PixArt_UNI_ControlNet(nn.Module):
         x = self.x_embedder(x) + pos_embed
         t = self.t_embedder(timestep.to(x.dtype))
         t0 = self.t_block(t)
-        y = self.y_embedder(y, self.training)
         
-        # Process mask
-        if mask is not None and data_info is not None and set(data_info["mask_type"]) != {"null"}:
-            if mask.shape[0] != y.shape[0]:
-                mask = mask.repeat(y.shape[0] // mask.shape[0], 1)
-            mask = mask.squeeze(1).squeeze(1)
-            y = y.squeeze(1).masked_select(mask.unsqueeze(-1) != 0).view(1, -1, x.shape[-1])
-            y_lens = mask.sum(dim=1).tolist()
-        else:
-            y_lens = [y.shape[2]] * y.shape[0]
-            y = y.squeeze(1).view(1, -1, x.shape[-1])
+        # Store batch size and sequence length BEFORE y_embedder
+        batch_size = y.shape[0]
+        seq_length = y.shape[2]  # Should be 120
+        
+        y = self.y_embedder(y, False)  # ← Use False for testing (not self.training)
+        # Simplified for testing - no mask handling
+        y_lens = [seq_length] * batch_size
+        y = y.squeeze(1).view(1, -1, x.shape[-1])
         
         # Forward through base blocks WITHOUT ControlNet
         for i, block in enumerate(self.blocks):
@@ -498,7 +495,6 @@ class PixArt_UNI_ControlNet(nn.Module):
         x = self.final_layer(x, t)
         x = self.unpatchify(x)
         return x
-
 # Register the model
 @MODELS.register_module()
 def PixArt_XL_2_UNI_ControlNet(**kwargs):
