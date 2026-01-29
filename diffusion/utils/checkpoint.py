@@ -37,6 +37,143 @@ def save_checkpoint(work_dir,
                 os.remove(previous_ckgt)
 
 
+def remap_pixcell_to_pixart_alpha(state_dict):
+    """
+    Remap PixCell (Diffusers PixArt-Sigma format) to PixArt-Alpha format
+    """
+    import torch
+    
+    new_dict = {}
+    
+    for key, value in state_dict.items():
+        new_key = key
+        
+        # 1. Timestep embedder
+        new_key = new_key.replace('adaln_single.emb.timestep_embedder.linear_1', 't_embedder.mlp.0')
+        new_key = new_key.replace('adaln_single.emb.timestep_embedder.linear_2', 't_embedder.mlp.2')
+        
+        # 2. AdaLN linear
+        new_key = new_key.replace('adaln_single.linear', 't_block.1')
+        
+        # 3. Caption projection
+        new_key = new_key.replace('caption_projection.linear_1', 'y_embedder.y_proj.fc1')
+        new_key = new_key.replace('caption_projection.linear_2', 'y_embedder.y_proj.fc2')
+        new_key = new_key.replace('caption_projection.uncond_embedding', 'y_embedder.y_embedding')
+        
+        # 4. Patch embed
+        new_key = new_key.replace('pos_embed.proj', 'x_embedder.proj')
+        
+        # 5. Transformer blocks
+        new_key = new_key.replace('transformer_blocks.', 'blocks.')
+        
+        # 6. MLP layers (feedforward)
+        # ff.net.0.proj -> mlp.fc1
+        # ff.net.2 -> mlp.fc2
+        new_key = new_key.replace('.ff.net.0.proj', '.mlp.fc1')
+        new_key = new_key.replace('.ff.net.2', '.mlp.fc2')
+        
+        # 7. Scale-shift table in blocks
+        # blocks.N.final_layer.scale_shift_table -> blocks.N.scale_shift_table
+        import re
+        new_key = re.sub(r'(blocks\.\d+)\.final_layer\.scale_shift_table', r'\1.scale_shift_table', new_key)
+        
+        # 8. Skip attention keys for now - we'll handle them separately
+        if '.attn1.' in new_key or '.attn2.' in new_key:
+            new_dict[key] = value  # Keep original key temporarily
+            continue
+        
+        # 9. Final layer (at the end of the model, not within blocks)
+        new_key = new_key.replace('proj_out', 'final_layer.linear')
+        # Don't replace scale_shift_table at model level if already replaced at block level
+        if 'blocks.' not in new_key:
+            new_key = new_key.replace('scale_shift_table', 'final_layer.scale_shift_table')
+        
+        new_dict[new_key] = value
+    
+    # Process attention layers
+    final_dict = {}
+    processed_keys = set()
+    
+    for key, value in new_dict.items():
+        if key in processed_keys:
+            continue
+            
+        # Handle attn1 (self-attention) - merge to qkv
+        if 'attn1.to_q.weight' in key:
+            block_prefix = key.replace('transformer_blocks.', 'blocks.').split('.attn1')[0]
+            
+            q_w = new_dict[key.replace('to_q', 'to_q')]
+            k_w = new_dict[key.replace('to_q', 'to_k')]
+            v_w = new_dict[key.replace('to_q', 'to_v')]
+            
+            qkv_w = torch.cat([q_w, k_w, v_w], dim=0)
+            final_dict[f'{block_prefix}.attn.qkv.weight'] = qkv_w
+            
+            processed_keys.add(key)
+            processed_keys.add(key.replace('to_q', 'to_k'))
+            processed_keys.add(key.replace('to_q', 'to_v'))
+            
+        elif 'attn1.to_q.bias' in key:
+            block_prefix = key.replace('transformer_blocks.', 'blocks.').split('.attn1')[0]
+            
+            q_b = new_dict[key.replace('to_q', 'to_q')]
+            k_b = new_dict[key.replace('to_q', 'to_k')]
+            v_b = new_dict[key.replace('to_q', 'to_v')]
+            
+            qkv_b = torch.cat([q_b, k_b, v_b], dim=0)
+            final_dict[f'{block_prefix}.attn.qkv.bias'] = qkv_b
+            
+            processed_keys.add(key)
+            processed_keys.add(key.replace('to_q', 'to_k'))
+            processed_keys.add(key.replace('to_q', 'to_v'))
+            
+        elif 'attn1.to_out.0' in key:
+            block_prefix = key.replace('transformer_blocks.', 'blocks.').split('.attn1')[0]
+            new_key = key.replace('transformer_blocks.', 'blocks.').replace('attn1.to_out.0', 'attn.proj')
+            final_dict[new_key] = value
+            processed_keys.add(key)
+            
+        # Handle attn2 (cross-attention) - keep separate as q_linear and kv_linear
+        elif 'attn2.to_q' in key:
+            new_key = key.replace('transformer_blocks.', 'blocks.').replace('attn2.to_q', 'cross_attn.q_linear')
+            final_dict[new_key] = value
+            processed_keys.add(key)
+            
+        elif 'attn2.to_k.weight' in key:
+            block_prefix = key.replace('transformer_blocks.', 'blocks.').split('.attn2')[0]
+            
+            k_w = new_dict[key]
+            v_w = new_dict[key.replace('to_k', 'to_v')]
+            
+            kv_w = torch.cat([k_w, v_w], dim=0)
+            final_dict[f'{block_prefix}.cross_attn.kv_linear.weight'] = kv_w
+            
+            processed_keys.add(key)
+            processed_keys.add(key.replace('to_k', 'to_v'))
+            
+        elif 'attn2.to_k.bias' in key:
+            block_prefix = key.replace('transformer_blocks.', 'blocks.').split('.attn2')[0]
+            
+            k_b = new_dict[key]
+            v_b = new_dict[key.replace('to_k', 'to_v')]
+            
+            kv_b = torch.cat([k_b, v_b], dim=0)
+            final_dict[f'{block_prefix}.cross_attn.kv_linear.bias'] = kv_b
+            
+            processed_keys.add(key)
+            processed_keys.add(key.replace('to_k', 'to_v'))
+            
+        elif 'attn2.to_out.0' in key:
+            new_key = key.replace('transformer_blocks.', 'blocks.').replace('attn2.to_out.0', 'cross_attn.proj')
+            final_dict[new_key] = value
+            processed_keys.add(key)
+            
+        # Copy non-attention keys
+        elif 'attn1' not in key and 'attn2' not in key:
+            final_dict[key] = value
+            processed_keys.add(key)
+    
+    return final_dict
 def load_checkpoint(checkpoint,
                     model,
                     model_ema=None,
@@ -55,19 +192,16 @@ def load_checkpoint(checkpoint,
     if is_safetensors:
         print(f"Detected Safetensors format. Loading {ckpt_file}...")
         state_dict = load_safetensors(ckpt_file, device="cpu")
-        # Treat the loaded dict as the state_dict directly
-        checkpoint_data = {'state_dict': state_dict} 
+        checkpoint_data = {'state_dict': state_dict}
     else:
-        # Standard .pth loading
         checkpoint_data = torch.load(ckpt_file, map_location="cpu", weights_only=False)
 
     # 2. Extract state_dict based on format
-    # Safetensors are usually just the state_dict itself.
-    # .pth files are often nested dictionaries.
     if is_safetensors:
-        state_dict = checkpoint_data
+        state_dict = checkpoint_data['state_dict']
+        # Remap PixCell (Diffusers) keys to PixArt-Alpha format
+        state_dict = remap_pixcell_to_pixart_alpha(state_dict)  # ← ADD THIS
     else:
-        # Pytorch nested logic
         if load_ema:
             state_dict = checkpoint_data.get('state_dict_ema', checkpoint_data.get('state_dict', checkpoint_data))
         else:
@@ -78,7 +212,6 @@ def load_checkpoint(checkpoint,
     for key in state_dict_keys_to_delete:
         if key in state_dict:
             del state_dict[key]
-            # No need to loop through other variations if found
             break
 
     # 4. Handle Ignore Keys
