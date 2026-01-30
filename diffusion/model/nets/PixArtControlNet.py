@@ -35,6 +35,7 @@ class PixArtControlNet(nn.Module):
             drop_path: float = 0.,
             qk_norm=False,
             kv_compress_config=None,
+            use_checkpoint=False,  # ← Add this with default
             **kwargs,
     ):
         super().__init__()
@@ -42,7 +43,7 @@ class PixArtControlNet(nn.Module):
         self.patch_size = patch_size
         self.num_heads = num_heads
         self.depth = depth
-        
+        self.use_checkpoint = use_checkpoint
         # Use reduced depth for ControlNet if specified
         self.controlnet_depth = controlnet_depth if controlnet_depth is not None else depth
         
@@ -79,8 +80,8 @@ class PixArtControlNet(nn.Module):
         # Zero-initialized linear layers - one per FULL depth
         # We'll repeat features for skipped layers
         self.zero_convs = nn.ModuleList([
-            nn.Linear(hidden_size, hidden_size)
-            for _ in range(depth)  # Still need outputs for all base model blocks
+            nn.Conv2d(hidden_size, hidden_size, 1)  # ✓ Preserves spatial structure
+            for _ in range(depth)
         ])
         
         # Mapping: which controlnet block maps to which base block
@@ -103,30 +104,50 @@ class PixArtControlNet(nn.Module):
     
     def forward(self, control_input, y, t0, y_lens):
         """Forward pass with reduced depth."""
+        B = control_input.shape[0]
+        h = w = int(self.control_x_embedder.num_patches ** 0.5)
+        
         x = self.control_x_embedder(control_input) + self.pos_embed
         
         # Process through reduced control blocks
         block_outputs = []
         for block in self.control_blocks:
-            x = block(x, y, t0, y_lens)
+            if self.use_checkpoint:
+                x = auto_grad_checkpoint(block, x, y, t0, y_lens)
+            else:
+                x = block(x, y, t0, y_lens)
             block_outputs.append(x)
         
-        # Create outputs for all base model blocks using mapping
+        # Create outputs for all base model blocks
         control_features = []
         for i, control_idx in enumerate(self.block_mapping):
-            mapped_output = block_outputs[control_idx]
-            control_features.append(self.zero_convs[i](mapped_output))
+            mapped_output = block_outputs[control_idx]  # (B, H*W, C)
+            
+            # Reshape to spatial: (B, C, H, W)
+            spatial = mapped_output.reshape(B, h, w, -1).permute(0, 3, 1, 2)
+            
+            # Apply zero conv
+            gated = self.zero_convs[i](spatial)  # (B, C, H, W)
+            
+            # Reshape back to sequence: (B, H*W, C)
+            gated = gated.permute(0, 2, 3, 1).reshape(B, -1, gated.shape[1])
+            
+            control_features.append(gated)
         
         return control_features
     
     def initialize_weights(self):
         """Initialize weights following ControlNet paper."""
+        # Basic initialization for all modules
         def _basic_init(module):
             if isinstance(module, nn.Linear):
-                if module not in self.zero_convs:
-                    torch.nn.init.xavier_uniform_(module.weight)
-                    if module.bias is not None:
-                        nn.init.constant_(module.bias, 0)
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.Conv2d):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
         
         self.apply(_basic_init)
         
@@ -292,29 +313,7 @@ class PixArt_UNI_ControlNet(nn.Module):
         self.pos_embed.requires_grad = False
     
     def forward(self, x, timestep, y, control_input, mask=None, data_info=None, **kwargs):
-        """
-        Forward pass combining base model and ControlNet.
-        
-        Args:
-            x: (N, C, H, W) NOISY LATENT IMAGE (not UNI features!)
-            - This is the denoising diffusion input at timestep t
-            - C=16 for PixCell's latent space
-            
-            timestep: (N,) diffusion timesteps
-            - Controls noise level in diffusion process
-            
-            y: (N, 1, 120, C) UNI EMBEDDINGS (semantic condition, not just "condition")
-            - Extracted from UNI foundation model
-            - Provides biological/semantic context
-            - C=1536 (UNI embedding dimension)
-            
-            control_input: (N, C_control, H, W) cell mask input
-            - Binary or instance segmentation masks
-            - Provides spatial/structural guidance
-            
-            mask: Optional attention mask
-            data_info: Additional data information
-        """
+        """Forward pass combining base model and ControlNet."""
         x = x.to(self.dtype)
         timestep = timestep.to(self.dtype)
         y = y.to(self.dtype)
@@ -326,6 +325,8 @@ class PixArt_UNI_ControlNet(nn.Module):
         if len(y.shape) == 3:
             y = y.unsqueeze(1)
         
+        original_batch_size = y.shape[0]
+        original_token_length = y.shape[2]
         if hasattr(self, 'y_pos_embed'):
             y_pos_embed = self.y_pos_embed.to(self.dtype)
             y = y + y_pos_embed.unsqueeze(0)
@@ -339,14 +340,14 @@ class PixArt_UNI_ControlNet(nn.Module):
         y = self.y_embedder(y, self.training)
         
         # Process mask
-        if mask is not None and set(data_info["mask_type"]) != {"null"}:
+        if mask is not None and data_info is not None and set(data_info["mask_type"]) != {"null"}:
             if mask.shape[0] != y.shape[0]:
                 mask = mask.repeat(y.shape[0] // mask.shape[0], 1)
             mask = mask.squeeze(1).squeeze(1)
             y = y.squeeze(1).masked_select(mask.unsqueeze(-1) != 0).view(1, -1, x.shape[-1])
             y_lens = mask.sum(dim=1).tolist()
         else:
-            y_lens = [y.shape[2]] * y.shape[0]
+            y_lens = [original_token_length] * original_batch_size
             y = y.squeeze(1).view(1, -1, x.shape[-1])
         
         # Get ControlNet features
@@ -357,7 +358,6 @@ class PixArt_UNI_ControlNet(nn.Module):
             x = auto_grad_checkpoint(block, x, y, t0, y_lens)
             # Add ControlNet features
             x = x + control_features[i]
-        
         x = self.final_layer(x, t)
         x = self.unpatchify(x)
         return x
@@ -478,24 +478,20 @@ class PixArt_UNI_ControlNet(nn.Module):
         t = self.t_embedder(timestep.to(x.dtype))
         t0 = self.t_block(t)
         
-        # Store batch size and sequence length BEFORE y_embedder
         batch_size = y.shape[0]
-        seq_length = y.shape[2]  # Should be 120
+        seq_length = y.shape[2]
         
-        y = self.y_embedder(y, False)  # ← Use False for testing (not self.training)
-        # Simplified for testing - no mask handling
+        y = self.y_embedder(y, False)
         y_lens = [seq_length] * batch_size
         y = y.squeeze(1).view(1, -1, x.shape[-1])
         
-        # Forward through base blocks WITHOUT ControlNet
         for i, block in enumerate(self.blocks):
             x = auto_grad_checkpoint(block, x, y, t0, y_lens)
-            # NO control features added
         
         x = self.final_layer(x, t)
         x = self.unpatchify(x)
         return x
-# Register the model
+
 @MODELS.register_module()
 def PixArt_XL_2_UNI_ControlNet(**kwargs):
     """Memory-efficient PixArt XL with ControlNet for T4 GPU."""

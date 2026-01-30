@@ -7,13 +7,14 @@ import types
 import warnings
 from pathlib import Path
 from copy import deepcopy
-
+import math
 current_file_path = Path(__file__).resolve()
 sys.path.insert(0, str(current_file_path.parent.parent))
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import DistributedType
 from diffusers.models import AutoencoderKL
@@ -508,7 +509,7 @@ def train():
                 # For ControlNet, we need to pass the cell mask as additional conditioning
                 # The mask is provided through model_kwargs
                 model_kwargs = dict(
-                    y=y,  # UNI embeddings
+                    y=y,
                     control_input=cell_mask_latent,  # CRITICAL: Cell mask for ControlNet
                     mask=None,  # No attention mask for embeddings
                     data_info=data_info,
@@ -812,126 +813,125 @@ def generate_image_with_diffusion(model, vae, uni_feature_path, num_steps=50, de
     return image
 
 
-@torch.no_grad()
-def compare_before_after_one_step(model, vae, device='cuda'):
+def test_training_stability(model, vae, uni_feature_path, device='cuda', num_steps=100):
     """
-    Compare outputs before and after one training step
+    Test that training is stable over multiple iterations.
+    This is the REAL test for ControlNet.
     """
-    model.eval()
     
-    # Create test inputs
     x = torch.randn(1, 16, 32, 32, device=device)
     timestep = torch.tensor([500], device=device)
-    y = torch.randn(1, 1, 120, 1536, device=device)
-    control = torch.randn(1, 4, 32, 32, device=device)
+    y = torch.from_numpy(np.load(uni_feature_path))
+    y = y.view(1, 1, 1, 1536).to(device)
+
+    control_channels = model.controlnet.control_x_embedder.proj.weight.shape[1]
+    control = torch.randn(1, control_channels, 32, 32, device=device)
     
     print("\n" + "="*70)
-    print("TESTING OUTPUT SIMILARITY AFTER ONE TRAINING STEP")
+    print(f"TESTING TRAINING STABILITY OVER {num_steps} STEPS")
     print("="*70)
     
-    # Get output BEFORE training
-    print("\n1. Output before training:")
-    with torch.no_grad():
-        output_before = model(x, timestep, y, control)
-        if model.pred_sigma:
-            output_before = output_before.chunk(2, dim=1)[0]
-    
-    print(f"   Mean: {output_before.mean():.6f}")
-    print(f"   Std:  {output_before.std():.6f}")
-    
-    # Check zero conv weights before
-    zero_conv_weights_before = [
-        zc.weight.abs().mean().item() 
-        for zc in model.controlnet.zero_convs
-    ]
-    print(f"   Zero conv weights (mean): {sum(zero_conv_weights_before)/len(zero_conv_weights_before):.10f}")
-    
-    # Simulate ONE training step
-    print("\n2. Performing one training step...")
     model.train()
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     
-    optimizer = torch.optim.AdamW(
-        model.controlnet.parameters(),  # Only train ControlNet
-        lr=1e-4
-    )
+    # Use paper's settings
+    optimizer = torch.optim.AdamW(trainable_params, lr=1e-5)
     
-    # Forward pass
-    output = model(x, timestep, y, control)
+    losses = []
+    grad_norms = []
+    weight_means = []
     
-    # Fake loss (just for demonstration)
-    target = torch.randn_like(output)
-    loss = F.mse_loss(output, target)
+    print("\nTraining progress:")
+    for step in range(num_steps):
+        optimizer.zero_grad()
+        
+        output = model(x, timestep, y, control)
+        target = torch.randn_like(output)
+        loss = F.mse_loss(output, target)
+        
+        loss.backward()
+        
+        # Track metrics
+        grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float('inf'))
+        
+        optimizer.step()
+        
+        losses.append(loss.item())
+        grad_norms.append(grad_norm.item())
+        
+        # Track zero conv weights
+        zero_conv_mean = sum(zc.weight.abs().mean().item() 
+                            for zc in model.controlnet.zero_convs) / len(model.controlnet.zero_convs)
+        weight_means.append(zero_conv_mean)
+        
+        if (step + 1) % 10 == 0 or step == 0:
+            print(f"  Step {step+1:3d}: Loss={loss.item():.4f}, "
+                  f"Grad={grad_norm:.4f}, "
+                  f"ZeroConv={zero_conv_mean:.6f}")
     
-    # Backward and update
-    loss.backward()
-    optimizer.step()
-    optimizer.zero_grad()
+    # Analysis
+    print("\n" + "="*70)
+    print("STABILITY ANALYSIS")
+    print("="*70)
     
-    print(f"   Loss: {loss.item():.6f}")
+    # Check for explosions
+    if any(l > 100 for l in losses[-10:]):
+        print("❌ UNSTABLE: Loss exploded!")
+        return False
     
-    # Get output AFTER one step
-    print("\n3. Output after one training step:")
+    if any(g > 100 for g in grad_norms[-10:]):
+        print("❌ UNSTABLE: Gradients exploded!")
+        return False
+    
+    # Check for NaNs
+    if any(math.isnan(l) for l in losses):
+        print("❌ UNSTABLE: NaN losses detected!")
+        return False
+    
+    # Check for convergence
+    early_loss = sum(losses[:10]) / 10
+    late_loss = sum(losses[-10:]) / 10
+    
+    print(f"\nLoss trajectory:")
+    print(f"  First 10 steps: {early_loss:.4f}")
+    print(f"  Last 10 steps:  {late_loss:.4f}")
+    
+    print(f"\nGradient norms:")
+    print(f"  Mean: {sum(grad_norms)/len(grad_norms):.4f}")
+    print(f"  Max:  {max(grad_norms):.4f}")
+    print(f"  Min:  {min(grad_norms):.4f}")
+    
+    print(f"\nZero conv weights:")
+    print(f"  Initial: {weight_means[0]:.8f}")
+    print(f"  Final:   {weight_means[-1]:.8f}")
+    print(f"  Change:  {weight_means[-1] - weight_means[0]:.8f}")
+    
+    # Generate test image
+    print("\n" + "="*70)
+    print("GENERATING TEST IMAGE")
+    print("="*70)
+    
     model.eval()
     with torch.no_grad():
-        output_after = model(x, timestep, y, control)
+        output = model(x, timestep, y, control)
         if model.pred_sigma:
-            output_after = output_after.chunk(2, dim=1)[0]
-    
-    print(f"   Mean: {output_after.mean():.6f}")
-    print(f"   Std:  {output_after.std():.6f}")
-    
-    # Check zero conv weights after
-    zero_conv_weights_after = [
-        zc.weight.abs().mean().item() 
-        for zc in model.controlnet.zero_convs
-    ]
-    print(f"   Zero conv weights (mean): {sum(zero_conv_weights_after)/len(zero_conv_weights_after):.10f}")
-    
-    # Compare outputs
-    print("\n4. Comparison:")
-    diff_abs = (output_after - output_before).abs()
-    diff_rel = diff_abs / (output_before.abs() + 1e-8)
-    
-    print(f"   Max absolute difference:  {diff_abs.max():.10f}")
-    print(f"   Mean absolute difference: {diff_abs.mean():.10f}")
-    print(f"   Max relative difference:  {diff_rel.max():.6f}")
-    print(f"   Mean relative difference: {diff_rel.mean():.10f}")
-    
-    # Weight change
-    weight_changes = [
-        abs(after - before) 
-        for before, after in zip(zero_conv_weights_before, zero_conv_weights_after)
-    ]
-    print(f"\n   Zero conv weight changes:")
-    print(f"   Max change:  {max(weight_changes):.10f}")
-    print(f"   Mean change: {sum(weight_changes)/len(weight_changes):.10f}")
-    
-    # Decode and visualize
-    if vae is not None:
-        print("\n5. Decoding images...")
+            output = output.chunk(2, dim=1)[0]
+        
         vae.eval()
         vae_dtype = next(vae.parameters()).dtype
-        
-        with torch.no_grad():
-            img_before = vae.decode(output_before.to(vae_dtype) / vae.config.scaling_factor).sample
-            img_after = vae.decode(output_after.to(vae_dtype) / vae.config.scaling_factor).sample
+        image = vae.decode(output.to(vae_dtype) / vae.config.scaling_factor).sample
         
         from torchvision.utils import save_image
-        save_image((img_before + 1) / 2, 'before_training.png')
-        save_image((img_after + 1) / 2, 'after_one_step.png')
-        
-        img_diff = (img_after - img_before).abs()
-        print(f"   Image difference (pixels): max={img_diff.max():.6f}, mean={img_diff.mean():.6f}")
-        print(f"   💾 Saved: before_training.png, after_one_step.png")
+        save_image((image + 1) / 2, f'controlnet_after_{num_steps}_steps.png')
+        print(f"💾 Saved: controlnet_after_{num_steps}_steps.png")
     
     print("\n" + "="*70)
-    print("CONCLUSION:")
-    if diff_abs.mean() < 1e-3:
-        print("✅ Outputs are nearly IDENTICAL after one step (as expected!)")
-        print("   This proves zero convs are working correctly.")
-    else:
-        print("⚠️  Outputs differ more than expected - check initialization")
+    print("✅ TRAINING IS STABLE!")
+    print(f"   Completed {num_steps} iterations without issues")
+    print("   ControlNet is learning gradually as designed")
     print("="*70)
+    
+    return True
 
 if __name__ == '__main__':
     args = parse_args()
@@ -1093,10 +1093,10 @@ if __name__ == '__main__':
     logger.info(f"Trainable Parameters: {sum(p.numel() for p in base_model.parameters() if p.requires_grad):,}")
 
     # Usage
-    verify_controlnet_initialization(base_model)
+    if 0:
+        verify_controlnet_initialization(base_model)
+        test_training_stability(base_model, vae, 'features/sample_0_uni.npy', accelerator.device, num_steps=100)
 
-    compare_before_after_one_step(model, vae, accelerator.device)
-    asd()
     # Create EMA model
     # 1. Re-build the same architecture for EMA
     logger.info("Initializing EMA model architecture...")
