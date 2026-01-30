@@ -31,7 +31,7 @@ deterministic_validation = False
 eval_sampling_steps = 250
 model_max_length = 1
 lora_rank = 4
-num_epochs = 25
+num_epochs = 5
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
@@ -50,7 +50,7 @@ lr_schedule = 'constant'
 lr_schedule_args = dict(num_warmup_steps=500)
 save_image_epochs = 1
 save_model_epochs = 5
-save_model_steps = 500
+save_model_steps = 1000
 sample_posterior = True
 mixed_precision = 'fp16'
 scale_factor = 1.5305

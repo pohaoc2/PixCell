@@ -63,7 +63,7 @@ auto_lr = None
 
 log_interval = 20
 save_model_epochs = 5
-save_model_steps = 500
+save_model_steps = 1000
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 
 # VAE configuration
