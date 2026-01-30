@@ -64,7 +64,7 @@ def load_models(model_path, vae_path, config_path=None, device='cuda'):
     # Load VAE
     print(f"\nLoading VAE from {vae_path}")
     try:
-        vae = AutoencoderKL.from_pretrained(vae_path)
+        vae = AutoencoderKL.from_pretrained(vae_path, torch_dtype=torch.float16)
         vae.to(device)
         vae.eval()
         print(f"✓ VAE loaded")
@@ -88,7 +88,9 @@ def load_models(model_path, vae_path, config_path=None, device='cuda'):
         state_dict = checkpoint['state_dict']
     else:
         state_dict = checkpoint
-    
+    del checkpoint 
+    import gc
+    gc.collect()
     print(f"State dict has {len(state_dict)} keys")
     
     # Detect ControlNet depth
@@ -148,25 +150,26 @@ def load_models(model_path, vae_path, config_path=None, device='cuda'):
     sys.stdout.flush()  # Force print to show
     
     try:
-        model = PixArt_UNI_ControlNet(
-            input_size=input_size,
-            patch_size=2,
-            in_channels=16,
-            control_channels=control_channels,
-            hidden_size=1152,
-            depth=28,
-            controlnet_depth=controlnet_depth,
-            num_heads=16,
-            mlp_ratio=4.0,
-            class_dropout_prob=0.1,
-            caption_channels=1536,
-            model_max_length=model_max_length,
-            pred_sigma=True,
-            qk_norm=False,
-            drop_path=0.0,
-            freeze_base=False,
-        )
-        print("✓ Model instance created")
+        with torch.device(device):
+            model = PixArt_UNI_ControlNet(
+                input_size=input_size,
+                patch_size=2,
+                in_channels=16,
+                control_channels=control_channels,
+                hidden_size=1152,
+                depth=28,
+                controlnet_depth=controlnet_depth,
+                num_heads=16,
+                mlp_ratio=4.0,
+                class_dropout_prob=0.1,
+                caption_channels=1536,
+                model_max_length=model_max_length,
+                pred_sigma=True,
+                qk_norm=False,
+                drop_path=0.0,
+                freeze_base=False,
+            ).to(torch.float16)
+            print("✓ Model instance created")
     except Exception as e:
         print(f"❌ Model initialization failed: {e}")
         import traceback

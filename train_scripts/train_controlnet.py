@@ -444,15 +444,15 @@ def train():
                         # Add noise to clean images
                         noise = torch.randn_like(clean_images)
                         noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
-                        
-                        # Denoise (predict x0 from noisy)
-                        model_kwargs_disc = dict(
+
+                        model_output = base_model(
+                            noisy_images, 
+                            timesteps,
                             y=y,
+                            control_input=cell_mask_latent,  # ✓ Direct parameter
                             mask=None,
-                            data_info=data_info,
-                            controlnet_cond=cell_mask_latent
+                            data_info=data_info
                         )
-                        model_output = base_model(noisy_images, timesteps, **model_kwargs_disc)
                         
                         # Get predicted clean image (x0)
                         if hasattr(config, 'pred_sigma') and config.pred_sigma:
@@ -1164,6 +1164,7 @@ if __name__ == '__main__':
 
     # Build dataloader - use ControlNet-specific dataset that includes masks
     set_data_root(config.data_root)
+
     dataset = build_dataset(
         config.data, 
         resolution=image_size, 
@@ -1178,7 +1179,8 @@ if __name__ == '__main__':
         batch_size=config.train_batch_size, 
         shuffle=True
     )
-
+    print(config.data)
+    asd()
 
     # Build optimizer - only optimize ControlNet parameters if specified
     lr_scale_ratio = 1
