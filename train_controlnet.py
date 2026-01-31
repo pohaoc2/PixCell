@@ -422,7 +422,7 @@ def train():
             y = batch[1]  # SSL embeddings (UNI)
             cell_mask = batch[2]  # Cell segmentation mask
             data_info = batch[3]
-            
+            asd()
             # Process cell mask for ControlNet
             # Assuming cell_mask is binary [B, 1, H, W] at image resolution
             # Need to downsample to latent resolution if necessary
