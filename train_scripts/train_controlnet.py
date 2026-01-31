@@ -1,4 +1,4 @@
-from initialize_models import initialize_models
+
 import os
 import time
 import datetime
@@ -7,7 +7,8 @@ import torch.nn as nn
 from mmcv.runner import LogBuffer
 from diffusion.utils.misc import DebugUnderflowOverflow
 from diffusion.utils.checkpoint import save_checkpoint
-from diffusion.utils.dist_utils import ema_update, get_world_size
+from diffusion.utils.dist_utils import get_world_size
+from train_scripts.initialize_models import initialize_models, ema_update
 
 def train(models):
     """
@@ -63,260 +64,328 @@ def train(models):
     logger.info("=" * 50)
     
     global_step = start_step
-    
+    load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
+    log_buffer = LogBuffer()
+    time_start, last_tic = time.time(), time.time()
     # Training loop
-    for epoch in range(start_epoch, config.num_epochs):
-        base_model.train()
-        if discriminator is not None:
-            discriminator.train()
-            
-        logger.info(f"Epoch {epoch + 1}/{config.num_epochs}")
-        
+    # Now you train the model
+    for epoch in range(start_epoch + 1, config.num_epochs + 1):
+        data_time_start= time.time()
+        data_time_all = 0
         for step, batch in enumerate(train_dataloader):
-            # Skip steps if resuming
+
             if step < skip_step:
-                continue
-                
-            with accelerator.accumulate(base_model):
-                # Get batch data
-                images = batch['img'].to(accelerator.device)  # [B, C, H, W]
-                prompts = batch.get('prompt', None)
-                masks = batch.get('mask', None)  # Control signal (cell segmentation masks)
-                uni_features = batch.get('uni_features', None)  # UNI embeddings
-                
-                # Encode images to latent space
+                if (step + 1) % 50 == 0 and accelerator.is_main_process:
+                    info = f"Skipping Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}] "
+                    logger.info(info)
+                continue    # skip training computations
+
+            # Unpack batch
+            # batch contains: [vae_feat, ssl_feat, cell_mask, data_info]
+            if load_vae_feat:
+                z = batch[0]
+            else:
                 with torch.no_grad():
-                    latents = vae.encode(images).latent_dist.sample()
-                    latents = latents * config.scale_factor
-                
-                # Sample timesteps
-                batch_size = latents.shape[0]
-                timesteps = torch.randint(
-                    0, 
-                    train_diffusion.num_timesteps, 
-                    (batch_size,), 
-                    device=accelerator.device
-                )
-                
-                # Add noise to latents
-                noise = torch.randn_like(latents)
-                noisy_latents = train_diffusion.q_sample(latents, timesteps, noise=noise)
-                
-                # Forward pass through ControlNet
-                model_output = base_model(
-                    noisy_latents,
-                    timesteps,
-                    y=uni_features,  # UNI embeddings as condition
-                    mask=masks,  # Cell segmentation masks as control
-                )
-                
-                # Compute diffusion loss
-                if config.pred_sigma:
-                    model_pred, model_var_values = model_output.chunk(2, dim=1)
-                else:
-                    model_pred = model_output
-                
-                # Compute target based on prediction type
-                if config.get('prediction_type', 'epsilon') == 'epsilon':
-                    target = noise
-                elif config.get('prediction_type', 'epsilon') == 'v_prediction':
-                    target = train_diffusion.get_v(latents, noise, timesteps)
-                else:
-                    target = latents
-                
-                # Main diffusion loss (MSE)
-                loss_diffusion = torch.nn.functional.mse_loss(
-                    model_pred.float(), 
-                    target.float(), 
-                    reduction='mean'
-                )
-                
-                # Total loss starts with diffusion loss
-                loss = loss_diffusion
-                loss_dict = {'loss_diffusion': loss_diffusion.item()}
-                
-                # Adversarial loss (if discriminator enabled)
-                if use_discriminator and discriminator is not None:
-                    # Generate fake images from model predictions
-                    with torch.no_grad():
-                        # Predict x0 from model output
-                        if config.get('prediction_type', 'epsilon') == 'epsilon':
-                            pred_x0 = train_diffusion.predict_start_from_noise(
-                                noisy_latents, timesteps, model_pred
-                            )
+                    with torch.cuda.amp.autocast(enabled=(config.mixed_precision == 'fp16' or config.mixed_precision == 'bf16')):
+                        posterior = vae.encode(batch[0]).latent_dist
+                        if config.sample_posterior:
+                            z = posterior.sample()
                         else:
-                            pred_x0 = model_pred
-                        
-                        # Decode to image space
-                        pred_x0_scaled = pred_x0 / config.scale_factor
-                        fake_images = vae.decode(pred_x0_scaled).sample
-                    
-                    # Discriminator thinks these are real
-                    fake_pred = discriminator(fake_images, masks)
-                    loss_adv = torch.nn.functional.binary_cross_entropy_with_logits(
-                        fake_pred,
-                        torch.ones_like(fake_pred)
-                    )
-                    
-                    loss = loss + lambda_adv * loss_adv
-                    loss_dict['loss_adv'] = loss_adv.item()
+                            z = posterior.mode()
+
+            if hasattr(config, 'shift_factor'):
+                z = z - config.shift_factor
+
+            clean_images = z * config.scale_factor
+            y = batch[1]  # SSL embeddings (UNI)
+            cell_mask = batch[2]  # Cell segmentation mask
+            data_info = batch[3]
+
+            # Process cell mask for ControlNet
+            # Assuming cell_mask is binary [B, 1, H, W] at image resolution
+            # Need to downsample to latent resolution if necessary
+            cell_mask_latent = cell_mask
+            if cell_mask.shape[-1] != clean_images.shape[-1]:
+                # Downsample mask to latent resolution using max pooling to preserve cell presence
+                # From 256x256 to 32x32 (256/8 = 32)
+                kernel_size = cell_mask.shape[-1] // clean_images.shape[-1]
+                cell_mask_latent = nn.functional.max_pool2d(
+                    cell_mask.float(), 
+                    kernel_size=kernel_size, 
+                    stride=kernel_size
+                )
+
+            # Sample a random timestep for each image
+            bs = clean_images.shape[0]
+            timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
+            grad_norm = None
+            grad_norm_d = None
+            data_time_all += time.time() - data_time_start
+            
+            # =====================================================================
+            # Train Discriminator (if enabled)
+            # =====================================================================
+            if use_discriminator and discriminator is not None:
+                discriminator.train()
                 
-                # Segmentation consistency loss (if enabled)
-                if use_segmentation and segmentation_checker is not None:
-                    with torch.no_grad():
-                        # Predict x0 and decode
-                        if config.get('prediction_type', 'epsilon') == 'epsilon':
-                            pred_x0 = train_diffusion.predict_start_from_noise(
-                                noisy_latents, timesteps, model_pred
-                            )
-                        else:
-                            pred_x0 = model_pred
-                        
-                        pred_x0_scaled = pred_x0 / config.scale_factor
-                        fake_images = vae.decode(pred_x0_scaled).sample
-                    
-                    # Compute segmentation consistency
-                    loss_seg = segmentation_checker.compute_consistency_loss(
-                        fake_images, 
-                        masks
-                    )
-                    
-                    loss = loss + lambda_seg * loss_seg
-                    loss_dict['loss_seg'] = loss_seg.item()
-                
-                # Backward pass for generator
-                accelerator.backward(loss)
-                
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(base_model.parameters(), config.gradient_clip)
-                
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                
-                # Train discriminator (if enabled)
-                if use_discriminator and discriminator is not None and optimizer_d is not None:
-                    # Real images
-                    real_pred = discriminator(images, masks)
-                    loss_d_real = torch.nn.functional.binary_cross_entropy_with_logits(
-                        real_pred,
-                        torch.ones_like(real_pred)
-                    )
-                    
-                    # Fake images (detached)
-                    fake_pred = discriminator(fake_images.detach(), masks)
-                    loss_d_fake = torch.nn.functional.binary_cross_entropy_with_logits(
-                        fake_pred,
-                        torch.zeros_like(fake_pred)
-                    )
-                    
-                    loss_d = (loss_d_real + loss_d_fake) * 0.5
-                    loss_dict['loss_d'] = loss_d.item()
-                    loss_dict['loss_d_real'] = loss_d_real.item()
-                    loss_dict['loss_d_fake'] = loss_d_fake.item()
-                    
-                    # Backward for discriminator
-                    accelerator.backward(loss_d)
-                    if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(discriminator.parameters(), config.gradient_clip)
-                    optimizer_d.step()
+                with accelerator.accumulate(discriminator):
                     optimizer_d.zero_grad()
-            
-            # Update EMA model
-            if accelerator.sync_gradients:
-                ema_update(model_ema, base_model, config.ema_rate)
-                global_step += 1
-            
-            # Logging
-            if global_step % config.log_interval == 0:
-                loss_dict['loss_total'] = loss.item()
-                loss_dict['lr'] = optimizer.param_groups[0]['lr']
-                loss_dict['epoch'] = epoch
-                loss_dict['step'] = global_step
-                
-                if accelerator.is_main_process:
-                    log_str = f"Epoch [{epoch+1}/{config.num_epochs}] Step [{global_step}/{total_steps}] "
-                    log_str += " | ".join([f"{k}: {v:.6f}" for k, v in loss_dict.items()])
-                    logger.info(log_str)
                     
-                    # Log to tracker (tensorboard/wandb)
-                    accelerator.log(loss_dict, step=global_step)
-            
-            # Save checkpoint
-            if global_step % config.save_model_steps == 0 or global_step == total_steps:
-                if accelerator.is_main_process:
-                    save_path = os.path.join(
-                        config.work_dir, 
-                        f"epoch_{epoch+1}_step_{global_step}.pth"
-                    )
-                    
-                    save_dict = {
-                        'state_dict': accelerator.unwrap_model(base_model).state_dict(),
-                        'state_dict_ema': accelerator.unwrap_model(model_ema).state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'lr_scheduler': lr_scheduler.state_dict(),
-                        'epoch': epoch + 1,
-                        'step': global_step,
-                        'config': config,
-                    }
-                    
-                    if discriminator is not None and optimizer_d is not None:
-                        save_dict['discriminator'] = accelerator.unwrap_model(discriminator).state_dict()
-                        save_dict['optimizer_d'] = optimizer_d.state_dict()
-                    
-                    torch.save(save_dict, save_path)
-                    logger.info(f"Saved checkpoint to {save_path}")
-                
-                accelerator.wait_for_everyone()
-            
-            # Validation/sampling (optional)
-            if global_step % config.get('eval_steps', 5000) == 0:
-                if accelerator.is_main_process:
-                    logger.info("Generating validation samples...")
-                    base_model.eval()
-                    
+                    # Generate fake samples
                     with torch.no_grad():
-                        # Generate sample images
-                        sample_images = generate_validation_samples(
-                            model_ema, 
-                            vae, 
-                            train_diffusion,
-                            batch,
-                            config,
-                            accelerator.device
+                        # Add noise to clean images
+                        noise = torch.randn_like(clean_images)
+                        noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
+                        
+                        # Denoise (predict x0 from noisy)
+                        model_kwargs_disc = dict(
+                            y=y,
+                            mask=None,
+                            data_info=data_info,
+                            controlnet_cond=cell_mask_latent
+                        )
+                        model_output = base_model(noisy_images, timesteps, **model_kwargs_disc)
+                        
+                        # Get predicted clean image (x0)
+                        if hasattr(config, 'pred_sigma') and config.pred_sigma:
+                            pred_noise, _ = model_output.chunk(2, dim=1)
+                        else:
+                            pred_noise = model_output
+                        
+                        # Predict x0 from noise prediction
+                        fake_images = train_diffusion.predict_start_from_noise(
+                            noisy_images, timesteps, pred_noise
                         )
                         
-                        # Log images
-                        if hasattr(accelerator, 'get_tracker'):
-                            for tracker in accelerator.trackers:
-                                if tracker.name == "tensorboard":
-                                    tracker.writer.add_images(
-                                        "validation", 
-                                        sample_images, 
-                                        global_step
-                                    )
-                                elif tracker.name == "wandb":
-                                    import wandb
-                                    tracker.log({
-                                        "validation": [wandb.Image(img) for img in sample_images]
-                                    })
+                        # Clamp to valid range
+                        fake_images = torch.clamp(fake_images, -1, 1)
                     
-                    base_model.train()
+                    # Discriminator forward pass
+                    disc_config = config.discriminator
+                    if disc_config['type'] == 'latent':
+                        # Work in latent space
+                        real_pred = discriminator(clean_images)
+                        fake_pred = discriminator(fake_images.detach())
+                    elif disc_config['type'] == 'conditional':
+                        # Use conditioning (mask + embedding)
+                        # Note: For image-space discriminator, need to decode latents first
+                        # For simplicity, we work in latent space here
+                        real_pred = discriminator(clean_images, condition=cell_mask_latent, embedding=y.squeeze(1))
+                        fake_pred = discriminator(fake_images.detach(), condition=cell_mask_latent, embedding=y.squeeze(1))
+                    else:  # patchgan
+                        real_pred = discriminator(clean_images)
+                        fake_pred = discriminator(fake_images.detach())
+                    
+                    # Discriminator loss
+                    from discriminator import discriminator_loss
+                    loss_d = discriminator_loss(
+                        real_pred, fake_pred, 
+                        loss_type=disc_config.get('loss_type', 'hinge')
+                    )
+                    
+                    accelerator.backward(loss_d)
+                    if accelerator.sync_gradients:
+                        grad_norm_d = accelerator.clip_grad_norm_(
+                            discriminator.parameters(), 
+                            config.gradient_clip
+                        )
+                    optimizer_d.step()
+            
+            # =====================================================================
+            # Train Generator (Diffusion Model + Adversarial Loss + Consistency)
+            # =====================================================================
+            with accelerator.accumulate(base_model):
+                # Predict the noise residual with ControlNet conditioning
+                optimizer.zero_grad()
                 
+                # For ControlNet, we need to pass the cell mask as additional conditioning
+                # The mask is provided through model_kwargs
+                model_kwargs = dict(
+                    y=y,
+                    control_input=cell_mask_latent,  # CRITICAL: Cell mask for ControlNet
+                    mask=None,  # No attention mask for embeddings
+                    data_info=data_info,
+                )
+                
+                # Diffusion loss
+                loss_term = train_diffusion.training_losses(
+                    base_model, 
+                    clean_images, 
+                    timesteps, 
+                    model_kwargs=model_kwargs
+                )
+                loss_diffusion = loss_term['loss'].mean()
+                loss = loss_diffusion
+                
+                # Adversarial loss (if discriminator is used)
+                loss_adv = torch.tensor(0.0).to(loss.device)
+                if use_discriminator and discriminator is not None:
+                    # Generate prediction for adversarial loss
+                    noise = torch.randn_like(clean_images)
+                    noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
+                    
+                    model_output = base_model(
+                        noisy_images, 
+                        timesteps, 
+                        y=y,
+                        control_input=cell_mask_latent,
+                        mask=None,
+                        data_info=data_info
+                    )
+                    
+                    if hasattr(config, 'pred_sigma') and config.pred_sigma:
+                        pred_noise, _ = model_output.chunk(2, dim=1)
+                    else:
+                        pred_noise = model_output
+                    
+                    fake_images = train_diffusion.predict_start_from_noise(
+                        noisy_images, timesteps, pred_noise
+                    )
+                    fake_images = torch.clamp(fake_images, -1, 1)
+                    
+                    # Get discriminator prediction on generated images
+                    disc_config = config.discriminator
+                    if disc_config['type'] == 'latent':
+                        fake_pred = discriminator(fake_images)
+                    elif disc_config['type'] == 'conditional':
+                        fake_pred = discriminator(fake_images, condition=cell_mask_latent, embedding=y.squeeze(1))
+                    else:
+                        fake_pred = discriminator(fake_images)
+                    
+                    # Generator adversarial loss
+                    from discriminator import generator_loss
+                    loss_adv = generator_loss(fake_pred, loss_type=disc_config.get('loss_type', 'hinge'))
+                    
+                    # Combine losses
+                    adv_weight = config.get('adversarial_weight', 0.1)
+                    loss = loss_diffusion + adv_weight * loss_adv
+                
+                # Cell segmentation consistency loss (if enabled)
+                loss_consistency = torch.tensor(0.0).to(loss.device)
+                if config.get('use_segmentation_consistency', False) and segmentation_checker is not None:
+                    # We need to decode latents to images for segmentation
+                    # Only compute this loss periodically to save computation
+                    if global_step % config.get('consistency_check_interval', 10) == 0:
+                        with torch.no_grad():
+                            # Decode fake_images if available, otherwise generate new ones
+                            if 'fake_images' not in locals():
+                                noise = torch.randn_like(clean_images)
+                                noisy_images = train_diffusion.q_sample(clean_images, timesteps, noise=noise)
+                                model_output = base_model(noisy_images, timesteps, **model_kwargs)
+                                
+                                if hasattr(config, 'pred_sigma') and config.pred_sigma:
+                                    pred_noise, _ = model_output.chunk(2, dim=1)
+                                else:
+                                    pred_noise = model_output
+                                
+                                fake_images = train_diffusion.predict_start_from_noise(
+                                    noisy_images, timesteps, pred_noise
+                                )
+                                fake_images = torch.clamp(fake_images, -1, 1)
+                            
+                            # Decode latents to images for segmentation
+                            if vae is not None:
+                                # Scale and shift back
+                                fake_images_unscaled = fake_images / config.scale_factor
+                                if hasattr(config, 'shift_factor'):
+                                    fake_images_unscaled = fake_images_unscaled + config.shift_factor
+                                
+                                # Decode
+                                decoded_images = vae.decode(fake_images_unscaled.to(torch.float16)).sample
+                                decoded_images = torch.clamp(decoded_images, -1, 1)
+                            else:
+                                # If no VAE, work in latent space (less accurate)
+                                decoded_images = fake_images
+                        
+                        # Segment the generated images
+                        pred_masks = segmentation_checker.segment_image(decoded_images.float())
+                        
+                        # Compute consistency loss
+                        from cell_segmentation_consistency import mask_consistency_loss
+                        loss_consistency = mask_consistency_loss(
+                            pred_masks, 
+                            cell_mask,  # Original full-resolution mask
+                            loss_type=config.get('consistency_loss_type', 'combined')
+                        )
+                        
+                        # Add to total loss
+                        consistency_weight = config.get('consistency_weight', 0.5)
+                        loss = loss + consistency_weight * loss_consistency
+                
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    grad_norm = accelerator.clip_grad_norm_(base_model.parameters(), config.gradient_clip)
+                optimizer.step()
+                lr_scheduler.step()
+                if accelerator.sync_gradients:
+                    ema_update(model_ema, base_model, config.ema_rate)
+
+            lr = lr_scheduler.get_last_lr()[0]
+            logs = {args.loss_report_name: accelerator.gather(loss).mean().item()}
+            
+            # Add individual loss components
+            logs['loss_diffusion'] = accelerator.gather(loss_diffusion).mean().item()
+            if use_discriminator and discriminator is not None:
+                logs['loss_adv'] = accelerator.gather(loss_adv).mean().item()
+                if 'loss_d' in locals():
+                    logs['loss_d'] = accelerator.gather(loss_d).mean().item()
+                if grad_norm_d is not None:
+                    logs['grad_norm_d'] = accelerator.gather(grad_norm_d).mean().item()
+            
+            if config.get('use_segmentation_consistency', False):
+                logs['loss_consistency'] = accelerator.gather(loss_consistency).mean().item()
+            
+            if grad_norm is not None:
+                logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
+            log_buffer.update(logs)
+            
+            if (step + 1) % config.log_interval == 0 or (step + 1) == 1:
+                t = (time.time() - last_tic) / config.log_interval
+                t_d = data_time_all / config.log_interval
+                avg_time = (time.time() - time_start) / (global_step + 1)
+                eta = str(datetime.timedelta(seconds=int(avg_time * (total_steps - global_step - 1))))
+                eta_epoch = str(datetime.timedelta(seconds=int(avg_time * (len(train_dataloader) - step - 1))))
+                log_buffer.average()
+
+                info = f"Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}]:total_eta: {eta}, " \
+                    f"epoch_eta:{eta_epoch}, time_all:{t:.3f}, time_data:{t_d:.3f}, lr:{lr:.3e}, "
+                info += f's:({base_model.module.h}, {base_model.module.w}), ' if hasattr(base_model, 'module') else f's:({base_model.h}, {base_model.w}), '
+
+                info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
+                logger.info(info)
+                last_tic = time.time()
+                log_buffer.clear()
+                data_time_all = 0
+            logs.update(lr=lr)
+            accelerator.log(logs, step=global_step)
+
+            global_step += 1
+            data_time_start = time.time()
+
+            def save_checkpoint_fn():
                 accelerator.wait_for_everyone()
-    
-    # Final save
-    if accelerator.is_main_process:
-        final_path = os.path.join(config.work_dir, "final_model.pth")
-        save_dict = {
-            'state_dict': accelerator.unwrap_model(base_model).state_dict(),
-            'state_dict_ema': accelerator.unwrap_model(model_ema).state_dict(),
-            'config': config,
-        }
-        torch.save(save_dict, final_path)
-        logger.info(f"Training complete! Final model saved to {final_path}")
-    
-    accelerator.end_training()
+                if accelerator.is_main_process:
+                    os.umask(0o000)
+                    save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
+                                    epoch=epoch,
+                                    step=global_step,
+                                    model=accelerator.unwrap_model(base_model),
+                                    model_ema=accelerator.unwrap_model(model_ema),
+                                    optimizer=optimizer,
+                                    lr_scheduler=lr_scheduler)
+                    
+            # save checkpoint when time limit has reached
+            time_elapsed_minutes = (time.time() - time_start) / 60
+            time_to_save = (time_elapsed_minutes >= args.slurm_time_limit) and (ckpt_time_limit_saved == False)
+
+            if (config.save_model_steps and global_step % config.save_model_steps == 0) or time_to_save:
+                if not ckpt_time_limit_saved:
+                    ckpt_time_limit_saved = True
+                save_checkpoint_fn()
+
+        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
+            save_checkpoint_fn()
+        accelerator.wait_for_everyone()
 
 
 def generate_validation_samples(model, vae, train_diffusion, batch, config, device):
