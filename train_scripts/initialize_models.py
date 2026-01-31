@@ -566,7 +566,11 @@ def test_training_stability(model, vae, uni_feature_path, device='cuda', num_ste
     
     return True
 
-def parse_args():
+def parse_args(args_list=None):
+    """
+    Args:
+        args_list: List of arguments (for programmatic use) or None (for CLI use)
+    """
     parser = argparse.ArgumentParser(description="Train ControlNet for PixCell-256")
     parser.add_argument("config", type=str, help="config")
     parser.add_argument('--work-dir', help='the dir to save logs and models')
@@ -574,35 +578,27 @@ def parse_args():
     parser.add_argument('--local-rank', type=int, default=-1)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--batch-size', type=int, default=None)
-    parser.add_argument(
-        "--report-to",
-        type=str,
-        default="tensorboard",
-        help=(
-            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
-            ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
-        ),
-    )
-    parser.add_argument(
-        "--tracker-project-name",
-        type=str,
-        default="pixcell_controlnet",
-        help="The `project_name` argument passed to Accelerator.init_trackers for more information",
-    )
-    parser.add_argument(
-        "--slurm-time-limit", 
-        type=float, 
-        default=float('inf'),
-        help="slurm time limit in minutes to save checkpoint before job ends"
-    )
+    parser.add_argument("--report-to", type=str, default="tensorboard")
+    parser.add_argument("--tracker-project-name", type=str, default="pixcell_controlnet")
+    parser.add_argument("--slurm-time-limit", type=float, default=float('inf'))
     parser.add_argument("--loss-report-name", type=str, default="loss")
-    parser.add_argument("--skip-step", type=int, default=0, help="number of steps to skip when resuming")
+    parser.add_argument("--skip-step", type=int, default=0)
     
-    return parser.parse_args()
+    # Parse from args_list if provided, otherwise from sys.argv
+    return parser.parse_args(args_list)
 
 
-def initialize_models():
-    args = parse_args()
+def initialize_models(args_list=None):
+
+
+    """
+    Initialize all models and training components
+    
+    Args:
+        args_list: Optional list of command-line arguments for programmatic use
+                   Example: ['config.py', '--work-dir', './exp', '--batch-size', '4']
+    """
+    args = parse_args(args_list)
     config = read_config(args.config)
     if args.work_dir is not None:
         config.work_dir = args.work_dir
@@ -936,3 +932,7 @@ def initialize_models():
         # Additional useful info
         'args': args,  # Original command line args
     }
+
+if __name__ == "__main__":
+    models = initialize_models()
+    
