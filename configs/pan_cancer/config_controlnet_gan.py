@@ -44,7 +44,7 @@ pe_interpolation = 0.5
 # Training setting
 num_workers = 16
 train_batch_size = 4
-num_epochs = 5
+num_epochs = 1
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
@@ -62,7 +62,7 @@ lr_schedule_args = dict(num_warmup_steps=500)
 auto_lr = None
 
 log_interval = 20
-save_model_epochs = 5
+save_model_epochs = 1
 save_model_steps = 1000
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 

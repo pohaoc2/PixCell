@@ -1,6 +1,6 @@
 # ===== Core Dependencies - Install First =====
-numpy==1.23.5
-scipy==1.10.1
+numpy>=1.23.5
+scipy>=1.11.2
 
 # Core Vision & Modeling
 mmcv==1.7.0
