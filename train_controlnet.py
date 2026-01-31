@@ -41,8 +41,8 @@ import argparse
 # --resume-from ../checkpoints/pixcell_controlnet_full/checkpoints
 sys.argv = [
     "train_controlnet.py", # Script name (required as first element)
-    "../configs/pan_cancer/config_controlnet_gan.py", 
-    "--resume-from", "../checkpoints/pixcell_controlnet_full/checkpoints"
+    "configs/pan_cancer/config_controlnet_gan.py", 
+    "--resume-from", "checkpoints/pixcell_controlnet_full/checkpoints"
 ]
 
 # If you want to change them quickly, just edit this list and re-run this cell.
