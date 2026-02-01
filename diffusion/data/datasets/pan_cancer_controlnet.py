@@ -146,12 +146,12 @@ class PanCancerControlNetData(Dataset):
         assert vae_feat.shape == (16, lt_sz, lt_sz), f"Expected VAE shape (16, {lt_sz}, {lt_sz}), got {vae_feat.shape}"
         assert cell_mask.shape[-2:] == (self.resolution, self.resolution), \
             f"Expected mask shape (..., {self.resolution}, {self.resolution}), got {cell_mask.shape}"
-
+        #print(img_name)
         data_info = {
             "img_hw": torch.tensor([self.resolution] * 2, dtype=torch.float32),
             "aspect_ratio": torch.tensor(1.0),
-            "mask_type": "binary",
-            "img_name": img_name
+            #"mask_type": "binary",
+            #"img_name": img_name
         }
 
         if self.return_img:

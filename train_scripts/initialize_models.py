@@ -588,34 +588,22 @@ def parse_args(args_list=None):
     return parser.parse_args(args_list)
 
 
-def initialize_models(args_list=None):
-
-
+def initialize_config_and_accelerator(args_list=None):
     """
-    Initialize all models and training components
+    Parse arguments, read config, and initialize accelerator
     
-    Args:
-        args_list: Optional list of command-line arguments for programmatic use
-                   Example: ['config.py', '--work-dir', './exp', '--batch-size', '4']
+    Returns:
+        dict with: config, accelerator, logger, args
     """
     args = parse_args(args_list)
     config = read_config(args.config)
+    
+    # Apply command-line overrides
     if args.work_dir is not None:
         config.work_dir = args.work_dir
-
+    
     if args.resume_from is not None:
-        # if resume from is a dir, we will find the latest checkpoint in the dir
-        if os.path.isdir(args.resume_from):
-            # checkpoints are in the form of epoch_{epoch}_step_{step}.pth
-            checkpoints = [ckpt for ckpt in os.listdir(args.resume_from) if ckpt.endswith('.pth')]
-            if len(checkpoints) == 0:
-                raise ValueError(f"No checkpoint found in {args.resume_from}")
-
-            checkpoints = sorted(checkpoints, key=lambda x: int(x.split('_')[-1].replace('.pth', '')), reverse=True)
-            resume_from = os.path.join(args.resume_from, checkpoints[0])
-        else:
-            resume_from = args.resume_from
-
+        resume_from = _find_checkpoint(args.resume_from)
         config.load_from = None
         config.resume_from = dict(
             checkpoint=resume_from,
@@ -626,30 +614,316 @@ def initialize_models(args_list=None):
     if args.debug:
         config.log_interval = 1
         config.train_batch_size = 4
-
+    
     if args.batch_size is not None:
         config.train_batch_size = args.batch_size
-
+    
+    # Setup workspace
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)
+    
+    # Initialize accelerator
+    accelerator = _setup_accelerator(config, args)
+    
+    # Setup logging
+    log_name = 'train_log.log'
+    if accelerator.is_main_process:
+        if os.path.exists(os.path.join(config.work_dir, log_name)):
+            rename_file_with_creation_time(os.path.join(config.work_dir, log_name))
+    logger = get_root_logger(os.path.join(config.work_dir, log_name))
+    
+    logger.info(accelerator.state)
+    config.seed = init_random_seed(config.get('seed', None))
+    set_random_seed(config.seed)
+    
+    if accelerator.is_main_process:
+        config.dump(os.path.join(config.work_dir, 'config.py'))
+    
+    logger.info(f"Config: \n{config.pretty_text}")
+    logger.info(f"World_size: {get_world_size()}, seed: {config.seed}")
+    
+    return {
+        'config': config,
+        'accelerator': accelerator,
+        'logger': logger,
+        'args': args,
+    }
 
+
+def initialize_models(config, accelerator, logger):
+    """
+    Initialize base model, EMA, VAE, and optional discriminator/segmentation
+    
+    Returns:
+        dict with: base_model, model_ema, vae, train_diffusion, 
+                   discriminator, segmentation_checker
+    """
+    image_size = config.image_size
+    latent_size = int(image_size) // 8
+    pred_sigma = getattr(config, 'pred_sigma', True)
+    learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
+    max_length = config.model_max_length
+    kv_compress_config = config.kv_compress_config if config.kv_compress else None
+    
+    # Load VAE
+    vae = AutoencoderKL.from_pretrained(
+        config.vae_pretrained, 
+        torch_dtype=torch.float16
+    ).to(accelerator.device)
+    config.scale_factor = vae.config.scaling_factor
+    logger.info(f"vae scale factor: {config.scale_factor}")
+    
+    # Setup model kwargs
+    model_kwargs = {
+        "pe_interpolation": config.pe_interpolation,
+        "config": config,
+        "model_max_length": max_length,
+        "qk_norm": config.qk_norm,
+        "kv_compress_config": kv_compress_config,
+        "micro_condition": config.micro_condition,
+        "add_pos_embed_to_cond": getattr(config, 'add_pos_embed_to_cond', False),
+        **config.get('model_kwargs', {})
+    }
+    
+    # Build diffusion
+    train_diffusion = IDDPM(
+        str(config.train_sampling_steps),
+        learn_sigma=learn_sigma,
+        pred_sigma=pred_sigma,
+        snr=config.snr_loss
+    )
+    
+    # Build base model with ControlNet
+    base_model = _build_and_load_base_model(config, model_kwargs, accelerator, logger, max_length)
+    
+    # Build EMA model
+    model_ema = _build_ema_model(base_model, config, model_kwargs, accelerator, logger)
+    
+    # Build optional discriminator
+    discriminator = _build_discriminator(config, logger) if config.get('use_discriminator', False) else None
+    
+    # Build optional segmentation checker
+    segmentation_checker = _build_segmentation_checker(config, accelerator, image_size, logger) \
+        if config.get('use_segmentation_consistency', False) else None
+    
+    return {
+        'base_model': base_model,
+        'model_ema': model_ema,
+        'vae': vae,
+        'train_diffusion': train_diffusion,
+        'discriminator': discriminator,
+        'segmentation_checker': segmentation_checker,
+    }
+
+
+def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, discriminator=None):
+    """
+    Initialize dataset, dataloader, optimizer, and lr_scheduler
+    
+    Returns:
+        dict with: train_dataloader, optimizer, optimizer_d, lr_scheduler
+    """
+    image_size = config.image_size
+    max_length = config.model_max_length
+    
+    # Build dataset
+    set_data_root(config.data_root)
+    dataset = build_dataset(
+        config.data,
+        resolution=image_size,
+        aspect_ratio_type=config.aspect_ratio_type,
+        real_prompt_ratio=config.real_prompt_ratio,
+        max_length=max_length,
+        config=config,
+    )
+    
+    train_dataloader = build_dataloader(
+        dataset,
+        num_workers=config.num_workers,
+        batch_size=config.train_batch_size,
+        shuffle=True
+    )
+    
+    # Auto-scale learning rate if needed
+    lr_scale_ratio = 1
+    if config.get('auto_lr', None):
+        lr_scale_ratio = auto_scale_lr(
+            config.train_batch_size * get_world_size() * config.gradient_accumulation_steps,
+            config.optimizer,
+            **config.auto_lr
+        )
+    
+    # Build optimizer for base model
+    optimizer = build_optimizer(base_model, config.optimizer)
+    lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
+    
+    # Build discriminator optimizer if needed
+    optimizer_d = None
+    if discriminator is not None:
+        disc_optimizer_config = config.get('discriminator_optimizer', config.optimizer)
+        optimizer_d = build_optimizer(discriminator, disc_optimizer_config)
+    
+    return {
+        'train_dataloader': train_dataloader,
+        'optimizer': optimizer,
+        'optimizer_d': optimizer_d,
+        'lr_scheduler': lr_scheduler,
+    }
+
+
+def setup_training_state(config, accelerator, logger, args, train_dataloader,
+                         base_model, model_ema, optimizer, lr_scheduler):
+    """
+    Setup tracking, resume from checkpoint if needed, prepare with accelerator
+    
+    Returns:
+        dict with: start_epoch, start_step, skip_step, total_steps
+    """
+    # Initialize tracking
+    timestamp = time.strftime("%Y-%m-%d_%H:%M:%S", time.localtime())
+    if accelerator.is_main_process:
+        tracker_config = dict(vars(config))
+        try:
+            accelerator.init_trackers(args.tracker_project_name, tracker_config)
+        except:
+            accelerator.init_trackers(f"tb_{timestamp}")
+    
+    # Setup training state
+    start_epoch = 0
+    start_step = 0
+    skip_step = args.skip_step or config.skip_step
+    total_steps = len(train_dataloader) * config.num_epochs
+    
+    # Resume from checkpoint if specified
+    if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
+        start_epoch, start_step = _resume_from_checkpoint(
+            config, base_model, model_ema, optimizer, lr_scheduler, 
+            config.model_max_length, logger
+        )
+    
+    # Prepare for FSDP clip grad norm
+    if accelerator.distributed_type == DistributedType.FSDP:
+        for m in accelerator._models:
+            m.clip_grad_norm_ = types.MethodType(clip_grad_norm_, m)
+    
+    logger.info("Starting ControlNet training...")
+    
+    return {
+        'start_epoch': start_epoch,
+        'start_step': start_step,
+        'skip_step': skip_step,
+        'total_steps': total_steps,
+    }
+
+
+def initialize_all(args_list=None):
+    """
+    Main initialization function that orchestrates all setup steps
+    
+    Returns:
+        Complete dict with all training components
+    """
+    # Step 1: Config and accelerator
+    init_data = initialize_config_and_accelerator(args_list)
+    config = init_data['config']
+    accelerator = init_data['accelerator']
+    logger = init_data['logger']
+    args = init_data['args']
+    
+    # Step 2: Models
+    model_data = initialize_models(config, accelerator, logger)
+    
+    # Step 3: Dataset and optimizers
+    optim_data = initialize_dataset_and_optimizer(
+        config, accelerator, logger,
+        model_data['base_model'],
+        model_data['discriminator']
+    )
+    
+    # Step 4: Prepare everything with accelerator
+    base_model = accelerator.prepare(model_data['base_model'])
+    model_ema = accelerator.prepare(model_data['model_ema'])
+    optimizer = accelerator.prepare(optim_data['optimizer'])
+    train_dataloader = accelerator.prepare(optim_data['train_dataloader'])
+    lr_scheduler = accelerator.prepare(optim_data['lr_scheduler'])
+    
+    discriminator = None
+    optimizer_d = None
+    if model_data['discriminator'] is not None:
+        discriminator = accelerator.prepare(model_data['discriminator'])
+        optimizer_d = accelerator.prepare(optim_data['optimizer_d'])
+    
+    # Step 5: Training state
+    state_data = setup_training_state(
+        config, accelerator, logger, args, train_dataloader,
+        base_model, model_ema, optimizer, lr_scheduler
+    )
+    
+    # Return everything
+    return {
+        # Core Models
+        'base_model': base_model,
+        'model_ema': model_ema,
+        'vae': model_data['vae'],
+        'train_diffusion': model_data['train_diffusion'],
+        
+        # Training Components
+        'optimizer': optimizer,
+        'optimizer_d': optimizer_d,
+        'lr_scheduler': lr_scheduler,
+        'train_dataloader': train_dataloader,
+        
+        # Optional Models
+        'discriminator': discriminator,
+        'segmentation_checker': model_data['segmentation_checker'],
+        
+        # Accelerator & Config
+        'accelerator': accelerator,
+        'config': config,
+        'logger': logger,
+        
+        # Training State
+        'start_epoch': state_data['start_epoch'],
+        'start_step': state_data['start_step'],
+        'skip_step': state_data['skip_step'],
+        'total_steps': state_data['total_steps'],
+        
+        # Additional info
+        'args': args,
+    }
+
+
+# Helper functions
+def _find_checkpoint(resume_from):
+    """Find latest checkpoint in directory or return file path"""
+    if os.path.isdir(resume_from):
+        checkpoints = [ckpt for ckpt in os.listdir(resume_from) if ckpt.endswith('.pth')]
+        if len(checkpoints) == 0:
+            raise ValueError(f"No checkpoint found in {resume_from}")
+        checkpoints = sorted(checkpoints, key=lambda x: int(x.split('_')[-1].replace('.pth', '')), reverse=True)
+        return os.path.join(resume_from, checkpoints[0])
+    return resume_from
+
+
+def _setup_accelerator(config, args):
+    """Setup accelerator with FSDP or DDP"""
     init_handler = InitProcessGroupKwargs()
     init_handler.timeout = datetime.timedelta(seconds=5400)
     
-    # Initialize accelerator
     if config.use_fsdp:
-        init_train = 'FSDP'
         from accelerate import FullyShardedDataParallelPlugin
         from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
         set_fsdp_env()
-        fsdp_plugin = FullyShardedDataParallelPlugin(state_dict_config=FullStateDictConfig(offload_to_cpu=False, rank0_only=False),)
+        fsdp_plugin = FullyShardedDataParallelPlugin(
+            state_dict_config=FullStateDictConfig(offload_to_cpu=False, rank0_only=False)
+        )
     else:
-        init_train = 'DDP'
         fsdp_plugin = None
-
+    
     from accelerate import Accelerator, DataLoaderConfiguration
     dataloader_config = DataLoaderConfiguration(dispatch_batches=True)
-    accelerator = Accelerator(
+    
+    return Accelerator(
         mixed_precision=config.mixed_precision,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         log_with=args.report_to,
@@ -659,280 +933,132 @@ def initialize_models(args_list=None):
         kwargs_handlers=[init_handler]
     )
 
-    log_name = 'train_log.log'
-    if accelerator.is_main_process:
-        if os.path.exists(os.path.join(config.work_dir, log_name)):
-            rename_file_with_creation_time(os.path.join(config.work_dir, log_name))
-    logger = get_root_logger(os.path.join(config.work_dir, log_name))
 
-    logger.info(accelerator.state)
-    config.seed = init_random_seed(config.get('seed', None))
-    set_random_seed(config.seed)
-
-    if accelerator.is_main_process:
-        config.dump(os.path.join(config.work_dir, 'config.py'))
-
-    logger.info(f"Config: \n{config.pretty_text}")
-    logger.info(f"World_size: {get_world_size()}, seed: {config.seed}")
-    logger.info(f"Initializing: {init_train} for ControlNet training")
-    
-    image_size = config.image_size  
-    latent_size = int(image_size) // 8
-    pred_sigma = getattr(config, 'pred_sigma', True)
-    learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
-    max_length = config.model_max_length
-    kv_compress_config = config.kv_compress_config if config.kv_compress else None
-    vae = AutoencoderKL.from_pretrained(config.vae_pretrained, torch_dtype=torch.float16).to(accelerator.device);
-    config.scale_factor = vae.config.scaling_factor
-
-    logger.info(f"vae scale factor: {config.scale_factor}")
-
-    model_kwargs = {
-        "pe_interpolation": config.pe_interpolation, 
-        "config": config,
-        "model_max_length": max_length, 
-        "qk_norm": config.qk_norm,
-        "kv_compress_config": kv_compress_config, 
-        "micro_condition": config.micro_condition,
-        "add_pos_embed_to_cond": getattr(config, 'add_pos_embed_to_cond', False),
-        **config.get('model_kwargs', {})
-    }
-
-    # Build models - base model + ControlNet
-    train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
-    model_dir = os.path.join(os.getcwd(), "pretrained_models/pixcell-256/transformer")
-    if model_dir not in sys.path:
-        sys.path.append(model_dir)
-    from pixcell_transformer_2d import PixCellTransformer2DModel
-
-    logger.info("Building PixCell model architecture...")
+def _build_and_load_base_model(config, model_kwargs, accelerator, logger, max_length):
+    """Build base model and load pretrained weights"""
     from diffusion.model.builder import build_model
-    # Build the combined model (base + controlnet)
+    
+    logger.info("Building PixCell model architecture...")
     base_model = build_model(config.model, **model_kwargs).to(accelerator.device)
-
-    # 2. Load Pretrained Base Model Weights and Initialize ControlNet
+    
     if config.load_from is not None:
-        load_path = Path(config.load_from)
-        if load_path.is_dir():
-            # Automatically find the safetensors file in the directory
-            st_files = list(load_path.glob("**/diffusion_pytorch_model.safetensors"))
-            load_file = str(st_files[0]) if st_files else str(config.load_from)
-        else:
-            load_file = str(config.load_from)
-
+        load_file = _find_model_file(config.load_from)
         logger.info(f"Loading pretrained base model weights from {load_file}")
         
-        # Load pretrained weights into base model components
         missing, unexpect = load_checkpoint(
             load_file,
-            base_model,  # This loads into the PixArt_UNI_ControlNet
+            base_model,
             load_ema=config.get('load_ema', False),
             max_length=max_length
         )
-
+        
         logger.info(f"Missing keys: {len(missing)}")
         logger.info(f"Unexpected keys: {len(unexpect)}")
-
-        # Log details if there are concerning missing/unexpected keys
+        
         if missing:
-            logger.warning(f"Missing keys (first 10): {missing[:]}")
+            logger.warning(f"Missing keys: {missing}")
         if unexpect:
             logger.warning(f"Unexpected keys (first 10): {unexpect[:10]}")
         
-        # 3. Initialize ControlNet by copying base model weights
         logger.info("Initializing ControlNet from base model weights...")
         _initialize_controlnet_from_base(base_model)
-        
-        # Verify frozen/trainable parameters
         _print_trainable_parameters(base_model, logger)
-    if 0:
-        verify_pixcell_checkpoint(base_model, device=accelerator.device)
-        generate_image_with_diffusion(base_model, vae, 'features/sample_0_uni.npy', device=accelerator.device)
-        
+    
+    # Enable gradient checkpointing
     if hasattr(base_model, 'controlnet'):
-        # Enable gradient checkpointing for ControlNet blocks
         for block in base_model.controlnet.control_blocks:
             block.gradient_checkpointing = True
+    
     logger.info(f"{base_model.__class__.__name__} Model Parameters: {sum(p.numel() for p in base_model.parameters()):,}")
     logger.info(f"Trainable Parameters: {sum(p.numel() for p in base_model.parameters() if p.requires_grad):,}")
+    
+    return base_model
 
-    # Usage
-    if 0:
-        verify_controlnet_initialization(base_model)
-        test_training_stability(base_model, vae, 'features/sample_0_uni.npy', accelerator.device, num_steps=100)
 
-    # Create EMA model
-    # 1. Re-build the same architecture for EMA
+def _find_model_file(load_from):
+    """Find safetensors file in directory or return path"""
+    load_path = Path(load_from)
+    if load_path.is_dir():
+        st_files = list(load_path.glob("**/diffusion_pytorch_model.safetensors"))
+        return str(st_files[0]) if st_files else str(load_from)
+    return str(load_from)
+
+
+def _build_ema_model(base_model, config, model_kwargs, accelerator, logger):
+    """Build EMA model and initialize from base model"""
+    from diffusion.model.builder import build_model
+    
     logger.info("Initializing EMA model architecture...")
     model_ema = build_model(config.model, **model_kwargs).to(accelerator.device)
-
-    # 2. Copy the current weights from the base_model to the EMA model
     model_ema.load_state_dict(base_model.state_dict())
-
-    # 3. Set to eval mode and freeze parameters
     model_ema.eval()
+    
     for param in model_ema.parameters():
         param.requires_grad = False
-
+    
     logger.info("✓ EMA model initialized via state_dict copy.")
-    for param in model_ema.parameters():
-        param.requires_grad = False
-
-    # Build discriminator if enabled
-    discriminator = None
-    optimizer_d = None
-    if config.get('use_discriminator', False):
-        logger.info("Building discriminator for adversarial training...")
-        
-        from discriminator import build_discriminator
-        discriminator = build_discriminator(config.discriminator).train()
-        
-        logger.info(f"Discriminator Parameters: {sum(p.numel() for p in discriminator.parameters()):,}")
-        
-        # Build discriminator optimizer
-        disc_optimizer_config = config.get('discriminator_optimizer', config.optimizer)
-        optimizer_d = build_optimizer(discriminator, disc_optimizer_config)
-    
-    # Build segmentation consistency checker if enabled
-    segmentation_checker = None
-    if config.get('use_segmentation_consistency', False):
-        logger.info("Building cell segmentation consistency checker with Cellpose...")
-        
-        from cell_segmentation_consistency import CellSegmentationConsistency
-        segmentation_checker = CellSegmentationConsistency(
-            model_type=config.get('cellpose_model_type', 'cyto2'),
-            device=accelerator.device,
-            image_size=image_size,
-            use_gpu=True,
-            diameter=config.get('cell_diameter', 30),
-        )
-        
-        if segmentation_checker.model is not None:
-            if hasattr(segmentation_checker.model, 'eval'):
-                logger.info(f"✓ Using Cellpose model: {config.get('cellpose_model_type', 'cyto2')}")
-            else:
-                logger.info(f"Segmentation Model Parameters: {sum(p.numel() for p in segmentation_checker.model.parameters()):,}")
-                # Freeze segmentation model
-                for param in segmentation_checker.model.parameters():
-                    param.requires_grad = False
-                logger.info("✓ Using lightweight U-Net segmentation model (frozen)")
-
-
-    # Initialize EMA with current model state
     ema_update(model_ema, base_model, 0.)
+    
+    return model_ema
 
-    # Prepare for FSDP clip grad norm calculation
-    if accelerator.distributed_type == DistributedType.FSDP:
-        for m in accelerator._models:
-            m.clip_grad_norm_ = types.MethodType(clip_grad_norm_, m)
 
-    # Build dataloader - use ControlNet-specific dataset that includes masks
-    set_data_root(config.data_root)
+def _build_discriminator(config, logger):
+    """Build discriminator for adversarial training"""
+    logger.info("Building discriminator for adversarial training...")
+    from discriminator import build_discriminator
+    
+    discriminator = build_discriminator(config.discriminator).train()
+    logger.info(f"Discriminator Parameters: {sum(p.numel() for p in discriminator.parameters()):,}")
+    
+    return discriminator
 
-    dataset = build_dataset(
-        config.data, 
-        resolution=image_size, 
-        aspect_ratio_type=config.aspect_ratio_type,
-        real_prompt_ratio=config.real_prompt_ratio, 
-        max_length=max_length, 
-        config=config,
+
+def _build_segmentation_checker(config, accelerator, image_size, logger):
+    """Build segmentation consistency checker"""
+    logger.info("Building cell segmentation consistency checker with Cellpose...")
+    from cell_segmentation_consistency import CellSegmentationConsistency
+    
+    segmentation_checker = CellSegmentationConsistency(
+        model_type=config.get('cellpose_model_type', 'cyto2'),
+        device=accelerator.device,
+        image_size=image_size,
+        use_gpu=True,
+        diameter=config.get('cell_diameter', 30),
     )
-    train_dataloader = build_dataloader(
-        dataset, 
-        num_workers=config.num_workers, 
-        batch_size=config.train_batch_size, 
-        shuffle=True
+    
+    if segmentation_checker.model is not None:
+        if hasattr(segmentation_checker.model, 'eval'):
+            logger.info(f"✓ Using Cellpose model: {config.get('cellpose_model_type', 'cyto2')}")
+        else:
+            logger.info(f"Segmentation Model Parameters: {sum(p.numel() for p in segmentation_checker.model.parameters()):,}")
+            for param in segmentation_checker.model.parameters():
+                param.requires_grad = False
+            logger.info("✓ Using lightweight U-Net segmentation model (frozen)")
+    
+    return segmentation_checker
+
+
+def _resume_from_checkpoint(config, base_model, model_ema, optimizer, lr_scheduler, max_length, logger):
+    """Resume training from checkpoint"""
+    resume_path = config.resume_from['checkpoint']
+    path = os.path.basename(resume_path)
+    start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
+    start_step = int(path.replace('.pth', '').split("_")[3])
+    
+    _, missing, unexpected = load_checkpoint(
+        **config.resume_from,
+        model=base_model,
+        model_ema=model_ema,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        max_length=max_length,
     )
-    #asd()
-    # Build optimizer - only optimize ControlNet parameters if specified
-    lr_scale_ratio = 1
-    if config.get('auto_lr', None):
-        lr_scale_ratio = auto_scale_lr(
-            config.train_batch_size * get_world_size() * config.gradient_accumulation_steps,
-            config.optimizer, 
-            **config.auto_lr
-        )
     
-    # Optimizer setup
-    optimizer = build_optimizer(base_model, config.optimizer)
-    lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
-
-    timestamp = time.strftime("%Y-%m-%d_%H:%M:%S", time.localtime())
-
-    if accelerator.is_main_process:
-        tracker_config = dict(vars(config))
-        try:
-            accelerator.init_trackers(args.tracker_project_name, tracker_config)
-        except:
-            accelerator.init_trackers(f"tb_{timestamp}")
-
-    start_epoch = 0
-    start_step = 0
-    skip_step = args.skip_step or config.skip_step
-    total_steps = len(train_dataloader) * config.num_epochs
-
-    if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
-        resume_path = config.resume_from['checkpoint']
-        path = os.path.basename(resume_path)
-        start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
-        start_step = int(path.replace('.pth', '').split("_")[3])
-        _, missing, unexpected = load_checkpoint(
-            **config.resume_from,
-            model=base_model,
-            model_ema=model_ema,
-            optimizer=optimizer,
-            lr_scheduler=lr_scheduler,
-            max_length=max_length,
-        )
-
-        logger.warning(f'Missing keys: {missing}')
-        logger.warning(f'Unexpected keys: {unexpected}')
-        
-    # Prepare everything
-    base_model, model_ema = accelerator.prepare(base_model, model_ema)
+    logger.warning(f'Missing keys: {missing}')
+    logger.warning(f'Unexpected keys: {unexpected}')
     
-    if discriminator is not None:
-        discriminator = accelerator.prepare(discriminator)
-        optimizer_d = accelerator.prepare(optimizer_d)
-    
-    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
-    
-    logger.info("Starting ControlNet training...")
-    if discriminator is not None:
-        logger.info("Adversarial training enabled with discriminator")
-    
-    return {
-        # Core Models
-        'base_model': base_model,
-        'model_ema': model_ema,
-        'vae': vae,
-        'train_diffusion': train_diffusion,
-        
-        # Training Components
-        'optimizer': optimizer,
-        'optimizer_d': optimizer_d,  # ← YES! Discriminator optimizer
-        'lr_scheduler': lr_scheduler,
-        'train_dataloader': train_dataloader,
-        
-        # Optional Models
-        'discriminator': discriminator,  # Can be None
-        'segmentation_checker': segmentation_checker,  # Can be None
-        
-        # Accelerator & Config
-        'accelerator': accelerator,  # ← CRITICAL! You need this for training
-        'config': config,
-        'logger': logger,
-        
-        # Training State
-        'start_epoch': start_epoch,
-        'start_step': start_step,
-        'skip_step': skip_step,
-        'total_steps': total_steps,
-        
-        # Additional useful info
-        'args': args,  # Original command line args
-    }
+    return start_epoch, start_step
 
 if __name__ == "__main__":
-    models = initialize_models()
+    models = initialize_all()
     
