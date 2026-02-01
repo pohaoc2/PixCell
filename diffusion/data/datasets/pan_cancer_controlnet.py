@@ -150,8 +150,8 @@ class PanCancerControlNetData(Dataset):
         data_info = {
             "img_hw": torch.tensor([self.resolution] * 2, dtype=torch.float32),
             "aspect_ratio": torch.tensor(1.0),
-            #"mask_type": "binary",
-            #"img_name": img_name
+            "mask_type": "binary",
+            "img_name": img_name
         }
 
         if self.return_img:
