@@ -119,7 +119,6 @@ def train(models):
                     mode='nearest'
                 )
             print(f"cell_mask_latent.shape: {cell_mask_latent.shape}")
-            asd()
             # Sample a random timestep for each image
             bs = clean_images.shape[0]
             timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
@@ -439,10 +438,8 @@ def generate_validation_samples(model, vae, train_diffusion, batch, config, devi
 
 
 if __name__ == "__main__":
-    # %% [Cell 1: Initialize the models]
     models = initialize_models([
         'configs/pan_cancer/config_controlnet_gan.py',
     ])
-    # %% [Cell 3: Train the models]
     
     train(models)

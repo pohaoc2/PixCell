@@ -1,3 +1,4 @@
+# %%
 import os 
 import argparse
 import datetime
@@ -1058,7 +1059,105 @@ def _resume_from_checkpoint(config, base_model, model_ema, optimizer, lr_schedul
     logger.warning(f'Unexpected keys: {unexpected}')
     
     return start_epoch, start_step
-
+# %%
 if __name__ == "__main__":
-    models = initialize_all()
+    # %%
+    init_data = initialize_config_and_accelerator([
+        '../configs/pan_cancer/config_controlnet_gan.py',
+    ])
+    config = init_data['config']
+    accelerator = init_data['accelerator']
+    logger = init_data['logger']
+    args = init_data['args']
+    # %%
+    model_data = initialize_models(config, accelerator, logger)
+    base_model = model_data['base_model']
+    model_ema = model_data['model_ema']
+    vae = model_data['vae']
+    train_diffusion = model_data['train_diffusion']
+    discriminator = model_data['discriminator']
+    segmentation_checker = model_data['segmentation_checker']
     
+    # %%
+    optim_data = initialize_dataset_and_optimizer(
+        config, accelerator, logger,
+        base_model,
+        discriminator
+    )
+    train_dataloader = optim_data['train_dataloader']
+    optimizer = optim_data['optimizer']
+    optimizer_d = optim_data['optimizer_d']
+    lr_scheduler = optim_data['lr_scheduler']
+    optim_data = initialize_dataset_and_optimizer(
+    config, accelerator, logger,
+    base_model,
+    discriminator
+    )
+    # %%
+    train_dataloader = optim_data['train_dataloader']
+    optimizer = optim_data['optimizer']
+    optimizer_d = optim_data['optimizer_d']
+    lr_scheduler = optim_data['lr_scheduler']
+
+    # Step 4: Prepare with accelerator (CRITICAL!)
+    base_model = accelerator.prepare(base_model)
+    model_ema = accelerator.prepare(model_ema)
+    optimizer = accelerator.prepare(optimizer)
+    train_dataloader = accelerator.prepare(train_dataloader)
+    lr_scheduler = accelerator.prepare(lr_scheduler)
+
+    if discriminator is not None:
+        discriminator = accelerator.prepare(discriminator)
+        optimizer_d = accelerator.prepare(optimizer_d)
+
+    # Step 5: Training state
+    state_data = setup_training_state(
+        config, accelerator, logger, args, train_dataloader,
+        base_model, model_ema, optimizer, lr_scheduler
+    )
+    # %%
+    models = {
+        # Core Models
+        'base_model': base_model,
+        'model_ema': model_ema,
+        'vae': vae,
+        'train_diffusion': train_diffusion,
+        
+        # Training Components
+        'optimizer': optimizer,
+        'optimizer_d': optimizer_d,
+        'lr_scheduler': lr_scheduler,
+        'train_dataloader': train_dataloader,
+        
+        # Optional Models
+        'discriminator': discriminator,
+        'segmentation_checker': segmentation_checker,
+        
+        # Accelerator & Config
+        'accelerator': accelerator,
+        'config': config,
+        'logger': logger,
+        
+        # Training State
+        'start_epoch': state_data['start_epoch'],
+        'start_step': state_data['start_step'],
+        'skip_step': state_data['skip_step'],
+        'total_steps': state_data['total_steps'],
+        
+        # Additional info
+        'args': args,
+    }
+    # %%
+    # reload the module
+    import importlib
+    import train_scripts.train_controlnet  # Import the module itself
+
+    # 1. Reload the module to pick up code changes
+    importlib.reload(train_scripts.train_controlnet)
+
+    # 2. Access the function from the freshly reloaded module
+    from train_scripts.train_controlnet import train
+
+    # 3. Execute
+    train(models)
+# %%
