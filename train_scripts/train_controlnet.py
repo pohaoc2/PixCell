@@ -101,21 +101,25 @@ def train(models):
             y = batch[1]  # SSL embeddings (UNI)
             cell_mask = batch[2]  # Cell segmentation mask
             data_info = batch[3]
-
+            print(f"np.unique(cell_mask.cpu().numpy()): {np.unique(cell_mask.cpu().numpy())}")
+            #dtype of cell_mask
+            print(f"cell_mask.dtype: {cell_mask.dtype}")
+            print(f"cell_mask.shape: {cell_mask.shape}")
+            print(f"clean_images.shape: {clean_images.shape}")
+            #print(data_info)
+            
             # Process cell mask for ControlNet
             # Assuming cell_mask is binary [B, 1, H, W] at image resolution
             # Need to downsample to latent resolution if necessary
             cell_mask_latent = cell_mask
             if cell_mask.shape[-1] != clean_images.shape[-1]:
-                # Downsample mask to latent resolution using max pooling to preserve cell presence
-                # From 256x256 to 32x32 (256/8 = 32)
-                kernel_size = cell_mask.shape[-1] // clean_images.shape[-1]
-                cell_mask_latent = nn.functional.max_pool2d(
+                cell_mask_latent = nn.functional.interpolate(
                     cell_mask.float(), 
-                    kernel_size=kernel_size, 
-                    stride=kernel_size
+                    size=(clean_images.shape[-2], clean_images.shape[-1]), 
+                    mode='nearest'
                 )
-
+            print(f"cell_mask_latent.shape: {cell_mask_latent.shape}")
+            asd()
             # Sample a random timestep for each image
             bs = clean_images.shape[0]
             timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
