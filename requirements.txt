@@ -1,13 +1,14 @@
 # ===== Core Dependencies - Install First =====
-numpy>=1.23.5
+numpy>=1.23.5,<2.0
 scipy>=1.11.2
 
 # Core Vision & Modeling
 mmcv==1.7.0
 timm>=0.9.0
 einops
-opencv-python
+opencv-python-headless==4.8.0.74
 yapf==0.40.1
+h5py
 
 # Generative AI & Transformers
 diffusers @ git+https://github.com/huggingface/diffusers.git
@@ -17,6 +18,7 @@ peft>=0.9.0
 optimum
 xformers>=0.0.20
 came-pytorch
+huggingface-hub>=0.23.0,<1.0.0
 
 # NLP & Processing
 sentencepiece~=0.1.99
