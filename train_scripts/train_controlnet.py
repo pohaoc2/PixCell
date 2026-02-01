@@ -435,5 +435,10 @@ def generate_validation_samples(model, vae, train_diffusion, batch, config, devi
 
 
 if __name__ == "__main__":
-    models = initialize_models()
+    # %% [Cell 1: Initialize the models]
+    models = initialize_models([
+        'configs/pan_cancer/config_controlnet_gan.py',
+    ])
+    # %% [Cell 3: Train the models]
+    
     train(models)
