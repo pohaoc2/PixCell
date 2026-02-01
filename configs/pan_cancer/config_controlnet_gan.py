@@ -11,7 +11,7 @@ adherence to provided cell masks.
 _base_ = ['../PixArt_xl2_internal.py']
 
 image_size = 256
-root = "./"
+root = "/home/pohaoc2/UW/bagherilab/PixCell"
 
 # Dataset configuration
 data = dict(
@@ -42,7 +42,7 @@ vae_pretrained = f"{root}/pretrained_models/sd-3.5-vae/vae"
 pe_interpolation = 0.5
 
 # Training setting
-num_workers = 16
+num_workers = 2
 train_batch_size = 4
 num_epochs = 1
 gradient_accumulation_steps = 1

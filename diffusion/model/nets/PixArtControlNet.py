@@ -279,7 +279,6 @@ class PixArt_UNI_ControlNet(nn.Module):
             qk_norm=qk_norm,
             kv_compress_config=kv_compress_config,
         )
-        
         self.initialize_weights()
         
         # Freeze base model if specified
