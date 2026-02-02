@@ -495,7 +495,7 @@ class PixArt_UNI_ControlNet(nn.Module):
 def PixArt_XL_2_UNI_ControlNet(**kwargs):
     """Memory-efficient PixArt XL with ControlNet for T4 GPU."""
     kwargs.setdefault('control_channels', 1)
-    kwargs.setdefault('controlnet_depth', 14)  # Half depth
+    kwargs.setdefault('controlnet_depth', 28)  # Half depth
     
     return PixArt_UNI_ControlNet(
         depth=28,
