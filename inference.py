@@ -65,8 +65,16 @@ def load_models(model_path, vae_path, config_path=None, device='cuda'):
     print(f"\nLoading VAE from {vae_path}")
     try:
         vae = AutoencoderKL.from_pretrained(vae_path, torch_dtype=torch.float16)
+        # DELETE THE ENCODER - You only need the decoder for generation
+        if hasattr(vae, 'encoder'):
+            del vae.encoder
+            # This is a bit of a hack for diffusers, but it prevents 
+            # the model from trying to access the encoder later.
+            vae.encoder = None 
+            
         vae.to(device)
         vae.eval()
+        torch.cuda.empty_cache() # Flush the freed memory
         print(f"✓ VAE loaded")
     except Exception as e:
         print(f"❌ VAE loading failed: {e}")
