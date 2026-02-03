@@ -365,11 +365,13 @@ def ema_update(model_dest: nn.Module, model_src: nn.Module, rate):
 
 
     
-def verify_pixcell_checkpoint(model, device='cuda'):
+def verify_pixcell_checkpoint(model, checkpoint_path=None, device='cuda'):
     """Load checkpoint directly and verify key values"""
     from safetensors.torch import load_file
-    
-    checkpoint_path = "pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors"
+    if checkpoint_path is None:
+        checkpoint_path = "../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors"
+    else:
+        checkpoint_path = checkpoint_path
     state_dict = load_file(checkpoint_path)
     
     # Check a specific weight from the checkpoint
@@ -436,8 +438,7 @@ def generate_image_with_diffusion(model, vae, uni_feature_path, num_steps=50, de
     # Decode final latents
     vae_dtype = next(vae.parameters()).dtype
     latents = latents.to(vae_dtype)
-    
-    image = vae.decode(latents / vae.config.scaling_factor).sample
+    image = vae.decode((latents / vae.config.scaling_factor) + vae.config.shift_factor, return_dict=False)[0]
     
     # Save
     from torchvision.utils import save_image
@@ -1077,7 +1078,9 @@ if __name__ == "__main__":
     train_diffusion = model_data['train_diffusion']
     discriminator = model_data['discriminator']
     segmentation_checker = model_data['segmentation_checker']
-    
+    # %%
+    verify_controlnet_initialization(base_model)
+    verify_pixcell_checkpoint(base_model, checkpoint_path="../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors", device=accelerator.device)
     # %%
     optim_data = initialize_dataset_and_optimizer(
         config, accelerator, logger,
@@ -1160,4 +1163,29 @@ if __name__ == "__main__":
 
     # 3. Execute
     train(models)
-# %%
+    # %%
+    models = initialize_all([
+        '../configs/pan_cancer/config_controlnet_gan.py',
+    ])
+    base_model = models['base_model']
+    vae = models['vae']
+    config = models['config']
+    from inference import generate_image
+    from torchvision.utils import save_image
+    import matplotlib.pyplot as plt
+    for idx in range(1):
+        image = generate_image(
+            model=base_model,
+            vae=vae,
+            uni_feature=f"../features/sample_{idx}_uni.npy",
+            cell_mask=f"../data/masks/sample_{idx}_mask.png",
+            config=config,
+            num_inference_steps=20,
+            seed=42,
+            device='cpu',
+            scheduler_type="ddim",
+        )
+        plt.imshow(image)
+        #save_image(image, f"controlNet_gen/generated_{idx}.png")
+    # %%
+    

@@ -351,12 +351,11 @@ class PixArt_UNI_ControlNet(nn.Module):
         
         # Get ControlNet features
         control_features = self.controlnet(control_input, y, t0, y_lens)
-        
         # Forward through base blocks with ControlNet additions
         for i, block in enumerate(self.blocks):
             x = auto_grad_checkpoint(block, x, y, t0, y_lens)
             # Add ControlNet features
-            x = x + control_features[i]
+            x = x #+ control_features[i]
         x = self.final_layer(x, t)
         x = self.unpatchify(x)
         return x
@@ -495,7 +494,7 @@ class PixArt_UNI_ControlNet(nn.Module):
 def PixArt_XL_2_UNI_ControlNet(**kwargs):
     """Memory-efficient PixArt XL with ControlNet for T4 GPU."""
     kwargs.setdefault('control_channels', 1)
-    kwargs.setdefault('controlnet_depth', 28)  # Half depth
+    kwargs.setdefault('controlnet_depth', 14)  # Half depth
     
     return PixArt_UNI_ControlNet(
         depth=28,
