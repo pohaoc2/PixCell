@@ -442,5 +442,21 @@ if __name__ == "__main__":
     models = initialize_models([
         'configs/pan_cancer/config_controlnet_gan.py',
     ])
-    
     train(models)
+
+    model = models['base_model']
+    model.eval()
+    model.to(device)
+    model.load_state_dict(torch.load(os.path.join(config.work_dir, 'checkpoints', 'model_ema.pth')))
+    vae = models['vae']
+    vae.eval()
+    vae.to(device)
+    vae.load_state_dict(torch.load(os.path.join(config.work_dir, 'checkpoints', 'vae.pth')))
+    train_diffusion = models['train_diffusion']
+    train_diffusion.eval()
+    train_diffusion.to(device)
+    batch = next(iter(models['train_dataloader']))
+    config = models['config']
+    device = models['device']
+    images = generate_validation_samples(model, vae, train_diffusion, batch, config, device)
+    images.save(os.path.join(config.work_dir, 'checkpoints', 'images.png'))

@@ -289,7 +289,7 @@ def generate_image(
     
     for t in iterator:
         timestep = torch.tensor([t], device=device)
-        
+        print(f"timestep: {timestep}")
         # Predict noise
         noise_pred = model(
             latents,
@@ -321,53 +321,44 @@ def generate_image(
     return image.squeeze(0)
 
 
-def main():
+def parse_args(args_list=None):
+    """
+    Args:
+        args_list: List of arguments (for programmatic use) or None (for CLI use)
+    """
     parser = argparse.ArgumentParser(
         description='PixCell ControlNet Inference',
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
+
     # Required paths
-    parser.add_argument('--model_path', type=str, required=True,
-                       help='Path to trained checkpoint')
-    parser.add_argument('--vae_path', type=str, required=True,
-                       help='Path to VAE model')
-    parser.add_argument('--config_path', type=str, default=None,
-                       help='Path to training config .py file')
-    
+    parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--vae_path', type=str, required=True)
+    parser.add_argument('--config_path', type=str, default=None)
+
     # Single image mode
-    parser.add_argument('--uni_feature', type=str, default=None,
-                       help='Path to UNI feature .npy file')
-    parser.add_argument('--cell_mask', type=str, default=None,
-                       help='Path to cell mask image')
-    parser.add_argument('--output', type=str, default='generated.png',
-                       help='Output path')
-    
+    parser.add_argument('--uni_feature', type=str, default=None)
+    parser.add_argument('--cell_mask', type=str, default=None)
+    parser.add_argument('--output', type=str, default='generated.png')
+
     # Batch mode
-    parser.add_argument('--batch', action='store_true',
-                       help='Enable batch processing')
-    parser.add_argument('--uni_dir', type=str, default=None,
-                       help='Directory with UNI features')
-    parser.add_argument('--mask_dir', type=str, default=None,
-                       help='Directory with cell masks')
-    parser.add_argument('--output_dir', type=str, default='outputs',
-                       help='Output directory')
-    parser.add_argument('--uni_suffix', type=str, default='_uni.npy',
-                       help='UNI file suffix')
-    parser.add_argument('--mask_suffix', type=str, default='_mask.png',
-                       help='Mask file suffix')
-    
+    parser.add_argument('--batch', action='store_true')
+    parser.add_argument('--uni_dir', type=str, default=None)
+    parser.add_argument('--mask_dir', type=str, default=None)
+    parser.add_argument('--output_dir', type=str, default='outputs')
+    parser.add_argument('--uni_suffix', type=str, default='_uni.npy')
+    parser.add_argument('--mask_suffix', type=str, default='_mask.png')
+
     # Generation parameters
-    parser.add_argument('--num_steps', type=int, default=50,
-                       help='Number of denoising steps')
-    parser.add_argument('--scheduler', type=str, default='ddim',
-                       choices=['ddpm', 'ddim'])
-    parser.add_argument('--seed', type=int, default=None,
-                       help='Random seed')
-    parser.add_argument('--device', type=str, default='cuda',
-                       choices=['cuda', 'cpu'])
-    
-    args = parser.parse_args()
+    parser.add_argument('--num_steps', type=int, default=50)
+    parser.add_argument('--scheduler', type=str, default='ddim', choices=['ddpm', 'ddim'])
+    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
+
+    return parser.parse_args(args_list)
+
+def main(args_list=None):
+    args = parse_args(args_list)
     
     # Validate
     if not args.batch:

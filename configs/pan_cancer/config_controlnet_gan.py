@@ -11,8 +11,8 @@ adherence to provided cell masks.
 _base_ = ['../PixArt_xl2_internal.py']
 
 image_size = 256
-#root = "/home/pohaoc2/UW/bagherilab/PixCell"
-root = "./"
+root = "/home/pohaoc2/UW/bagherilab/PixCell"
+#root = "./"
 
 # Dataset configuration
 data = dict(
@@ -32,7 +32,7 @@ model = "PixArt_XL_2_UNI_ControlNet"
 model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 
-mixed_precision = 'bf16'  
+mixed_precision = 'fp16'  
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
@@ -44,8 +44,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 2
-train_batch_size = 64
-num_epochs = 3
+train_batch_size = 4
+num_epochs = 1
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
