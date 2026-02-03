@@ -98,17 +98,19 @@ def train(models):
                 z = z - config.shift_factor
 
             clean_images = z * config.scale_factor
-            y = batch[1]  # SSL embeddings (UNI)
+            y = batch[1]   # SSL embeddings (UNI)
+            y = y / np.sqrt(y.shape[1])
             cell_mask = batch[2]  # Cell segmentation mask
             data_info = batch[3]
             if 0:
+                print(f"y.shape: {y.shape}")
                 print(f"np.unique(cell_mask.cpu().numpy()): {np.unique(cell_mask.cpu().numpy())}")
                 #dtype of cell_mask
                 print(f"cell_mask.dtype: {cell_mask.dtype}")
                 print(f"cell_mask.shape: {cell_mask.shape}")
                 print(f"clean_images.shape: {clean_images.shape}")
                 #print(data_info)
-            
+                asd()
             # Process cell mask for ControlNet
             # Assuming cell_mask is binary [B, 1, H, W] at image resolution
             # Need to downsample to latent resolution if necessary
