@@ -33,7 +33,7 @@ model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 controlnet_depth = 28
 
-mixed_precision = 'bf16'  
+mixed_precision = 'fp16'  
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
