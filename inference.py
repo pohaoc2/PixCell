@@ -212,7 +212,7 @@ def generate_image(
     num_inference_steps=50,
     seed=None,
     device='cuda',
-    scheduler_type='ddim',
+    scheduler=None,
     verbose=True,
 ):
     """Generate image using PixCell ControlNet."""
@@ -240,7 +240,7 @@ def generate_image(
         y = uni_feature.view(1, 1, 1, 1536).to(device)
     else:
         y = uni_feature.to(device)
-    
+    y /= np.sqrt(y.shape[-1])
     # 2. Process cell mask
     if isinstance(cell_mask, (str, Path)):
         mask_image = Image.open(cell_mask).convert('L')
@@ -264,20 +264,6 @@ def generate_image(
     if cell_mask_latent.shape[1] != expected_channels:
         if expected_channels == 4:
             cell_mask_latent = cell_mask_latent.repeat(1, 4, 1, 1)
-    
-    # 3. Setup scheduler
-    if scheduler_type == 'ddim':
-        scheduler = DDIMScheduler(
-            num_train_timesteps=1000,
-            beta_schedule="scaled_linear",
-            clip_sample=False,
-        )
-    else:
-        scheduler = DDPMScheduler(
-            num_train_timesteps=1000,
-            beta_schedule="scaled_linear",
-        )
-    
     scheduler.set_timesteps(num_inference_steps)
     
     # 4. Initialize latents
@@ -286,11 +272,8 @@ def generate_image(
     
     # 5. Denoising loop
     iterator = tqdm(scheduler.timesteps, desc="Denoising") if verbose else scheduler.timesteps
-    
     for t in iterator:
         timestep = torch.tensor([t], device=device)
-        print(f"timestep: {timestep}")
-        # Predict noise
         noise_pred = model(
             latents,
             timestep,
@@ -310,7 +293,7 @@ def generate_image(
     vae_dtype = next(vae.parameters()).dtype
     
     # Apply shift and scale
-    latents_shifted = (latents - shift_factor) / scale_factor
+    latents_shifted = (latents / scale_factor) + shift_factor
     
     image = vae.decode(latents_shifted.to(vae_dtype)).sample
     
@@ -351,9 +334,9 @@ def parse_args(args_list=None):
 
     # Generation parameters
     parser.add_argument('--num_steps', type=int, default=50)
-    parser.add_argument('--scheduler', type=str, default='ddim', choices=['ddpm', 'ddim'])
+    parser.add_argument('--scheduler', type=str, default='ddim')
     parser.add_argument('--seed', type=int, default=None)
-    parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
+    parser.add_argument('--device', type=str, default='cuda')
 
     return parser.parse_args(args_list)
 
@@ -402,7 +385,7 @@ def main(args_list=None):
             num_inference_steps=args.num_steps,
             seed=args.seed,
             device=args.device,
-            scheduler_type=args.scheduler,
+            scheduler=args.scheduler,
             verbose=True,
         )
         
@@ -457,7 +440,7 @@ def main(args_list=None):
                     num_inference_steps=args.num_steps,
                     seed=args.seed,
                     device=args.device,
-                    scheduler_type=args.scheduler,
+                    scheduler=args.scheduler,
                     verbose=False,
                 )
                 

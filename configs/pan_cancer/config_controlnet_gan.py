@@ -12,7 +12,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 
 image_size = 256
 root = "/home/pohaoc2/UW/bagherilab/PixCell"
-#root = "./"
+root = "./"
 
 # Dataset configuration
 data = dict(
@@ -31,8 +31,9 @@ model = "PixArt_XL_2_UNI_ControlNet"
 
 model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
+controlnet_depth = 28
 
-mixed_precision = 'fp16'  
+mixed_precision = 'bf16'  
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
@@ -44,8 +45,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 2
-train_batch_size = 4
-num_epochs = 1
+train_batch_size = 64
+num_epochs = 5
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
@@ -62,8 +63,8 @@ optimizer = dict(
 lr_schedule_args = dict(num_warmup_steps=500)
 auto_lr = None
 
-log_interval = 100
-save_model_epochs = 3
+log_interval = 50
+save_model_epochs = 5
 save_model_steps = 5000
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 
