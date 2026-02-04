@@ -12,7 +12,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 
 image_size = 256
 root = "/home/pohaoc2/UW/bagherilab/PixCell"
-root = "./"
+root = "/home/ec2-user/PixCell"
 
 # Dataset configuration
 data = dict(

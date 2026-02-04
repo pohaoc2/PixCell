@@ -1185,12 +1185,11 @@ if __name__ == "__main__":
         scheduler_config = json.load(file)
     scheduler = DPMSolverMultistepScheduler(**scheduler_config)
     file_name = "epoch_5_step_785.pth"
-    load_from = None #"/home/ec2-user/PixCell/checkpoints/pixcell_controlnet_full/model_step_25000.pt"
-    if load_from is not None:
+    if file_name is not None:
         model, vae, config = load_models(
-            model_path=f"/content/drive/MyDrive/UW/share_space/{file_name}",
-            vae_path="pretrained_models/sd-3.5-vae/vae",
-            config_path="configs/pan_cancer/config_controlnet_gan.py",
+            model_path=f"../{file_name}",
+            vae_path="../pretrained_models/sd-3.5-vae/vae",
+            config_path="../configs/pan_cancer/config_controlnet_gan.py",
             device='cuda'
         )
     else:
@@ -1198,12 +1197,80 @@ if __name__ == "__main__":
         vae = model_data['vae']
         config = config
     # %%
+    import timm
+    model_path = "/home/ec2-user/PixCell/pretrained_models/uni-2h/"
+    model_path = Path(model_path)
+    weight_files = list(model_path.glob("*.pth")) + list(model_path.glob("pytorch_model.bin"))
+    timm_kwargs = {
+                'img_size': 224,
+                'patch_size': 14,
+                'depth': 24,
+                'num_heads': 24,
+                'init_values': 1e-5,
+                'embed_dim': 1536,
+                'mlp_ratio': 2.66667*2,
+                'num_classes': 0,
+                'no_embed_class': True,
+                'mlp_layer': timm.layers.SwiGLUPacked,
+                'act_layer': torch.nn.SiLU,
+                'reg_tokens': 8,
+                'dynamic_img_size': True
+            }
+
+    #model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", local_files_only=True,**timm_kwargs)
+    uni_model = timm.create_model("vit_huge_patch14_224", pretrained=False, **timm_kwargs)
+    checkpoint = torch.load(weight_files[0], map_location='cpu')
+    
+    # Handle different checkpoint formats
+    if 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+    uni_model.load_state_dict(state_dict, strict=False)
+    uni_model.eval()
+    uni_model.to(accelerator.device)
+    from timm.data import resolve_data_config
+    from timm.data.transforms_factory import create_transform
+    uni_transforms = create_transform(**resolve_data_config(uni_model.pretrained_cfg, model=uni_model))
+    # %%
+
+    from huggingface_hub import hf_hub_download
+    from PIL import Image
+    from inference import load_models, generate_image, generate_image_independent_cfg
+    import torch
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import os
+    from torchvision.utils import save_image
+    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
+    # This is an example image we provide
+    image = Image.open("../test_image.png").convert("RGB")
+
+    # Extract UNI embedding from the image
+    uni_inp = uni_transforms(image).unsqueeze(dim=0)
+    with torch.inference_mode():
+        uni_emb = uni_model(uni_inp.to(accelerator.device))
+    # clean up the uni model
+    del uni_model
+    torch.cuda.empty_cache()
+    model = base_model
+    vae = model_data['vae']
+    config = config
+    with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
+        scheduler_config = json.load(file)
+    scheduler = DPMSolverMultistepScheduler(**scheduler_config)
+    # reshape UNI to (bs, 1, D)
+    uni_emb = uni_emb.unsqueeze(1).unsqueeze(1)
+    print("Extracted UNI:", uni_emb.shape)
     device = 'cuda'
     y = torch.randn(1, 1, 1,1536).to(device)
     y /= 1536 ** 0.5
     uni_feature = torch.from_numpy(np.load(f"../features/sample_0_uni.npy"))
     uni_feature /= 1536 ** 0.5
-    uni_feature = y
+    uni_feature = uni_emb #y
     os.makedirs("../controlNet_gen", exist_ok=True)
     for idx in range(1,2):
         image = generate_image_independent_cfg(
@@ -1215,15 +1282,17 @@ if __name__ == "__main__":
             num_inference_steps=20,
             seed=42,
             scheduler=scheduler,
-            uni_guidance_scale=2,
+            uni_guidance_scale=1,
             mask_guidance_scale=0, 
         )
         save_image(image, f"../controlNet_gen/generated_{idx}.png")
         print(f"✓ saved generated_{idx}.png")
         fig, ax = plt.subplots(1, 3, figsize=(15, 5))
         ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{idx}.png"))
+        ax[0].imshow(Image.open(f"../test_image.png"))
         ax[1].imshow(Image.open(f"../masks/sample_{idx}_mask.png"))
         ax[2].imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
     plt.imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
     
+
 # %%
