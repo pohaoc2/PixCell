@@ -16,6 +16,7 @@
 *.log
 pretrained_models/
 checkpoints/
+__pycache__/
 # Editors
 .vscode/
 
