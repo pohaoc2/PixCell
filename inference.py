@@ -19,6 +19,7 @@ from pathlib import Path
 from diffusers import DDPMScheduler, DDIMScheduler, AutoencoderKL
 from torchvision.utils import save_image
 import torch.nn.functional as F
+import torch.nn as nn
 from tqdm import tqdm
 import sys
 
@@ -158,38 +159,39 @@ def load_models(model_path, vae_path, config_path=None, device='cuda'):
     sys.stdout.flush()  # Force print to show
     
     try:
-        with torch.device(device):
-            model = PixArt_UNI_ControlNet(
-                input_size=input_size,
-                patch_size=2,
-                in_channels=16,
-                control_channels=control_channels,
-                hidden_size=1152,
-                depth=28,
-                controlnet_depth=controlnet_depth,
-                num_heads=16,
-                mlp_ratio=4.0,
-                class_dropout_prob=0.1,
-                caption_channels=1536,
-                model_max_length=model_max_length,
-                pred_sigma=True,
-                qk_norm=False,
-                drop_path=0.0,
-                freeze_base=False,
-            ).to(torch.float16)
-            print("✓ Model instance created")
+        model = PixArt_UNI_ControlNet(
+            input_size=input_size,
+            patch_size=2,
+            in_channels=16,
+            control_channels=control_channels,
+            hidden_size=1152,
+            depth=28,
+            controlnet_depth=controlnet_depth,
+            num_heads=16,
+            mlp_ratio=4.0,
+            class_dropout_prob=0.1,
+            caption_channels=1536,
+            model_max_length=model_max_length,
+            pred_sigma=True,
+            qk_norm=False,
+            drop_path=0.0,
+            freeze_base=False,
+        ).to(torch.float16)
+        print("✓ Model instance created")
     except Exception as e:
         print(f"❌ Model initialization failed: {e}")
         import traceback
         traceback.print_exc()
         raise
-    
+
     # Load weights
     print("\nLoading weights into model...")
     sys.stdout.flush()
     
     try:
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        del state_dict # Very important: Free the dictionary memory
+        gc.collect()
         print(f"✓ Weights loaded")
         print(f"  Missing keys: {len(missing_keys)}")
         print(f"  Unexpected keys: {len(unexpected_keys)}")
@@ -248,7 +250,7 @@ def generate_image(
         y = uni_feature.view(1, 1, 1, 1536).to(device)
     else:
         y = uni_feature.to(device)
-    y /= np.sqrt(y.shape[-1])
+    #y /= np.sqrt(y.shape[-1])
     # 2. Process cell mask
     if isinstance(cell_mask, (str, Path)):
         mask_image = Image.open(cell_mask).convert('L')
@@ -260,13 +262,7 @@ def generate_image(
     elif cell_mask.dim() == 3:
         cell_mask = cell_mask.unsqueeze(0)
     
-    # Resize to 256x256 if needed
-    if cell_mask.shape[-1] != 256:
-        cell_mask = F.interpolate(cell_mask, size=(256, 256), mode='nearest')
-    
-    # Downsample to latent resolution (32x32)
-    cell_mask_latent = F.max_pool2d(cell_mask, kernel_size=8, stride=8).to(device)
-    
+
     # Match expected channels
     expected_channels = model.controlnet.control_x_embedder.proj.weight.shape[1]
     if cell_mask_latent.shape[1] != expected_channels:
@@ -277,7 +273,14 @@ def generate_image(
     # 4. Initialize latents
     latents = torch.randn(1, 16, 32, 32, device=device, dtype=model.dtype)
     latents = latents * scheduler.init_noise_sigma
-    
+    if cell_mask.shape[-1] != latents.shape[-1]:
+        cell_mask_latent = nn.functional.interpolate(
+            cell_mask.float(), 
+            size=(latents.shape[-2], latents.shape[-1]), 
+            mode='nearest'
+        )
+    else:
+        cell_mask_latent = cell_mask
     # 5. Denoising loop
     iterator = tqdm(scheduler.timesteps, desc="Denoising") if verbose else scheduler.timesteps
     for t in iterator:
@@ -311,6 +314,195 @@ def generate_image(
     
     return image.squeeze(0)
 
+@torch.no_grad()
+def generate_image_independent_cfg(
+    model,
+    vae,
+    uni_feature,
+    cell_mask,
+    config=None,
+    num_inference_steps=50,
+    uni_guidance_scale=3.0,      # How much to follow UNI feature
+    mask_guidance_scale=3.0,      # How much to follow mask structure
+    seed=None,
+    device='cuda',
+    scheduler=None,
+    verbose=True,
+):
+    """
+    Generate image with independent guidance for UNI and mask.
+    
+    Uses 3-way CFG:
+    - noise_uncond: baseline (no UNI, no mask)
+    - noise_uni: guided by UNI only
+    - noise_mask: guided by mask only
+    
+    Final prediction = uncond + uni_scale*(uni - uncond) + mask_scale*(mask - uncond)
+    """
+    
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+    
+    model.eval()
+    vae.eval()
+    
+    do_cfg = uni_guidance_scale != 1.0 or mask_guidance_scale != 1.0
+    
+    # Get scale/shift factors from config
+    if config:
+        scale_factor = getattr(config, 'scale_factor', 1.5305)
+        shift_factor = getattr(config, 'shift_factor', 0.0609)
+    else:
+        scale_factor = vae.config.scaling_factor if hasattr(vae.config, 'scaling_factor') else 1.5305
+        shift_factor = 0.0609
+    
+    # 1. Process UNI feature
+    if isinstance(uni_feature, (str, Path)):
+        uni_feature = torch.from_numpy(np.load(uni_feature))
+    
+    if uni_feature.dim() == 1:
+        y_cond = uni_feature.view(1, 1, 1, 1536).to(device)
+    else:
+        y_cond = uni_feature.to(device)
+    
+    # 2. Process cell mask - KEEP IT BINARY
+    if isinstance(cell_mask, (str, Path)):
+        mask_image = Image.open(cell_mask).convert('L')
+        cell_mask = torch.from_numpy(np.array(mask_image)).float()
+        # Binarize: threshold at 0.5 (assuming input is 0-255)
+        cell_mask = (cell_mask > 0).float()  # Binary: 0 or 1
+        cell_mask = cell_mask.unsqueeze(0).unsqueeze(0)
+    
+    if cell_mask.dim() == 2:
+        cell_mask = cell_mask.unsqueeze(0).unsqueeze(0)
+    elif cell_mask.dim() == 3:
+        cell_mask = cell_mask.unsqueeze(0)
+    
+    # Ensure binary (0 or 1)
+    cell_mask = (cell_mask > 0).float()
+    cell_mask = cell_mask.to(device)
+    
+    # 3. Prepare 3-way conditioning for independent CFG
+    if do_cfg:
+        # Create unconditional embeddings
+        in_features = y_cond.shape[-1]
+        num_tokens = y_cond.shape[-2]
+        y_uncond = nn.Parameter(torch.randn(num_tokens, in_features)).to(device)
+        y_uncond /= np.sqrt(y_uncond.shape[-1])
+        
+        # Unconditional cell mask is ALL ZEROS (binary: no cells)
+        cell_mask_uncond = torch.zeros_like(cell_mask)
+        
+        # 3 combinations:
+        # 1. [uncond_uni, uncond_mask] - baseline (no guidance)
+        # 2. [cond_uni, uncond_mask]   - UNI guidance only
+        # 3. [uncond_uni, cond_mask]   - mask guidance only
+        
+        y_input = torch.cat([
+            y_uncond,      # uncond: no UNI, no mask
+            y_cond,        # UNI only: with UNI, no mask
+            y_uncond       # mask only: no UNI, with mask
+        ], dim=0)
+        
+        cell_mask_input = torch.cat([
+            cell_mask_uncond,  # uncond: no UNI, no mask (all zeros)
+            cell_mask_uncond,  # UNI only: with UNI, no mask (all zeros)
+            cell_mask          # mask only: no UNI, with mask (binary)
+        ], dim=0)
+        
+        num_samples = 3
+    else:
+        y_input = y_cond
+        cell_mask_input = cell_mask
+        num_samples = 1
+    
+    # 4. Set up scheduler
+    scheduler.set_timesteps(num_inference_steps)
+    
+    # 5. Initialize latents
+    latents = torch.randn(1, 16, 32, 32, device=device, dtype=model.dtype)
+    latents = latents * scheduler.init_noise_sigma
+    
+    # Prepare cell mask latent at correct resolution
+    # Use NEAREST interpolation to maintain binary values
+    if cell_mask_input.shape[-1] != latents.shape[-1]:
+        cell_mask_latent = nn.functional.interpolate(
+            cell_mask_input.float(), 
+            size=(latents.shape[-2], latents.shape[-1]), 
+            mode='nearest'  # Critical: maintains binary values
+        )
+    else:
+        cell_mask_latent = cell_mask_input
+    
+    # Ensure still binary after interpolation
+    cell_mask_latent = (cell_mask_latent > 0.5).float()
+    
+    # Match expected channels for controlnet
+    expected_channels = model.controlnet.control_x_embedder.proj.weight.shape[1]
+    if cell_mask_latent.shape[1] != expected_channels:
+        if expected_channels == 4:
+            # Repeat binary mask across channels
+            cell_mask_latent = cell_mask_latent.repeat(1, 4, 1, 1)
+    
+    # 6. Denoising loop with independent CFG
+    iterator = tqdm(scheduler.timesteps, desc="Denoising") if verbose else scheduler.timesteps
+    
+    for t in iterator:
+        # Expand latents for CFG
+        latent_model_input = torch.cat([latents] * num_samples) if do_cfg else latents
+        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+        
+        # Prepare timestep
+        timestep = torch.tensor([t], device=device)
+        if do_cfg:
+            timestep = timestep.repeat(num_samples)
+        
+        # Predict noise
+        noise_pred = model(
+            latent_model_input,
+            timestep,
+            y=y_input,
+            control_input=cell_mask_latent,
+            mask=None,
+            data_info={'mask_type': ['null'] * num_samples}
+        )
+        
+        # Handle learned sigma if present
+        if model.pred_sigma:
+            noise_pred, _ = noise_pred.chunk(2, dim=1)
+        
+        # Perform independent CFG
+        if do_cfg:
+            # Split the 3 predictions
+            noise_uncond = noise_pred[0:1]  # baseline (no UNI, no mask)
+            noise_uni = noise_pred[1:2]     # UNI guidance only
+            noise_mask = noise_pred[2:3]    # mask guidance only
+            
+            # Independent guidance formula:
+            # result = uncond + uni_scale * (uni - uncond) + mask_scale * (mask - uncond)
+            noise_pred = (
+                noise_uncond 
+                + uni_guidance_scale * (noise_uni - noise_uncond)
+                + mask_guidance_scale * (noise_mask - noise_uncond)
+            )
+        
+        # Denoise step
+        latents = scheduler.step(noise_pred, t, latents).prev_sample
+    
+    # 7. Decode with proper scaling
+    vae_dtype = next(vae.parameters()).dtype
+    
+    # Apply shift and scale
+    latents_shifted = (latents / scale_factor) + shift_factor
+    
+    image = vae.decode(latents_shifted.to(vae_dtype)).sample
+    
+    # 8. Post-process
+    image = (image + 1) / 2
+    image = torch.clamp(image, 0, 1)
+    
+    return image.squeeze(0)
 
 def parse_args(args_list=None):
     """
