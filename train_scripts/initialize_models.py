@@ -669,8 +669,10 @@ def initialize_models(config, accelerator, logger):
     
     # Load VAE
     vae = AutoencoderKL.from_pretrained(
-        config.vae_pretrained, 
-        torch_dtype=torch.float16
+        "../pretrained_models/sd-3.5-vae/vae",
+        local_files_only=True,
+        use_safetensors=True,  # Explicitly tell it to look for the safetensors file you have
+        trust_remote_code=True # Sometimes required if the VAE uses custom scaling
     ).to(accelerator.device)
     config.scale_factor = vae.config.scaling_factor
     logger.info(f"vae scale factor: {config.scale_factor}")
@@ -1164,28 +1166,64 @@ if __name__ == "__main__":
     # 3. Execute
     train(models)
     # %%
-    models = initialize_all([
-        '../configs/pan_cancer/config_controlnet_gan.py',
-    ])
-    base_model = models['base_model']
-    vae = models['vae']
-    config = models['config']
-    from inference import generate_image
+    #models = initialize_all([
+    #    '../configs/pan_cancer/config_controlnet_gan.py',
+    #])
+    
+    import importlib
+    import inference
+    importlib.reload(inference)
+    from inference import load_models, generate_image, generate_image_independent_cfg
     from torchvision.utils import save_image
+    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
     import matplotlib.pyplot as plt
-    for idx in range(1):
-        image = generate_image(
-            model=base_model,
+    import torch
+    import numpy as np
+    import json
+    from PIL import Image
+    with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
+        scheduler_config = json.load(file)
+    scheduler = DPMSolverMultistepScheduler(**scheduler_config)
+    file_name = "epoch_5_step_785.pth"
+    load_from = None #"/home/ec2-user/PixCell/checkpoints/pixcell_controlnet_full/model_step_25000.pt"
+    if load_from is not None:
+        model, vae, config = load_models(
+            model_path=f"/content/drive/MyDrive/UW/share_space/{file_name}",
+            vae_path="pretrained_models/sd-3.5-vae/vae",
+            config_path="configs/pan_cancer/config_controlnet_gan.py",
+            device='cuda'
+        )
+    else:
+        model = base_model
+        vae = model_data['vae']
+        config = config
+    # %%
+    device = 'cuda'
+    y = torch.randn(1, 1, 1,1536).to(device)
+    y /= 1536 ** 0.5
+    uni_feature = torch.from_numpy(np.load(f"../features/sample_0_uni.npy"))
+    uni_feature /= 1536 ** 0.5
+    uni_feature = y
+    os.makedirs("../controlNet_gen", exist_ok=True)
+    for idx in range(1,2):
+        image = generate_image_independent_cfg(
+            model=model,
             vae=vae,
-            uni_feature=f"../features/sample_{idx}_uni.npy",
-            cell_mask=f"../data/masks/sample_{idx}_mask.png",
+            uni_feature=uni_feature,#f"features/sample_{idx}_uni.npy",#
+            cell_mask=f"../masks/sample_{idx}_mask.png",
             config=config,
             num_inference_steps=20,
             seed=42,
-            device='cpu',
-            scheduler_type="ddim",
+            scheduler=scheduler,
+            uni_guidance_scale=2,
+            mask_guidance_scale=0, 
         )
-        plt.imshow(image)
-        #save_image(image, f"controlNet_gen/generated_{idx}.png")
-    # %%
+        save_image(image, f"../controlNet_gen/generated_{idx}.png")
+        print(f"✓ saved generated_{idx}.png")
+        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+        ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{idx}.png"))
+        ax[1].imshow(Image.open(f"../masks/sample_{idx}_mask.png"))
+        ax[2].imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
+    plt.imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
     
+# %%
