@@ -390,7 +390,7 @@ def generate_image_independent_cfg(
         num_tokens = y_cond.shape[-2]
         y_uncond = nn.Parameter(torch.randn(num_tokens, in_features)).to(device)
         y_uncond /= np.sqrt(y_uncond.shape[-1])
-        
+        y_uncond = y_uncond.unsqueeze(0).unsqueeze(0)
         # Unconditional cell mask is ALL ZEROS (binary: no cells)
         cell_mask_uncond = torch.zeros_like(cell_mask)
         
@@ -436,7 +436,7 @@ def generate_image_independent_cfg(
         cell_mask_latent = cell_mask_input
     
     # Ensure still binary after interpolation
-    cell_mask_latent = (cell_mask_latent > 0.5).float()
+    cell_mask_latent = (cell_mask_latent > 0).float()
     
     # Match expected channels for controlnet
     expected_channels = model.controlnet.control_x_embedder.proj.weight.shape[1]
