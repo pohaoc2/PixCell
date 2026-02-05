@@ -31,7 +31,7 @@ model = "PixArt_XL_2_UNI_ControlNet"
 
 model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
-controlnet_depth = 28
+controlnet_depth = 14
 
 mixed_precision = 'fp16'
 fp32_attention = True
@@ -45,8 +45,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 2
-train_batch_size = 64
-num_epochs = 5
+train_batch_size = 2
+num_epochs = 1
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
