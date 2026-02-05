@@ -10,7 +10,6 @@
 *.zip
 *.npy
 *.svs
-*.txt
 *.pyc
 *.hdf5
 *.log

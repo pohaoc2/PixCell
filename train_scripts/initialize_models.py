@@ -34,7 +34,9 @@ from diffusion.utils.misc import set_random_seed, read_config, init_random_seed,
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
 
 warnings.filterwarnings("ignore")
+torch.cuda.set_per_process_memory_fraction(0.995, 0)
 
+print(f"GPU limit set to {torch.cuda.get_device_properties(0).total_memory * 0.995 / 1024**2:.0f} MB")
 
 def _initialize_controlnet_from_base(model):
     """
@@ -448,126 +450,6 @@ def generate_image_with_diffusion(model, vae, uni_feature_path, num_steps=50, de
     return image
 
 
-def test_training_stability(model, vae, uni_feature_path, device='cuda', num_steps=100):
-    """
-    Test that training is stable over multiple iterations.
-    This is the REAL test for ControlNet.
-    """
-    
-    x = torch.randn(1, 16, 32, 32, device=device)
-    timestep = torch.tensor([500], device=device)
-    y = torch.from_numpy(np.load(uni_feature_path))
-    y = y.view(1, 1, 1, 1536).to(device)
-
-    control_channels = model.controlnet.control_x_embedder.proj.weight.shape[1]
-    control = torch.randn(1, control_channels, 32, 32, device=device)
-    
-    print("\n" + "="*70)
-    print(f"TESTING TRAINING STABILITY OVER {num_steps} STEPS")
-    print("="*70)
-    
-    model.train()
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    
-    # Use paper's settings
-    optimizer = torch.optim.AdamW(trainable_params, lr=1e-5)
-    
-    losses = []
-    grad_norms = []
-    weight_means = []
-    
-    print("\nTraining progress:")
-    for step in range(num_steps):
-        optimizer.zero_grad()
-        
-        output = model(x, timestep, y, control)
-        target = torch.randn_like(output)
-        loss = F.mse_loss(output, target)
-        
-        loss.backward()
-        
-        # Track metrics
-        grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float('inf'))
-        
-        optimizer.step()
-        
-        losses.append(loss.item())
-        grad_norms.append(grad_norm.item())
-        
-        # Track zero conv weights
-        zero_conv_mean = sum(zc.weight.abs().mean().item() 
-                            for zc in model.controlnet.zero_convs) / len(model.controlnet.zero_convs)
-        weight_means.append(zero_conv_mean)
-        
-        if (step + 1) % 10 == 0 or step == 0:
-            print(f"  Step {step+1:3d}: Loss={loss.item():.4f}, "
-                  f"Grad={grad_norm:.4f}, "
-                  f"ZeroConv={zero_conv_mean:.6f}")
-    
-    # Analysis
-    print("\n" + "="*70)
-    print("STABILITY ANALYSIS")
-    print("="*70)
-    
-    # Check for explosions
-    if any(l > 100 for l in losses[-10:]):
-        print("❌ UNSTABLE: Loss exploded!")
-        return False
-    
-    if any(g > 100 for g in grad_norms[-10:]):
-        print("❌ UNSTABLE: Gradients exploded!")
-        return False
-    
-    # Check for NaNs
-    if any(math.isnan(l) for l in losses):
-        print("❌ UNSTABLE: NaN losses detected!")
-        return False
-    
-    # Check for convergence
-    early_loss = sum(losses[:10]) / 10
-    late_loss = sum(losses[-10:]) / 10
-    
-    print(f"\nLoss trajectory:")
-    print(f"  First 10 steps: {early_loss:.4f}")
-    print(f"  Last 10 steps:  {late_loss:.4f}")
-    
-    print(f"\nGradient norms:")
-    print(f"  Mean: {sum(grad_norms)/len(grad_norms):.4f}")
-    print(f"  Max:  {max(grad_norms):.4f}")
-    print(f"  Min:  {min(grad_norms):.4f}")
-    
-    print(f"\nZero conv weights:")
-    print(f"  Initial: {weight_means[0]:.8f}")
-    print(f"  Final:   {weight_means[-1]:.8f}")
-    print(f"  Change:  {weight_means[-1] - weight_means[0]:.8f}")
-    
-    # Generate test image
-    print("\n" + "="*70)
-    print("GENERATING TEST IMAGE")
-    print("="*70)
-    
-    model.eval()
-    with torch.no_grad():
-        output = model(x, timestep, y, control)
-        if model.pred_sigma:
-            output = output.chunk(2, dim=1)[0]
-        
-        vae.eval()
-        vae_dtype = next(vae.parameters()).dtype
-        image = vae.decode(output.to(vae_dtype) / vae.config.scaling_factor).sample
-        
-        from torchvision.utils import save_image
-        save_image((image + 1) / 2, f'controlnet_after_{num_steps}_steps.png')
-        print(f"💾 Saved: controlnet_after_{num_steps}_steps.png")
-    
-    print("\n" + "="*70)
-    print("✅ TRAINING IS STABLE!")
-    print(f"   Completed {num_steps} iterations without issues")
-    print("   ControlNet is learning gradually as designed")
-    print("="*70)
-    
-    return True
-
 def parse_args(args_list=None):
     """
     Args:
@@ -666,14 +548,40 @@ def initialize_models(config, accelerator, logger):
     learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
     max_length = config.model_max_length
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
-    
+    print("VAE" + "="*70)
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
     # Load VAE
     vae = AutoencoderKL.from_pretrained(
         "../pretrained_models/sd-3.5-vae/vae",
         local_files_only=True,
         use_safetensors=True,  # Explicitly tell it to look for the safetensors file you have
         trust_remote_code=True # Sometimes required if the VAE uses custom scaling
-    ).to(accelerator.device)
+    )
+    vae.to('cpu')
+    # Delete encoder components before moving to GPU
+    if hasattr(vae, 'encoder') and vae.encoder is not None:
+        vae.encoder.cpu()  # Ensure it's on CPU
+        del vae.encoder
+        
+    if hasattr(vae, 'quant_conv') and vae.quant_conv is not None:
+        vae.quant_conv.cpu()
+        del vae.quant_conv
+    # Set to None to break any remaining references
+    vae.encoder = None
+    vae.quant_conv = None
+
+    # Force garbage collection
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # Now move only the decoder to GPU
+    vae.to(accelerator.device)
+    print('-'*70)
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+    
     config.scale_factor = vae.config.scaling_factor
     logger.info(f"vae scale factor: {config.scale_factor}")
     
@@ -698,10 +606,21 @@ def initialize_models(config, accelerator, logger):
     )
     
     # Build base model with ControlNet
+    print("Base Model" + "="*70)
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
     base_model = _build_and_load_base_model(config, model_kwargs, accelerator, logger, max_length)
-    
+    print('-'*70)
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
     # Build EMA model
+    print("EMA Model" + "="*70)
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
     model_ema = _build_ema_model(base_model, config, model_kwargs, accelerator, logger)
+    print('-'*70)
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
     
     # Build optional discriminator
     discriminator = _build_discriminator(config, logger) if config.get('use_discriminator', False) else None
@@ -1062,6 +981,51 @@ def _resume_from_checkpoint(config, base_model, model_ema, optimizer, lr_schedul
     logger.warning(f'Unexpected keys: {unexpected}')
     
     return start_epoch, start_step
+
+def extract_uni_emb(model_path=None):
+    import timm
+    if model_path is None:
+        model_path = "/home/ec2-user/PixCell/pretrained_models/uni-2h/"
+    model_path = Path(model_path)
+    weight_files = list(model_path.glob("*.pth")) + list(model_path.glob("pytorch_model.bin"))
+    timm_kwargs = {
+                'img_size': 224,
+                'patch_size': 14,
+                'depth': 24,
+                'num_heads': 24,
+                'init_values': 1e-5,
+                'embed_dim': 1536,
+                'mlp_ratio': 2.66667*2,
+                'num_classes': 0,
+                'no_embed_class': True,
+                'mlp_layer': timm.layers.SwiGLUPacked,
+                'act_layer': torch.nn.SiLU,
+                'reg_tokens': 8,
+                'dynamic_img_size': True
+            }
+
+    uni_model = timm.create_model("vit_huge_patch14_224", pretrained=False, **timm_kwargs)
+    checkpoint = torch.load(weight_files[0], map_location='cpu')
+    
+    # Handle different checkpoint formats
+    if 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+    uni_model.load_state_dict(state_dict, strict=False)
+    uni_model.eval()
+    uni_model.to('cpu')
+    from timm.data import resolve_data_config
+    from timm.data.transforms_factory import create_transform
+    uni_transforms = create_transform(**resolve_data_config(uni_model.pretrained_cfg, model=uni_model))
+    image = Image.open("../test_image.png").convert("RGB")
+    uni_inp = uni_transforms(image).unsqueeze(dim=0)
+    with torch.inference_mode():
+        uni_emb = uni_model(uni_inp.to('cpu'))
+    # save the uni_emb
+    np.save("uni_emb.npy", uni_emb.cpu().numpy())
 # %%
 if __name__ == "__main__":
     # %%
@@ -1197,45 +1161,6 @@ if __name__ == "__main__":
         vae = model_data['vae']
         config = config
     # %%
-    import timm
-    model_path = "/home/ec2-user/PixCell/pretrained_models/uni-2h/"
-    model_path = Path(model_path)
-    weight_files = list(model_path.glob("*.pth")) + list(model_path.glob("pytorch_model.bin"))
-    timm_kwargs = {
-                'img_size': 224,
-                'patch_size': 14,
-                'depth': 24,
-                'num_heads': 24,
-                'init_values': 1e-5,
-                'embed_dim': 1536,
-                'mlp_ratio': 2.66667*2,
-                'num_classes': 0,
-                'no_embed_class': True,
-                'mlp_layer': timm.layers.SwiGLUPacked,
-                'act_layer': torch.nn.SiLU,
-                'reg_tokens': 8,
-                'dynamic_img_size': True
-            }
-
-    #model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", local_files_only=True,**timm_kwargs)
-    uni_model = timm.create_model("vit_huge_patch14_224", pretrained=False, **timm_kwargs)
-    checkpoint = torch.load(weight_files[0], map_location='cpu')
-    
-    # Handle different checkpoint formats
-    if 'model' in checkpoint:
-        state_dict = checkpoint['model']
-    elif 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-    else:
-        state_dict = checkpoint
-    uni_model.load_state_dict(state_dict, strict=False)
-    uni_model.eval()
-    uni_model.to(accelerator.device)
-    from timm.data import resolve_data_config
-    from timm.data.transforms_factory import create_transform
-    uni_transforms = create_transform(**resolve_data_config(uni_model.pretrained_cfg, model=uni_model))
-    # %%
-
     from huggingface_hub import hf_hub_download
     from PIL import Image
     from inference import load_models, generate_image, generate_image_independent_cfg
@@ -1247,34 +1172,24 @@ if __name__ == "__main__":
     from torchvision.utils import save_image
     from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
     # This is an example image we provide
-    image = Image.open("../test_image.png").convert("RGB")
-
-    # Extract UNI embedding from the image
-    uni_inp = uni_transforms(image).unsqueeze(dim=0)
-    with torch.inference_mode():
-        uni_emb = uni_model(uni_inp.to(accelerator.device))
-    # clean up the uni model
-    del uni_model
     torch.cuda.empty_cache()
-    model = base_model
-    vae = model_data['vae']
-    config = config
     with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
         scheduler_config = json.load(file)
     scheduler = DPMSolverMultistepScheduler(**scheduler_config)
     # reshape UNI to (bs, 1, D)
-    uni_emb = uni_emb.unsqueeze(1).unsqueeze(1)
+    uni_emb = torch.from_numpy(np.load("uni_emb.npy")).unsqueeze(1).unsqueeze(1)
+    uni_emb = uni_emb / 1536 ** 0.5
     print("Extracted UNI:", uni_emb.shape)
     device = 'cuda'
     y = torch.randn(1, 1, 1,1536).to(device)
     y /= 1536 ** 0.5
     uni_feature = torch.from_numpy(np.load(f"../features/sample_0_uni.npy"))
     uni_feature /= 1536 ** 0.5
-    uni_feature = uni_emb #y
+    #uni_feature = y
     os.makedirs("../controlNet_gen", exist_ok=True)
-    for idx in range(1,2):
+    for idx in range(1):
         image = generate_image_independent_cfg(
-            model=model,
+            model=base_model,
             vae=vae,
             uni_feature=uni_feature,#f"features/sample_{idx}_uni.npy",#
             cell_mask=f"../masks/sample_{idx}_mask.png",
@@ -1293,6 +1208,13 @@ if __name__ == "__main__":
         ax[1].imshow(Image.open(f"../masks/sample_{idx}_mask.png"))
         ax[2].imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
     plt.imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
-    
+    # %%
+    #tmp_image = image.clone()
+    plt.imshow(tmp_image.cpu().numpy().transpose(1, 2, 0))
+    # %%
+    min_diff = np.min(tmp_image.cpu().numpy().transpose(1, 2, 0) - image.cpu().numpy().transpose(1, 2, 0))
+    max_diff = np.max(tmp_image.cpu().numpy().transpose(1, 2, 0) - image.cpu().numpy().transpose(1, 2, 0))
+    print(f"Min diff: {min_diff}, Max diff: {max_diff}")
+    plt.imshow((tmp_image.cpu().numpy().transpose(1, 2, 0) - image.cpu().numpy().transpose(1, 2, 0)) / (max_diff - min_diff), vmin=0, vmax=1)
 
 # %%
