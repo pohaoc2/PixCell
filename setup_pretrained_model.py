@@ -10,6 +10,57 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 
+def download_pixcell_controlnet(save_dir="./pretrained_models", token=None):
+    if token is None:
+        token = os.getenv("HF_TOKEN")
+    if token is None:
+        raise ValueError("HF_TOKEN environment variable is not set")
+    """
+    Download PixCell-256 base model from HuggingFace
+    
+    Args:
+        save_dir: Directory to save the model
+        
+    Returns:
+        str: Path to downloaded model
+    """
+    save_path = Path(save_dir) / "pixcell-256-controlnet"
+    
+    if save_path.exists() and any(save_path.glob("*.pth")):
+        print(f"✓ PixCell-256-controlnet already exists at: {save_path}")
+        return str(save_path)
+    
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n{'='*70}")
+    print(f"Downloading PixCell-256-controlnet from HuggingFace...")
+    print(f"{'='*70}")
+    print(f"Repository: StonyBrook-CVLab/PixCell-256-Cell-ControlNet")
+    print(f"Save location: {save_path}")
+    
+    try:
+        model_path = snapshot_download(
+            repo_id="StonyBrook-CVLab/PixCell-256-Cell-ControlNet",
+            local_dir=save_path,
+            local_dir_use_symlinks=False,
+            token=token,
+        )
+        
+        print(f"\n✓ PixCell-256-controlnet downloaded successfully")
+        
+        # List downloaded files
+        model_files = list(save_path.glob("*.pth")) + list(save_path.glob("*.safetensors"))
+        if model_files:
+            print(f"  Model files:")
+            for file in model_files:
+                size_mb = file.stat().st_size / (1024**2)
+                print(f"    - {file.name} ({size_mb:.1f} MB)")
+        
+        return str(save_path)
+    except Exception as e:
+        print(f"\n❌ Error downloading PixCell-256-controlnet: {e}")
+        return None
+
 def download_pixcell_256(save_dir="./pretrained_models", token=None):
     if token is None:
         token = os.getenv("HF_TOKEN")
@@ -198,7 +249,9 @@ def download_all_models(save_dir="./pretrained_models", token=None):
     results = {}
     
     # Download each model
+
     results['pixcell'] = download_pixcell_256(save_dir, token)
+    results['pixcell-controlnet'] = download_pixcell_controlnet(save_dir, token)
     results['uni2h'] = download_uni_2h(save_dir, token)
     results['sd3_vae'] = download_sd3_vae(save_dir, token)
     
@@ -247,7 +300,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        choices=['pixcell', 'uni2h', 'sd3_vae', 'all'],
+        choices=['pixcell', 'pixcell-controlnet', 'uni2h', 'sd3_vae', 'all'],
         default='all',
         help="Which model to download (default: all)"
     )
@@ -263,6 +316,8 @@ if __name__ == "__main__":
         download_all_models(args.save_dir, args.token)
     elif args.model == 'pixcell':
         download_pixcell_256(args.save_dir, args.token)
+    elif args.model == 'pixcell-controlnet':
+        download_pixcell_controlnet(args.save_dir, args.token)
     elif args.model == 'uni2h':
         download_uni_2h(args.save_dir, args.token)
     elif args.model == 'sd3_vae':
