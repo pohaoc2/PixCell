@@ -27,11 +27,19 @@ data = dict(
 
 # Model setting
 model = "PixArt_XL_2_UNI_ControlNet"
+model = "PixCellControlNet_GAN"
 #model = "PixArt_XL_2_UNI"
 
 model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 controlnet_depth = 14
+
+pixcell_controlnet_module_name = "pixcell_controlnet_transformer"
+pixcell_controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
+pixcell_controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/transformer/"
+controlnet_module_name = "pixcell_controlnet"
+controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
+controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/"
 
 mixed_precision = 'fp16'
 fp32_attention = True

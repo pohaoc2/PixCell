@@ -355,7 +355,7 @@ class PixArt_UNI_ControlNet(nn.Module):
         for i, block in enumerate(self.blocks):
             x = auto_grad_checkpoint(block, x, y, t0, y_lens)
             # Add ControlNet features
-            x = x + 0*control_features[i]
+            x = x + control_features[i]
         x = self.final_layer(x, t)
         x = self.unpatchify(x)
         return x
