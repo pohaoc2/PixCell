@@ -8,22 +8,6 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from huggingface_hub import hf_hub_download
 
-def _load_pixcell_model(module_name, file_path, checkpoints_folder, device='cuda'):
-    import importlib.util
-    import sys
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    pixcell_mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = pixcell_mod
-    spec.loader.exec_module(pixcell_mod)
-    PixCellTransformer2DModel = pixcell_mod.PixCellTransformer2DModel
-    model = PixCellTransformer2DModel.from_pretrained(
-        checkpoints_folder,
-        #subfolder="transformer"
-    )
-    model.to(device)
-    model.eval();
-    return model
-
 def _load_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
     import sys
@@ -152,7 +136,7 @@ def _prepare_controlnet_input(idx):
     latents = latents * scheduler.init_noise_sigma
     uni_embeds = torch.from_numpy(np.load(f"../features/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    mask_path = hf_hub_download(repo_id="StonyBrook-CVLab/PixCell-256-Cell-ControlNet", filename="test_mask.png")
+    mask_path = "test_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB"))
     #controlnet_input = np.array(Image.open(f"../masks/sample_{idx}_mask.png"))
     #controlnet_input = np.repeat(controlnet_input[..., None], 3, axis=-1)
@@ -206,14 +190,15 @@ scheduler = DPMSolverMultistepScheduler.from_pretrained(
     scheduler_folder,
 )
 # %%
-idx = 3
+idx = 67
 latents, uni_embeds, controlnet_input_latent = _prepare_controlnet_input(idx)
 print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
 print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
-uni_embeds /= uni_embeds.shape[-1] ** 0.5
-controlnet_input_latent /= controlnet_input_latent.shape[-1] ** 0.5
-print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
-print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+#uni_embeds /= uni_embeds.shape[-1] ** 0.5
+#controlnet_input_latent /= controlnet_input_latent.shape[-1] ** 0.5
+print(f"Normalized UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+print(f"Normalized Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+print("UNI shape: ", uni_embeds.shape)
 # %%
 denoised_latents = denoise(latents,
         uni_embeds,
@@ -226,8 +211,9 @@ denoised_latents = denoise(latents,
         device='cuda')
 # %%
 hist_image = Image.open(f"../tcga_subset_0.1k/sample_{idx}.png")
+#hist_image = Image.open(f"../test_control_image.png")
 mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
-mask_path = hf_hub_download(repo_id="StonyBrook-CVLab/PixCell-256-Cell-ControlNet", filename="test_mask.png")
+mask_path = "test_mask.png"
 mask_image = Image.open(mask_path).convert("RGB")
 generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
 # %%
