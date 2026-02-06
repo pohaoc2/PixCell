@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from huggingface_hub import hf_hub_download
 
-def _load_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
+def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
     import sys
     spec = importlib.util.spec_from_file_location(module_name, file_path)
@@ -24,7 +24,7 @@ def _load_controlnet_model(module_name, file_path, checkpoints_folder, device='c
     model.eval();
     return model
 
-def _load_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
+def load_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
     import sys
     spec = importlib.util.spec_from_file_location(module_name, file_path)
@@ -39,7 +39,7 @@ def _load_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, d
     model.to(device)
     model.eval();
     return model
-def _load_vae(vae_folder, device='cuda'):
+def load_vae(vae_folder, device='cuda'):
     vae = AutoencoderKL.from_pretrained(
         vae_folder,
         local_files_only=True,
@@ -49,7 +49,42 @@ def _load_vae(vae_folder, device='cuda'):
     vae.to(device)
     vae.eval()
     return vae
-import torch
+
+def initialize_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
+    import importlib.util
+    import sys
+    
+    # Standard dynamic import logic
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    pixcell_mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = pixcell_mod
+    spec.loader.exec_module(pixcell_mod)
+    
+    PixCellTransformer2DModelControlNet = pixcell_mod.PixCellTransformer2DModelControlNet
+
+    # 1. Load only the configuration dictionary
+    config = PixCellTransformer2DModelControlNet.load_config(checkpoints_folder)
+    
+    # 2. Initialize the model with random weights based on that config
+    model = PixCellTransformer2DModelControlNet.from_config(config)
+    
+    model.to(device)
+    model.eval()
+    return model
+
+def initialize_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
+    import importlib.util
+    import sys
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    controlnet_mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = controlnet_mod
+    spec.loader.exec_module(controlnet_mod)
+    PixCellControlNet = controlnet_mod.PixCellControlNet
+    config = PixCellControlNet.load_config(checkpoints_folder)
+    model = PixCellControlNet.from_config(config)
+    model.to(device)
+    model.eval()
+    return model
 
 def denoise(latents,
             uni_embeds,
@@ -129,14 +164,14 @@ def denoise(latents,
     return latents
 
 
-def _prepare_controlnet_input(idx):
+def prepare_controlnet_input(idx):
     
     latent_shape = (1, 16, 32, 32)
     latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
     latents = latents * scheduler.init_noise_sigma
     uni_embeds = torch.from_numpy(np.load(f"../features/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    mask_path = "test_mask.png"
+    mask_path = "../test_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB"))
     #controlnet_input = np.array(Image.open(f"../masks/sample_{idx}_mask.png"))
     #controlnet_input = np.repeat(controlnet_input[..., None], 3, axis=-1)
@@ -174,46 +209,54 @@ def decode_latents(latents, vae, hist_image, mask_image, save_path):
     plt.show()
     return generated_image[0]
 # %%
-device = 'cuda'
-module_name = "pixcell_controlnet_transformer"
-file_path = "../pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
-checkpoints_folder = "../pretrained_models/pixcell-256-controlnet/transformer/"
-pixcell_controlnet_model = _load_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device)
-module_name = "pixcell_controlnet"
-file_path = "../pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
-checkpoints_folder = "../pretrained_models/pixcell-256-controlnet/controlnet/"
-controlnet_model = _load_controlnet_model(module_name, file_path, checkpoints_folder, device)
-
-vae = _load_vae("../pretrained_models/sd-3.5-vae/vae", device)
-scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
-scheduler = DPMSolverMultistepScheduler.from_pretrained(
-    scheduler_folder,
-)
-# %%
-idx = 67
-latents, uni_embeds, controlnet_input_latent = _prepare_controlnet_input(idx)
-print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
-print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
-#uni_embeds /= uni_embeds.shape[-1] ** 0.5
-#controlnet_input_latent /= controlnet_input_latent.shape[-1] ** 0.5
-print(f"Normalized UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
-print(f"Normalized Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
-print("UNI shape: ", uni_embeds.shape)
-# %%
-denoised_latents = denoise(latents,
-        uni_embeds,
-        controlnet_input_latent,
-        scheduler,
-        controlnet_model,
-        pixcell_controlnet_model=pixcell_controlnet_model,
-        guidance_scale=2.0,
-        num_inference_steps=50,
-        device='cuda')
-# %%
-hist_image = Image.open(f"../tcga_subset_0.1k/sample_{idx}.png")
-#hist_image = Image.open(f"../test_control_image.png")
-mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
-mask_path = "test_mask.png"
-mask_image = Image.open(mask_path).convert("RGB")
-generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
-# %%
+if __name__ == "__main__":
+    # %%
+    device = 'cuda'
+    only_init_models = False
+    pixcell_controlnet_module_name = "pixcell_controlnet_transformer"
+    pixcell_controlnet_file_path = "../pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
+    pixcell_controlnet_checkpoints_folder = "../pretrained_models/pixcell-256-controlnet/transformer/"
+    controlnet_module_name = "pixcell_controlnet"
+    controlnet_file_path = "../pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
+    controlnet_checkpoints_folder = "../pretrained_models/pixcell-256-controlnet/controlnet/"
+    if only_init_models:
+        pixcell_controlnet_model = initialize_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
+        controlnet_model = initialize_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
+    else:
+        pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
+        controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
+    
+    # %%
+    vae = load_vae("../pretrained_models/sd-3.5-vae/vae", device)
+    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(
+        scheduler_folder,
+    )
+    # %%
+    idx = 67
+    latents, uni_embeds, controlnet_input_latent = prepare_controlnet_input(idx)
+    print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+    print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+    #uni_embeds /= uni_embeds.shape[-1] ** 0.5
+    #controlnet_input_latent /= controlnet_input_latent.shape[-1] ** 0.5
+    print(f"Normalized UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+    print(f"Normalized Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+    print("UNI shape: ", uni_embeds.shape)
+    # %%
+    denoised_latents = denoise(latents,
+            uni_embeds,
+            controlnet_input_latent,
+            scheduler,
+            controlnet_model,
+            pixcell_controlnet_model=pixcell_controlnet_model,
+            guidance_scale=2.0,
+            num_inference_steps=50,
+            device='cuda')
+    # %%
+    hist_image = Image.open(f"../tcga_subset_0.1k/sample_{idx}.png")
+    #hist_image = Image.open(f"../test_control_image.png")
+    mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
+    mask_path = "../test_mask.png"
+    mask_image = Image.open(mask_path).convert("RGB")
+    generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
+    # %%
