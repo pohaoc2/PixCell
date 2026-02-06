@@ -559,6 +559,7 @@ def initialize_models(config, accelerator, logger):
         trust_remote_code=True # Sometimes required if the VAE uses custom scaling
     )
     vae.to('cpu')
+    """
     # Delete encoder components before moving to GPU
     if hasattr(vae, 'encoder') and vae.encoder is not None:
         vae.encoder.cpu()  # Ensure it's on CPU
@@ -575,7 +576,7 @@ def initialize_models(config, accelerator, logger):
     import gc
     gc.collect()
     torch.cuda.empty_cache()
-
+    """
     # Now move only the decoder to GPU
     vae.to(accelerator.device)
     print('-'*70)
@@ -982,7 +983,7 @@ def _resume_from_checkpoint(config, base_model, model_ema, optimizer, lr_schedul
     
     return start_epoch, start_step
 
-def extract_uni_emb(model_path=None):
+def extract_uni_emb(image_path, model_path=None):
     import timm
     if model_path is None:
         model_path = "/home/ec2-user/PixCell/pretrained_models/uni-2h/"
@@ -1004,9 +1005,8 @@ def extract_uni_emb(model_path=None):
                 'dynamic_img_size': True
             }
 
-    uni_model = timm.create_model("vit_huge_patch14_224", pretrained=False, **timm_kwargs)
     checkpoint = torch.load(weight_files[0], map_location='cpu')
-    
+    uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
     # Handle different checkpoint formats
     if 'model' in checkpoint:
         state_dict = checkpoint['model']
@@ -1014,18 +1014,116 @@ def extract_uni_emb(model_path=None):
         state_dict = checkpoint['state_dict']
     else:
         state_dict = checkpoint
-    uni_model.load_state_dict(state_dict, strict=False)
+    #uni_model.load_state_dict(state_dict, strict=False)
     uni_model.eval()
     uni_model.to('cpu')
     from timm.data import resolve_data_config
     from timm.data.transforms_factory import create_transform
     uni_transforms = create_transform(**resolve_data_config(uni_model.pretrained_cfg, model=uni_model))
-    image = Image.open("../test_image.png").convert("RGB")
+    image = Image.open(image_path).convert("RGB")
     uni_inp = uni_transforms(image).unsqueeze(dim=0)
     with torch.inference_mode():
         uni_emb = uni_model(uni_inp.to('cpu'))
     # save the uni_emb
     np.save("uni_emb.npy", uni_emb.cpu().numpy())
+    return uni_emb
+
+def _load_pixcell_model(module_name, file_path, checkpoints_folder, device='cuda'):
+    import importlib.util
+    import sys
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    pixcell_mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = pixcell_mod
+    spec.loader.exec_module(pixcell_mod)
+    PixCellTransformer2DModel = pixcell_mod.PixCellTransformer2DModel
+    model = PixCellTransformer2DModel.from_pretrained(
+        checkpoints_folder,
+        #subfolder="transformer"
+    )
+    model.to(device)
+    model.eval();
+    return model
+
+def pipeline_pixcell(model,
+                    vae, scheduler,
+                    guidance_scale=1.0,
+                    num_inference_steps=20,
+                    hist_image_path=None,
+                    uni_embeds_path=None,
+                    device='cuda'):
+
+    from PIL import Image
+    import matplotlib.pyplot as plt
+
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    timesteps = scheduler.timesteps
+    latent_shape = (1, 16, 32, 32)
+    latents = torch.randn(latent_shape, device=device, dtype=torch.float16)
+    latents = latents * scheduler.init_noise_sigma
+    hist_image = Image.open(hist_image_path).convert("RGB")
+    if uni_embeds_path is None:
+        uni_embeds = extract_uni_emb(hist_image_path, model_path="../pretrained_models/uni-2h/")
+    else:
+        uni_embeds = torch.from_numpy(np.load(uni_embeds_path)).unsqueeze(1).unsqueeze(1)
+    uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
+    uncond_y = torch.randn(1, 1, 1, 1536).to(device)
+    uncond_y /= 1536 ** 0.5
+    uni_embeds_input = torch.cat([uncond_y, uni_embeds], dim=0)
+    latent_channels = model.config.in_channels
+    # ============================================
+    # 8. Denoising Loop
+    # ============================================
+    with torch.no_grad(), torch.amp.autocast('cuda'):
+        for i, t in enumerate(timesteps):
+            # Expand latents for CFG
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Prepare timestep
+            timestep = t
+            if not torch.is_tensor(timestep):
+                timestep = torch.tensor([timestep], dtype=torch.float32, device=device)
+            timestep = timestep.expand(latent_model_input.shape[0])
+            # Predict noise
+            noise_pred = model(
+                latent_model_input,
+                encoder_hidden_states=uni_embeds_input,
+                timestep=timestep,
+                return_dict=False,
+            )[0]
+            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            # Handle learned sigma (if model predicts variance)
+            if model.config.out_channels // 2 == latent_channels:
+                noise_pred = noise_pred.chunk(2, dim=1)[0]
+
+            # Denoise step
+            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            print(f"Step {i+1}/{num_inference_steps}")
+    
+    # ============================================
+    # 9. Decode Latents to Image
+    # ============================================
+    vae_scale = vae.config.scaling_factor
+    vae_shift = getattr(vae.config, "shift_factor", 0)
+    latents_for_decode = latents.float()
+
+    with torch.no_grad():
+        generated_image = vae.decode(
+            (latents_for_decode / vae_scale) + vae_shift,
+            return_dict=False
+        )[0]
+    generated_image = (generated_image / 2 + 0.5).clamp(0, 1)
+    generated_image = generated_image.cpu().permute(0, 2, 3, 1).numpy()
+    generated_image = (generated_image * 255).round().astype(np.uint8)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(hist_image)
+    ax[0].set_title("Original Image")
+    ax[1].imshow(generated_image[0])
+    ax[1].set_title("Generated Image")
+    plt.show()
+    return generated_image[0]
+
 # %%
 if __name__ == "__main__":
     # %%
@@ -1044,7 +1142,6 @@ if __name__ == "__main__":
     train_diffusion = model_data['train_diffusion']
     discriminator = model_data['discriminator']
     segmentation_checker = model_data['segmentation_checker']
-    # %%
     verify_controlnet_initialization(base_model)
     verify_pixcell_checkpoint(base_model, checkpoint_path="../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors", device=accelerator.device)
     # %%
@@ -1062,7 +1159,6 @@ if __name__ == "__main__":
     base_model,
     discriminator
     )
-    # %%
     train_dataloader = optim_data['train_dataloader']
     optimizer = optim_data['optimizer']
     optimizer_d = optim_data['optimizer_d']
@@ -1084,7 +1180,7 @@ if __name__ == "__main__":
         config, accelerator, logger, args, train_dataloader,
         base_model, model_ema, optimizer, lr_scheduler
     )
-    # %%
+    device = accelerator.device
     models = {
         # Core Models
         'base_model': base_model,
@@ -1148,10 +1244,11 @@ if __name__ == "__main__":
     with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
         scheduler_config = json.load(file)
     scheduler = DPMSolverMultistepScheduler(**scheduler_config)
-    file_name = "epoch_5_step_785.pth"
+    file_name = "../checkpoints/pixcell_controlnet_full/checkpoints/epoch_1_step_50.pth"
+    file_name = None
     if file_name is not None:
         model, vae, config = load_models(
-            model_path=f"../{file_name}",
+            model_path=f"{file_name}",
             vae_path="../pretrained_models/sd-3.5-vae/vae",
             config_path="../configs/pan_cancer/config_controlnet_gan.py",
             device='cuda'
@@ -1160,6 +1257,110 @@ if __name__ == "__main__":
         model = base_model
         vae = model_data['vae']
         config = config
+
+    # %%
+    from diffusers import DPMSolverMultistepScheduler
+    module_name = "pixcell_transformer_2d"
+    file_path = "../pretrained_models/pixcell-256/transformer/pixcell_transformer_2d.py"
+    checkpoints_folder = "../pretrained_models/pixcell-256/transformer/"
+    device = 'cuda'
+    model = _load_pixcell_model(module_name, file_path, checkpoints_folder, device)
+    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(
+        scheduler_folder,
+    )
+    idx = 50
+    generated_image = pipeline_pixcell(model,
+                                        vae, scheduler,
+                                        guidance_scale=2,
+                                        num_inference_steps=20,
+                                        hist_image_path=f"../tcga_subset_0.1k/sample_{idx}.png",
+                                        uni_embeds_path=f"../features/sample_{idx}_uni.npy",
+                                        device=device)
+
+    # %%
+
+
+    # %% Inference without controlnet
+    from diffusion import IDDPM
+    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
+    x = torch.randn(1, 16, 32, 32).to(device)
+    y = torch.randn(1, 1, 1, 1536).to(device)
+    y /= 1536 ** 0.5
+    uni_idx = 10
+    #y = torch.from_numpy(np.load("uni_emb.npy")).unsqueeze(1).unsqueeze(1)
+    #y = torch.from_numpy(np.load(f"../features/sample_{uni_idx}_uni.npy"))
+    #y = y / 1536 ** 0.5
+    y = y.to(device)
+    y = y.view(1, 1, 1, 1536)
+    print(y.shape)
+    import json
+    with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
+        scheduler_config = json.load(file)
+    scheduler = DPMSolverMultistepScheduler(**scheduler_config)
+
+    num_inference_steps = 20
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    timesteps = scheduler.timesteps
+    latents = x * scheduler.init_noise_sigma
+    # ============================================
+    # 8. Denoising Loop
+    # ============================================
+    with torch.no_grad(), torch.amp.autocast('cuda'):
+        for i, t in enumerate(timesteps):
+            # Expand latents for CFG
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Prepare timestep
+            timestep = t
+            if not torch.is_tensor(timestep):
+                timestep = torch.tensor([timestep], dtype=torch.float32, device=device)
+            timestep = timestep.expand(latent_model_input.shape[0])
+
+            # Predict noise
+            noise_pred = model.forward_without_controlnet(
+                latent_model_input,
+                y=y,
+                timestep=timestep,
+            )
+            noise_pred, _ = noise_pred.chunk(2, dim=1)
+
+            # Denoise step
+            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+            print(f"Step {i+1}/{num_inference_steps}")
+    from torchvision.utils import save_image
+    # 6. Decode with proper scaling
+    vae_dtype = next(vae.parameters()).dtype
+    vae_scale = vae.config.scaling_factor
+    vae_shift = getattr(vae.config, "shift_factor", 0)
+
+    # 1. Math in float32, then cast to VAE's dtype
+    # Note: Use the formula that matches your specific model's config
+    latents_processed = (latents.float() / vae_scale) + vae_shift
+    #latents_processed = (latents.float() - vae_shift) / vae_scale
+    latents_to_decode = latents_processed.to(vae_dtype)
+
+    with torch.no_grad():
+        # Capture the output correctly
+        generated_image = vae.decode(latents_to_decode, return_dict=False)[0]
+
+    # 7. Post-process
+    # Map from [-1, 1] to [0, 1]
+    image_to_save = (generated_image / 2 + 0.5).clamp(0, 1)
+    print(image_to_save.shape)
+    # 8. Save and Display
+    # generated_image is [B, C, H, W], so image_to_save[0] is [C, H, W]
+    save_path = "new.png"
+    save_image(image_to_save[0], save_path)
+
+    from PIL import Image
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{uni_idx}.png"))
+    ax[1].imshow(Image.open(save_path))
+    plt.show()
+    
     # %%
     from huggingface_hub import hf_hub_download
     from PIL import Image
@@ -1178,16 +1379,17 @@ if __name__ == "__main__":
     scheduler = DPMSolverMultistepScheduler(**scheduler_config)
     # reshape UNI to (bs, 1, D)
     uni_emb = torch.from_numpy(np.load("uni_emb.npy")).unsqueeze(1).unsqueeze(1)
-    uni_emb = uni_emb / 1536 ** 0.5
+    #uni_emb = uni_emb / 1536 ** 0.5
     print("Extracted UNI:", uni_emb.shape)
     device = 'cuda'
     y = torch.randn(1, 1, 1,1536).to(device)
     y /= 1536 ** 0.5
-    uni_feature = torch.from_numpy(np.load(f"../features/sample_0_uni.npy"))
-    uni_feature /= 1536 ** 0.5
-    #uni_feature = y
     os.makedirs("../controlNet_gen", exist_ok=True)
     for idx in range(1):
+        uni_feature = torch.from_numpy(np.load(f"../features/sample_{idx}_uni.npy"))
+        #uni_feature /= 1536 ** 0.5
+        #uni_feature = y
+        #uni_feature = uni_emb
         image = generate_image_independent_cfg(
             model=base_model,
             vae=vae,
@@ -1200,21 +1402,14 @@ if __name__ == "__main__":
             uni_guidance_scale=1,
             mask_guidance_scale=0, 
         )
-        save_image(image, f"../controlNet_gen/generated_{idx}.png")
+        print(image.max(), image.min(), image.shape)
+        save_image(image, f"../controlNet_gen/generated_{idx}.png")#, normalize=True)
         print(f"✓ saved generated_{idx}.png")
         fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-        ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{idx}.png"))
+        #ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{idx}.png"))
         ax[0].imshow(Image.open(f"../test_image.png"))
         ax[1].imshow(Image.open(f"../masks/sample_{idx}_mask.png"))
+        img = Image.open(f"../controlNet_gen/generated_{idx}.png")
         ax[2].imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
     plt.imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
-    # %%
-    #tmp_image = image.clone()
-    plt.imshow(tmp_image.cpu().numpy().transpose(1, 2, 0))
-    # %%
-    min_diff = np.min(tmp_image.cpu().numpy().transpose(1, 2, 0) - image.cpu().numpy().transpose(1, 2, 0))
-    max_diff = np.max(tmp_image.cpu().numpy().transpose(1, 2, 0) - image.cpu().numpy().transpose(1, 2, 0))
-    print(f"Min diff: {min_diff}, Max diff: {max_diff}")
-    plt.imshow((tmp_image.cpu().numpy().transpose(1, 2, 0) - image.cpu().numpy().transpose(1, 2, 0)) / (max_diff - min_diff), vmin=0, vmax=1)
-
 # %%

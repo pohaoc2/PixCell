@@ -13,7 +13,8 @@ from tqdm import tqdm
 import timm
 from diffusers.models import AutoencoderKL
 from torchvision import transforms
-
+from timm.data.transforms_factory import create_transform
+from timm.data import resolve_data_config
 
 class UNI2hExtractor:
     """
@@ -80,16 +81,10 @@ class UNI2hExtractor:
         self.model.eval()
         
         # UNI-2h preprocessing (ImageNet normalization, 224x224 input)
-        self.transform = transforms.Compose([
-            transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
-        
+
+        self.transform = create_transform(
+            **resolve_data_config(self.model.pretrained_cfg, model=self.model)
+        )
         print(f"✓ UNI-2h model ready on {device}")
     
     @torch.no_grad()
@@ -142,7 +137,7 @@ class SD3VAEExtractor:
     Extracts latent representations (mean and std) for diffusion training
     Output: (2, 16, 32, 32) for 256x256 input
     """
-    def __init__(self, model_path, device='cuda', dtype=torch.float16):
+    def __init__(self, model_path, device='cuda', dtype=torch.float16, size=256):
         """
         Initialize SD3.5 VAE model
         
@@ -153,7 +148,7 @@ class SD3VAEExtractor:
         """
         self.device = device
         self.dtype = dtype
-        
+        self.size = size
         print(f"Loading SD3.5 VAE from {model_path}...")
         
         # Load VAE
@@ -187,14 +182,16 @@ class SD3VAEExtractor:
         # Get scaling factor
         self.scale_factor = self.vae.config.scaling_factor
         print(f"✓ VAE scaling factor: {self.scale_factor}")
-        
-        # Preprocessing
-        self.transform = transforms.Compose([
-            transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.CenterCrop(256),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])  # [-1, 1]
-        ])
+        from torchvision import transforms as T
+
+        self.transform = T.Compose(
+        [
+            T.Lambda(lambda img: img.convert("RGB")),
+            T.Resize((self.size, self.size)),
+            T.ToTensor(),
+            T.Normalize([0.5], [0.5]),
+        ]
+    )
         
         print(f"✓ SD3.5 VAE ready on {device}")
     
