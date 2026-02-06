@@ -27,7 +27,12 @@ data = dict(
 
 # Model setting
 model = "PixArt_XL_2_UNI_ControlNet"
-model = "PixCellControlNet_GAN"
+model = dict(
+    type='PixArt_XL_2_UNI_ControlNet',
+    control_channels=1,        # Cell mask channels
+    controlnet_depth=14,       # Reduced depth (half of 28)
+    freeze_base=True,          # Keep base model frozen
+)
 #model = "PixArt_XL_2_UNI"
 
 model_path = f"{root}/pretrained_models/pixcell-256/transformer"
