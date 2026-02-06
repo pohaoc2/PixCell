@@ -1,32 +1,24 @@
-# %%
-import os 
+import os
 import argparse
 import datetime
-import sys
 import time
 import types
 import warnings
 from pathlib import Path
 from copy import deepcopy
-import math
-current_file_path = Path(__file__).resolve()
-sys.path.insert(0, str(current_file_path.parent.parent))
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import DistributedType
 from diffusers.models import AutoencoderKL
 from mmcv.runner import LogBuffer
-from torch.utils.data import RandomSampler
 
 from diffusion import IDDPM
 from diffusion.data.builder import build_dataset, build_dataloader, set_data_root
 from diffusion.model.builder import build_model
 from diffusion.utils.checkpoint import save_checkpoint, load_checkpoint
-from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.utils.dist_utils import synchronize, get_world_size, clip_grad_norm_, flush
 from diffusion.utils.logger import get_root_logger, rename_file_with_creation_time
 from diffusion.utils.lr_scheduler import build_lr_scheduler
@@ -34,323 +26,10 @@ from diffusion.utils.misc import set_random_seed, read_config, init_random_seed,
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
 
 warnings.filterwarnings("ignore")
-torch.cuda.set_per_process_memory_fraction(0.995, 0)
-
-print(f"GPU limit set to {torch.cuda.get_device_properties(0).total_memory * 0.995 / 1024**2:.0f} MB")
-
-def _initialize_controlnet_from_base(model):
-    """
-    Initialize ControlNet weights by copying from the pretrained base model.
-    This ensures ControlNet starts with the same understanding as the base model.
-    
-    Args:
-        model: PixArt_UNI_ControlNet instance
-    """
-    if not hasattr(model, 'controlnet'):
-        return
-    
-    logger = get_root_logger()
-    logger.info("Copying base model weights to ControlNet...")
-    logger.info(f"ControlNet has {len(model.controlnet.control_blocks)} blocks, "
-                f"Base model has {len(model.blocks)} blocks")
-    
-    with torch.no_grad():
-        # Initialize control_x_embedder
-        nn.init.xavier_uniform_(model.controlnet.control_x_embedder.proj.weight.view(
-            [model.controlnet.control_x_embedder.proj.weight.shape[0], -1]
-        ))
-        
-        # Copy positional embeddings
-        model.controlnet.pos_embed.data.copy_(model.pos_embed.data)
-        
-        # Copy transformer block weights from base model to ControlNet
-        # Use the block mapping to determine which base blocks to copy from
-        for control_idx, control_block in enumerate(model.controlnet.control_blocks):
-            # Find which base block this controlnet block should copy from
-            # For even distribution: base_idx = control_idx * (base_depth / control_depth)
-            base_depth = len(model.blocks)
-            control_depth = len(model.controlnet.control_blocks)
-            base_idx = int(control_idx * base_depth / control_depth)
-            base_idx = min(base_idx, base_depth - 1)  # Ensure we don't go out of bounds
-            
-            base_block = model.blocks[base_idx]
-            
-            logger.info(f"  Copying base block {base_idx} -> control block {control_idx}")
-            
-            # Copy attention weights
-            control_block.attn.qkv.weight.data.copy_(base_block.attn.qkv.weight.data)
-            if base_block.attn.qkv.bias is not None:
-                control_block.attn.qkv.bias.data.copy_(base_block.attn.qkv.bias.data)
-            control_block.attn.proj.weight.data.copy_(base_block.attn.proj.weight.data)
-            if base_block.attn.proj.bias is not None:
-                control_block.attn.proj.bias.data.copy_(base_block.attn.proj.bias.data)
-            
-            # Copy Q/K norm if present
-            if hasattr(control_block.attn, 'q_norm') and not isinstance(control_block.attn.q_norm, nn.Identity):
-                if hasattr(base_block.attn.q_norm, 'weight') and base_block.attn.q_norm.weight is not None:
-                    control_block.attn.q_norm.weight.data.copy_(base_block.attn.q_norm.weight.data)
-                if hasattr(base_block.attn.q_norm, 'bias') and base_block.attn.q_norm.bias is not None:
-                    control_block.attn.q_norm.bias.data.copy_(base_block.attn.q_norm.bias.data)
-                if hasattr(base_block.attn.k_norm, 'weight') and base_block.attn.k_norm.weight is not None:
-                    control_block.attn.k_norm.weight.data.copy_(base_block.attn.k_norm.weight.data)
-                if hasattr(base_block.attn.k_norm, 'bias') and base_block.attn.k_norm.bias is not None:
-                    control_block.attn.k_norm.bias.data.copy_(base_block.attn.k_norm.bias.data)
-            
-            # Copy KV compression if present
-            if hasattr(control_block.attn, 'sr') and control_block.attn.sr_ratio > 1:
-                control_block.attn.sr.weight.data.copy_(base_block.attn.sr.weight.data)
-                control_block.attn.sr.bias.data.copy_(base_block.attn.sr.bias.data)
-                if hasattr(control_block.attn, 'norm'):
-                    control_block.attn.norm.weight.data.copy_(base_block.attn.norm.weight.data)
-                    control_block.attn.norm.bias.data.copy_(base_block.attn.norm.bias.data)
-            
-            # Copy cross-attention weights
-            control_block.cross_attn.q_linear.weight.data.copy_(base_block.cross_attn.q_linear.weight.data)
-            if base_block.cross_attn.q_linear.bias is not None:
-                control_block.cross_attn.q_linear.bias.data.copy_(base_block.cross_attn.q_linear.bias.data)
-            control_block.cross_attn.kv_linear.weight.data.copy_(base_block.cross_attn.kv_linear.weight.data)
-            if base_block.cross_attn.kv_linear.bias is not None:
-                control_block.cross_attn.kv_linear.bias.data.copy_(base_block.cross_attn.kv_linear.bias.data)
-            control_block.cross_attn.proj.weight.data.copy_(base_block.cross_attn.proj.weight.data)
-            if base_block.cross_attn.proj.bias is not None:
-                control_block.cross_attn.proj.bias.data.copy_(base_block.cross_attn.proj.bias.data)
-            
-            # Copy MLP weights
-            control_block.mlp.fc1.weight.data.copy_(base_block.mlp.fc1.weight.data)
-            if base_block.mlp.fc1.bias is not None:
-                control_block.mlp.fc1.bias.data.copy_(base_block.mlp.fc1.bias.data)
-            control_block.mlp.fc2.weight.data.copy_(base_block.mlp.fc2.weight.data)
-            if base_block.mlp.fc2.bias is not None:
-                control_block.mlp.fc2.bias.data.copy_(base_block.mlp.fc2.bias.data)
-            
-            # Copy scale_shift_table
-            control_block.scale_shift_table.data.copy_(base_block.scale_shift_table.data)
-        
-        # Verify zero convs remain zero
-        for i, zero_conv in enumerate(model.controlnet.zero_convs):
-            if not torch.allclose(zero_conv.weight, torch.zeros_like(zero_conv.weight)):
-                logger.info(f"Re-initializing zero conv {i} to zero")
-                nn.init.constant_(zero_conv.weight, 0)
-                nn.init.constant_(zero_conv.bias, 0)
-    
-    logger.info("ControlNet initialization complete!")
-    logger.info(f"Copied {len(model.controlnet.control_blocks)} transformer blocks from base model to ControlNet")
-
-@torch.no_grad()
-def verify_controlnet_initialization(model):
-    """
-    Verify that ControlNet weights were correctly copied from base model
-    
-    Args:
-        model: PixArt_UNI_ControlNet instance
-        
-    Returns:
-        bool: True if verification passes
-    """
-    logger = get_root_logger()
-    
-    print("\n" + "="*70)
-    print("VERIFYING CONTROLNET INITIALIZATION")
-    print("="*70)
-    
-    base_depth = len(model.blocks)
-    control_depth = len(model.controlnet.control_blocks)
-    
-    print(f"\nBase model blocks: {base_depth}")
-    print(f"ControlNet blocks: {control_depth}")
-    
-    all_passed = True
-    
-    # 1. Verify positional embeddings
-    print("\n1. Checking positional embeddings...")
-    if torch.allclose(model.controlnet.pos_embed, model.pos_embed, atol=1e-6):
-        print("   ✅ Positional embeddings match")
-    else:
-        print("   ❌ Positional embeddings DON'T match")
-        all_passed = False
-    
-    # 2. Verify transformer blocks
-    print("\n2. Checking transformer block weights...")
-    
-    for control_idx in range(control_depth):
-        # Calculate which base block should have been copied
-        base_idx = int(control_idx * base_depth / control_depth)
-        base_idx = min(base_idx, base_depth - 1)
-        
-        control_block = model.controlnet.control_blocks[control_idx]
-        base_block = model.blocks[base_idx]
-        
-        checks = []
-        
-        # Check self-attention QKV
-        qkv_match = torch.allclose(
-            control_block.attn.qkv.weight, 
-            base_block.attn.qkv.weight, 
-            atol=1e-6
-        )
-        checks.append(("Self-attn QKV", qkv_match))
-        
-        # Check self-attention projection
-        proj_match = torch.allclose(
-            control_block.attn.proj.weight,
-            base_block.attn.proj.weight,
-            atol=1e-6
-        )
-        checks.append(("Self-attn Proj", proj_match))
-        
-        # Check cross-attention Q
-        q_match = torch.allclose(
-            control_block.cross_attn.q_linear.weight,
-            base_block.cross_attn.q_linear.weight,
-            atol=1e-6
-        )
-        checks.append(("Cross-attn Q", q_match))
-        
-        # Check cross-attention KV
-        kv_match = torch.allclose(
-            control_block.cross_attn.kv_linear.weight,
-            base_block.cross_attn.kv_linear.weight,
-            atol=1e-6
-        )
-        checks.append(("Cross-attn KV", kv_match))
-        
-        # Check MLP fc1
-        fc1_match = torch.allclose(
-            control_block.mlp.fc1.weight,
-            base_block.mlp.fc1.weight,
-            atol=1e-6
-        )
-        checks.append(("MLP FC1", fc1_match))
-        
-        # Check MLP fc2
-        fc2_match = torch.allclose(
-            control_block.mlp.fc2.weight,
-            base_block.mlp.fc2.weight,
-            atol=1e-6
-        )
-        checks.append(("MLP FC2", fc2_match))
-        
-        # Check scale_shift_table
-        scale_match = torch.allclose(
-            control_block.scale_shift_table,
-            base_block.scale_shift_table,
-            atol=1e-6
-        )
-        checks.append(("Scale-shift", scale_match))
-        
-        # Report for this block
-        block_passed = all(match for _, match in checks)
-        if block_passed:
-            print(f"   ✅ Control block {control_idx} ← Base block {base_idx}: ALL weights match")
-        else:
-            print(f"   ❌ Control block {control_idx} ← Base block {base_idx}: MISMATCHES:")
-            for name, match in checks:
-                if not match:
-                    print(f"      ✗ {name}")
-            all_passed = False
-    
-    # 3. Verify zero convs are still zero
-    print("\n3. Checking zero convolutions...")
-    zero_convs_ok = True
-    for i, zero_conv in enumerate(model.controlnet.zero_convs):
-        is_zero = torch.allclose(zero_conv.weight, torch.zeros_like(zero_conv.weight), atol=1e-8)
-        if is_zero:
-            print(f"   ✅ Zero conv {i}: initialized to zero")
-        else:
-            print(f"   ❌ Zero conv {i}: NOT zero (mean: {zero_conv.weight.abs().mean():.6f})")
-            zero_convs_ok = False
-    
-    if not zero_convs_ok:
-        all_passed = False
-    
-    # 4. Verify control_x_embedder is different (not copied)
-    print("\n4. Checking control_x_embedder (should be different)...")
-    control_x_weight = model.controlnet.control_x_embedder.proj.weight
-    base_x_weight = model.x_embedder.proj.weight
-    
-    # They should have different shapes (different input channels)
-    if control_x_weight.shape != base_x_weight.shape:
-        print(f"   ✅ Different shapes: control={control_x_weight.shape[1]} vs base={base_x_weight.shape[1]} channels")
-    else:
-        # Same shape - check if they're different values
-        if not torch.allclose(control_x_weight, base_x_weight, atol=1e-6):
-            print(f"   ✅ Different weights (as expected)")
-        else:
-            print(f"   ⚠️  Weights are identical (might be ok if both use same init)")
-    
-    # Summary
-    print("\n" + "="*70)
-    if all_passed:
-        print("✅ ALL VERIFICATIONS PASSED - ControlNet correctly initialized!")
-    else:
-        print("❌ SOME VERIFICATIONS FAILED - Check logs above")
-    print("="*70)
-    
-    return all_passed
-
-def _print_trainable_parameters(model, logger):
-    """
-    Print statistics about frozen vs trainable parameters.
-    
-    Args:
-        model: PixArt_UNI_ControlNet instance
-        logger: Logger instance
-    """
-    total_params = 0
-    trainable_params = 0
-    frozen_params = 0
-    
-    param_groups = {
-        'base_embedders': 0,
-        'base_blocks': 0,
-        'base_final': 0,
-        'controlnet_embedder': 0,
-        'controlnet_blocks': 0,
-        'controlnet_zero_convs': 0,
-    }
-    
-    for name, param in model.named_parameters():
-        num_params = param.numel()
-        total_params += num_params
-        
-        if param.requires_grad:
-            trainable_params += num_params
-            
-            # Categorize trainable parameters
-            if 'controlnet.control_x_embedder' in name:
-                param_groups['controlnet_embedder'] += num_params
-            elif 'controlnet.control_blocks' in name:
-                param_groups['controlnet_blocks'] += num_params
-            elif 'controlnet.zero_convs' in name:
-                param_groups['controlnet_zero_convs'] += num_params
-        else:
-            frozen_params += num_params
-            
-            # Categorize frozen parameters
-            if any(x in name for x in ['x_embedder', 't_embedder', 't_block', 'y_embedder', 'pos_embed']):
-                param_groups['base_embedders'] += num_params
-            elif 'blocks.' in name and 'controlnet' not in name:
-                param_groups['base_blocks'] += num_params
-            elif 'final_layer' in name:
-                param_groups['base_final'] += num_params
-    
-    logger.info("=" * 80)
-    logger.info("Parameter Statistics:")
-    logger.info(f"Total Parameters: {total_params:,}")
-    logger.info(f"Trainable Parameters: {trainable_params:,} ({100*trainable_params/total_params:.2f}%)")
-    logger.info(f"Frozen Parameters: {frozen_params:,} ({100*frozen_params/total_params:.2f}%)")
-    logger.info("-" * 80)
-    logger.info("Parameter Breakdown:")
-    logger.info(f"  Base Embedders (frozen): {param_groups['base_embedders']:,}")
-    logger.info(f"  Base Blocks (frozen): {param_groups['base_blocks']:,}")
-    logger.info(f"  Base Final Layer (frozen): {param_groups['base_final']:,}")
-    logger.info(f"  ControlNet Embedder (trainable): {param_groups['controlnet_embedder']:,}")
-    logger.info(f"  ControlNet Blocks (trainable): {param_groups['controlnet_blocks']:,}")
-    logger.info(f"  ControlNet Zero Convs (trainable): {param_groups['controlnet_zero_convs']:,}")
-    logger.info("=" * 80)
 
 
 def set_fsdp_env():
+    """Set environment variables for FSDP training."""
     os.environ["ACCELERATE_USE_FSDP"] = 'true'
     os.environ["FSDP_AUTO_WRAP_POLICY"] = 'TRANSFORMER_BASED_WRAP'
     os.environ["FSDP_BACKWARD_PREFETCH"] = 'BACKWARD_PRE'
@@ -366,92 +45,79 @@ def ema_update(model_dest: nn.Module, model_src: nn.Module, rate):
         p_dest.data.mul_(rate).add_((1 - rate) * p_src.data)
 
 
+def _find_checkpoint(resume_dir):
+    """Find the latest checkpoint in a directory."""
+    if os.path.isfile(resume_dir):
+        return resume_dir
     
-def verify_pixcell_checkpoint(model, checkpoint_path=None, device='cuda'):
-    """Load checkpoint directly and verify key values"""
-    from safetensors.torch import load_file
-    if checkpoint_path is None:
-        checkpoint_path = "../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors"
-    else:
-        checkpoint_path = checkpoint_path
-    state_dict = load_file(checkpoint_path)
+    checkpoints = [ckpt for ckpt in os.listdir(resume_dir) if ckpt.endswith('.pth')]
+    if len(checkpoints) == 0:
+        raise ValueError(f"No checkpoint found in {resume_dir}")
     
-    # Check a specific weight from the checkpoint
-    original_timestep_weight = state_dict['adaln_single.emb.timestep_embedder.linear_1.weight']
-    print(f"Original checkpoint timestep embedder weight (first 5 values):")
-    print(original_timestep_weight[0, :5])
-    
-    # After loading into your model, check if it matches
-    model_timestep_weight = model.t_embedder.mlp[0].weight
-    print(f"\nModel timestep embedder weight (first 5 values):")
-    print(model_timestep_weight[0, :5])
-    
-    # Check if they match
-    if torch.allclose(original_timestep_weight.to(device), model_timestep_weight.to(device), atol=1e-6):
-        print("\n✅ Weights match! PixCell loaded correctly.")
-    else:
-        print("\n❌ Weights don't match! Something went wrong.")
-
-@torch.no_grad()
-def generate_image_with_diffusion(model, vae, uni_feature_path, num_steps=50, device='cuda'):
-    """
-    Proper image generation using diffusion sampling
-    """
-    from diffusers import DDPMScheduler  # or DDIMScheduler for faster sampling
-    
-    model.eval()
-    vae.eval()
-    
-    # Load UNI features
-    y = torch.from_numpy(np.load(uni_feature_path))
-    y = y.view(1, 1, 1, 1536).expand(1, 1, 120, 1536).to(device)
-    
-    # Initialize scheduler
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_schedule="linear",
+    checkpoints = sorted(
+        checkpoints, 
+        key=lambda x: int(x.split('_')[-1].replace('.pth', '')), 
+        reverse=True
     )
-    scheduler.set_timesteps(num_steps)
+    return os.path.join(resume_dir, checkpoints[0])
+
+
+def _setup_accelerator(config, args):
+    """Initialize accelerator with appropriate settings."""
+    init_handler = InitProcessGroupKwargs()
+    init_handler.timeout = datetime.timedelta(seconds=5400)
     
-    # Start with random noise
-    latent_shape = (1, 16, 32, 32)
-    latents = torch.randn(latent_shape, device=device)
+    fsdp_plugin = None
+    if config.use_fsdp:
+        from accelerate import FullyShardedDataParallelPlugin
+        from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
+        set_fsdp_env()
+        fsdp_plugin = FullyShardedDataParallelPlugin(
+            state_dict_config=FullStateDictConfig(offload_to_cpu=False, rank0_only=False)
+        )
     
-    print(f"Starting diffusion sampling with {num_steps} steps...")
+    from accelerate import DataLoaderConfiguration
+    dataloader_config = DataLoaderConfiguration(dispatch_batches=True)
     
-    # Iterative denoising
-    for i, t in enumerate(scheduler.timesteps):
-        print(f"Step {i+1}/{num_steps}, timestep: {t}", end='\r')
-        
-        timestep = torch.tensor([t], device=device)
-        
-        # Predict noise
-        noise_pred = model.forward_without_controlnet(latents, timestep, y)
-        
-        # Handle pred_sigma
-        if model.pred_sigma:
-            noise_pred = noise_pred.chunk(2, dim=1)[0]
-        
-        # Denoise one step
-        latents = scheduler.step(noise_pred, t, latents).prev_sample
+    accelerator = Accelerator(
+        mixed_precision=config.mixed_precision,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        log_with=args.report_to,
+        project_dir=os.path.join(config.work_dir, "logs"),
+        fsdp_plugin=fsdp_plugin,
+        dataloader_config=dataloader_config,
+        kwargs_handlers=[init_handler]
+    )
     
-    print("\nSampling complete! Decoding...")
+    return accelerator
+
+
+def _resume_from_checkpoint(config, model, model_ema, optimizer, lr_scheduler, max_length, logger):
+    """Resume training from a checkpoint."""
+    resume_path = config.resume_from['checkpoint']
+    path = os.path.basename(resume_path)
+    start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
+    start_step = int(path.replace('.pth', '').split("_")[3])
     
-    # Decode final latents
-    vae_dtype = next(vae.parameters()).dtype
-    latents = latents.to(vae_dtype)
-    image = vae.decode((latents / vae.config.scaling_factor) + vae.config.shift_factor, return_dict=False)[0]
+    _, missing, unexpected = load_checkpoint(
+        **config.resume_from,
+        model=model,
+        model_ema=model_ema,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        max_length=max_length,
+    )
     
-    # Save
-    from torchvision.utils import save_image
-    save_image((image + 1) / 2, 'pixcell_generated.png')
-    print("✅ Saved generated image to: pixcell_generated.png")
+    logger.warning(f'Missing keys: {missing}')
+    logger.warning(f'Unexpected keys: {unexpected}')
     
-    return image
+    return start_epoch, start_step
 
 
 def parse_args(args_list=None):
     """
+    Parse command-line arguments.
+    
     Args:
         args_list: List of arguments (for programmatic use) or None (for CLI use)
     """
@@ -459,6 +125,7 @@ def parse_args(args_list=None):
     parser.add_argument("config", type=str, help="config")
     parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument('--resume-from', help='the dir to resume the training')
+    parser.add_argument('--load-from', help='the checkpoint to load from')
     parser.add_argument('--local-rank', type=int, default=-1)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--batch-size', type=int, default=None)
@@ -468,13 +135,12 @@ def parse_args(args_list=None):
     parser.add_argument("--loss-report-name", type=str, default="loss")
     parser.add_argument("--skip-step", type=int, default=0)
     
-    # Parse from args_list if provided, otherwise from sys.argv
     return parser.parse_args(args_list)
 
 
 def initialize_config_and_accelerator(args_list=None):
     """
-    Parse arguments, read config, and initialize accelerator
+    Parse arguments, read config, and initialize accelerator.
     
     Returns:
         dict with: config, accelerator, logger, args
@@ -493,7 +159,8 @@ def initialize_config_and_accelerator(args_list=None):
             checkpoint=resume_from,
             load_ema=True,
             resume_optimizer=True,
-            resume_lr_scheduler=True)
+            resume_lr_scheduler=True
+        )
     
     if args.debug:
         config.log_interval = 1
@@ -536,57 +203,31 @@ def initialize_config_and_accelerator(args_list=None):
 
 def initialize_models(config, accelerator, logger):
     """
-    Initialize base model, EMA, VAE, and optional discriminator/segmentation
+    Initialize all models: base model, EMA model, VAE, and diffusion.
     
     Returns:
-        dict with: base_model, model_ema, vae, train_diffusion, 
-                   discriminator, segmentation_checker
+        dict with: base_model, model_ema, vae, train_diffusion
     """
     image_size = config.image_size
     latent_size = int(image_size) // 8
+    max_length = config.model_max_length
+    
+    # VAE setup
+    vae = None
+    if not config.data.load_vae_feat:
+        vae = AutoencoderKL.from_pretrained(
+            config.vae_pretrained, 
+            torch_dtype=torch.float16
+        ).to(accelerator.device)
+        config.scale_factor = vae.config.scaling_factor
+    
+    logger.info(f"VAE scale factor: {config.scale_factor}")
+    
+    # Build model kwargs
     pred_sigma = getattr(config, 'pred_sigma', True)
     learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
-    max_length = config.model_max_length
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
-    print("VAE" + "="*70)
-    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-    # Load VAE
-    vae = AutoencoderKL.from_pretrained(
-        "../pretrained_models/sd-3.5-vae/vae",
-        local_files_only=True,
-        use_safetensors=True,  # Explicitly tell it to look for the safetensors file you have
-        trust_remote_code=True # Sometimes required if the VAE uses custom scaling
-    )
-    vae.to('cpu')
-    """
-    # Delete encoder components before moving to GPU
-    if hasattr(vae, 'encoder') and vae.encoder is not None:
-        vae.encoder.cpu()  # Ensure it's on CPU
-        del vae.encoder
-        
-    if hasattr(vae, 'quant_conv') and vae.quant_conv is not None:
-        vae.quant_conv.cpu()
-        del vae.quant_conv
-    # Set to None to break any remaining references
-    vae.encoder = None
-    vae.quant_conv = None
-
-    # Force garbage collection
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
-    """
-    # Now move only the decoder to GPU
-    vae.to(accelerator.device)
-    print('-'*70)
-    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
     
-    config.scale_factor = vae.config.scaling_factor
-    logger.info(f"vae scale factor: {config.scale_factor}")
-    
-    # Setup model kwargs
     model_kwargs = {
         "pe_interpolation": config.pe_interpolation,
         "config": config,
@@ -606,43 +247,49 @@ def initialize_models(config, accelerator, logger):
         snr=config.snr_loss
     )
     
-    # Build base model with ControlNet
-    print("Base Model" + "="*70)
-    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-    base_model = _build_and_load_base_model(config, model_kwargs, accelerator, logger, max_length)
-    print('-'*70)
-    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-    # Build EMA model
-    print("EMA Model" + "="*70)
-    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-    model_ema = _build_ema_model(base_model, config, model_kwargs, accelerator, logger)
-    print('-'*70)
-    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    print(f"Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+    # Build base model
+    base_model = build_model(
+        config.model,
+        config.grad_checkpointing,
+        config.get('fp32_attention', False),
+        input_size=latent_size,
+        learn_sigma=learn_sigma,
+        pred_sigma=pred_sigma,
+        **model_kwargs
+    ).train()
     
-    # Build optional discriminator
-    discriminator = _build_discriminator(config, logger) if config.get('use_discriminator', False) else None
+    logger.info(
+        f"{base_model.__class__.__name__} Model Parameters: "
+        f"{sum(p.numel() for p in base_model.parameters()):,}"
+    )
     
-    # Build optional segmentation checker
-    segmentation_checker = _build_segmentation_checker(config, accelerator, image_size, logger) \
-        if config.get('use_segmentation_consistency', False) else None
+    # Load checkpoint if specified
+    if config.load_from is not None:
+        missing, unexpected = load_checkpoint(
+            config.load_from,
+            base_model,
+            load_ema=config.get('load_ema', False),
+            max_length=max_length,
+            ignore_keys=config.get('ignore_keys', [])
+        )
+        logger.warning(f'Missing keys: {missing}')
+        logger.warning(f'Unexpected keys: {unexpected}')
+    
+    # Create EMA model
+    model_ema = deepcopy(base_model).eval()
+    ema_update(model_ema, base_model, 0.)
     
     return {
         'base_model': base_model,
         'model_ema': model_ema,
         'vae': vae,
         'train_diffusion': train_diffusion,
-        'discriminator': discriminator,
-        'segmentation_checker': segmentation_checker,
     }
 
 
 def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, discriminator=None):
     """
-    Initialize dataset, dataloader, optimizer, and lr_scheduler
+    Initialize dataset, dataloader, optimizer, and lr_scheduler.
     
     Returns:
         dict with: train_dataloader, optimizer, optimizer_d, lr_scheduler
@@ -698,7 +345,7 @@ def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, di
 def setup_training_state(config, accelerator, logger, args, train_dataloader,
                          base_model, model_ema, optimizer, lr_scheduler):
     """
-    Setup tracking, resume from checkpoint if needed, prepare with accelerator
+    Setup tracking, resume from checkpoint if needed, prepare with accelerator.
     
     Returns:
         dict with: start_epoch, start_step, skip_step, total_steps
@@ -721,7 +368,7 @@ def setup_training_state(config, accelerator, logger, args, train_dataloader,
     # Resume from checkpoint if specified
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
         start_epoch, start_step = _resume_from_checkpoint(
-            config, base_model, model_ema, optimizer, lr_scheduler, 
+            config, base_model, model_ema, optimizer, lr_scheduler,
             config.model_max_length, logger
         )
     
@@ -740,676 +387,256 @@ def setup_training_state(config, accelerator, logger, args, train_dataloader,
     }
 
 
-def initialize_all(args_list=None):
+def train(models_dict):
     """
-    Main initialization function that orchestrates all setup steps
+    Main training loop for PixCell ControlNet.
     
-    Returns:
-        Complete dict with all training components
+    Args:
+        models_dict: Dictionary containing all models and training components
     """
-    # Step 1: Config and accelerator
-    init_data = initialize_config_and_accelerator(args_list)
+    # Unpack models and components
+    base_model = models_dict['base_model']
+    model_ema = models_dict['model_ema']
+    vae = models_dict['vae']
+    train_diffusion = models_dict['train_diffusion']
+    optimizer = models_dict['optimizer']
+    optimizer_d = models_dict.get('optimizer_d', None)
+    lr_scheduler = models_dict['lr_scheduler']
+    train_dataloader = models_dict['train_dataloader']
+    accelerator = models_dict['accelerator']
+    config = models_dict['config']
+    logger = models_dict['logger']
+    args = models_dict['args']
+    
+    start_epoch = models_dict['start_epoch']
+    start_step = models_dict['start_step']
+    skip_step = models_dict['skip_step']
+    total_steps = models_dict['total_steps']
+    
+    # Setup debugging if needed
+    if config.get('debug_nan', False):
+        DebugUnderflowOverflow(base_model)
+        logger.info('NaN debugger registered. Start to detect overflow during training.')
+    
+    # Training state
+    time_start, last_tic = time.time(), time.time()
+    log_buffer = LogBuffer()
+    ckpt_time_limit_saved = False
+    global_step = start_step + 1
+    
+    load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
+    
+    # Main training loop
+    for epoch in range(start_epoch + 1, config.num_epochs + 1):
+        data_time_start = time.time()
+        data_time_all = 0
+        
+        for step, batch in enumerate(train_dataloader):
+            # Skip steps if resuming
+            if step < skip_step:
+                if (step + 1) % 50 == 0 and accelerator.is_main_process:
+                    info = f"Skipping Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}]"
+                    logger.info(info)
+                continue
+            
+            # Encode images to latent space
+            if load_vae_feat:
+                z = batch[0]
+            else:
+                with torch.no_grad():
+                    with torch.cuda.amp.autocast(
+                        enabled=(config.mixed_precision in ['fp16', 'bf16'])
+                    ):
+                        posterior = vae.encode(batch[0]).latent_dist
+                        if config.sample_posterior:
+                            z = posterior.sample()
+                        else:
+                            z = posterior.mode()
+            
+            # Apply shift and scale
+            if hasattr(config, 'shift_factor'):
+                z = z - config.shift_factor
+            clean_images = z * config.scale_factor
+            
+            # Unpack batch
+            y = batch[1]
+            control_input = batch[2]
+            data_info = batch[3]
+            
+            
+            # Sample timesteps
+            bs = clean_images.shape[0]
+            timesteps = torch.randint(
+                0, config.train_sampling_steps, (bs,), device=clean_images.device
+            ).long()
+            
+            grad_norm = None
+            data_time_all += time.time() - data_time_start
+            
+            # Training step
+            with accelerator.accumulate(base_model):
+                optimizer.zero_grad()
+                
+                # Forward pass
+                model_kwargs = dict(
+                    y=y,
+                    mask=None,
+                    data_info=data_info,
+                    control_input=control_input
+                )
+                loss_term = train_diffusion.training_losses(
+                    base_model, clean_images, timesteps, model_kwargs=model_kwargs
+                )
+                loss = loss_term['loss'].mean()
+                
+                # Backward pass
+                accelerator.backward(loss)
+                
+                if accelerator.sync_gradients:
+                    grad_norm = accelerator.clip_grad_norm_(
+                        base_model.parameters(), config.gradient_clip
+                    )
+                
+                optimizer.step()
+                lr_scheduler.step()
+                
+                # Update EMA
+                if accelerator.sync_gradients:
+                    ema_update(model_ema, base_model, config.ema_rate)
+            
+            # Logging
+            lr = lr_scheduler.get_last_lr()[0]
+            logs = {args.loss_report_name: accelerator.gather(loss).mean().item()}
+            if grad_norm is not None:
+                logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
+            log_buffer.update(logs)
+            
+            if (step + 1) % config.log_interval == 0 or (step + 1) == 1:
+                t = (time.time() - last_tic) / config.log_interval
+                t_d = data_time_all / config.log_interval
+                avg_time = (time.time() - time_start) / (global_step + 1)
+                eta = str(datetime.timedelta(seconds=int(avg_time * (total_steps - global_step - 1))))
+                eta_epoch = str(datetime.timedelta(seconds=int(avg_time * (len(train_dataloader) - step - 1))))
+                log_buffer.average()
+                
+                info = (
+                    f"Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}]: "
+                    f"total_eta: {eta}, epoch_eta:{eta_epoch}, time_all:{t:.3f}, "
+                    f"time_data:{t_d:.3f}, lr:{lr:.3e}, "
+                )
+                
+                if hasattr(base_model, 'module'):
+                    info += f's:({base_model.module.h}, {base_model.module.w}), '
+                else:
+                    info += f's:({base_model.h}, {base_model.w}), '
+                
+                info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
+                logger.info(info)
+                
+                last_tic = time.time()
+                log_buffer.clear()
+                data_time_all = 0
+            
+            logs.update(lr=lr)
+            accelerator.log(logs, step=global_step)
+            
+            global_step += 1
+            data_time_start = time.time()
+            
+            # Checkpoint saving
+            def save_checkpoint_fn():
+                accelerator.wait_for_everyone()
+                if accelerator.is_main_process:
+                    os.umask(0o000)
+                    save_checkpoint(
+                        os.path.join(config.work_dir, 'checkpoints'),
+                        epoch=epoch,
+                        step=global_step,
+                        model=accelerator.unwrap_model(base_model),
+                        model_ema=accelerator.unwrap_model(model_ema),
+                        optimizer=optimizer,
+                        lr_scheduler=lr_scheduler
+                    )
+            
+            # Check time limit
+            time_elapsed_minutes = (time.time() - time_start) / 60
+            time_to_save = (time_elapsed_minutes >= args.slurm_time_limit) and (not ckpt_time_limit_saved)
+            
+            if (config.save_model_steps and global_step % config.save_model_steps == 0) or time_to_save:
+                if not ckpt_time_limit_saved:
+                    ckpt_time_limit_saved = True
+                save_checkpoint_fn()
+        
+        # Epoch checkpoint
+        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
+            save_checkpoint_fn()
+        
+        accelerator.wait_for_everyone()
+
+
+def main():
+    """Main entry point for training."""
+    # Initialize config and accelerator
+    init_data = initialize_config_and_accelerator()
     config = init_data['config']
     accelerator = init_data['accelerator']
     logger = init_data['logger']
     args = init_data['args']
     
-    # Step 2: Models
-    model_data = initialize_models(config, accelerator, logger)
-    
-    # Step 3: Dataset and optimizers
-    optim_data = initialize_dataset_and_optimizer(
-        config, accelerator, logger,
-        model_data['base_model'],
-        model_data['discriminator']
-    )
-    
-    # Step 4: Prepare everything with accelerator
-    base_model = accelerator.prepare(model_data['base_model'])
-    model_ema = accelerator.prepare(model_data['model_ema'])
-    optimizer = accelerator.prepare(optim_data['optimizer'])
-    train_dataloader = accelerator.prepare(optim_data['train_dataloader'])
-    lr_scheduler = accelerator.prepare(optim_data['lr_scheduler'])
-    
-    discriminator = None
-    optimizer_d = None
-    if model_data['discriminator'] is not None:
-        discriminator = accelerator.prepare(model_data['discriminator'])
-        optimizer_d = accelerator.prepare(optim_data['optimizer_d'])
-    
-    # Step 5: Training state
-    state_data = setup_training_state(
-        config, accelerator, logger, args, train_dataloader,
-        base_model, model_ema, optimizer, lr_scheduler
-    )
-    
-    # Return everything
-    return {
-        # Core Models
-        'base_model': base_model,
-        'model_ema': model_ema,
-        'vae': model_data['vae'],
-        'train_diffusion': model_data['train_diffusion'],
-        
-        # Training Components
-        'optimizer': optimizer,
-        'optimizer_d': optimizer_d,
-        'lr_scheduler': lr_scheduler,
-        'train_dataloader': train_dataloader,
-        
-        # Optional Models
-        'discriminator': discriminator,
-        'segmentation_checker': model_data['segmentation_checker'],
-        
-        # Accelerator & Config
-        'accelerator': accelerator,
-        'config': config,
-        'logger': logger,
-        
-        # Training State
-        'start_epoch': state_data['start_epoch'],
-        'start_step': state_data['start_step'],
-        'skip_step': state_data['skip_step'],
-        'total_steps': state_data['total_steps'],
-        
-        # Additional info
-        'args': args,
-    }
-
-
-# Helper functions
-def _find_checkpoint(resume_from):
-    """Find latest checkpoint in directory or return file path"""
-    if os.path.isdir(resume_from):
-        checkpoints = [ckpt for ckpt in os.listdir(resume_from) if ckpt.endswith('.pth')]
-        if len(checkpoints) == 0:
-            raise ValueError(f"No checkpoint found in {resume_from}")
-        checkpoints = sorted(checkpoints, key=lambda x: int(x.split('_')[-1].replace('.pth', '')), reverse=True)
-        return os.path.join(resume_from, checkpoints[0])
-    return resume_from
-
-
-def _setup_accelerator(config, args):
-    """Setup accelerator with FSDP or DDP"""
-    init_handler = InitProcessGroupKwargs()
-    init_handler.timeout = datetime.timedelta(seconds=5400)
-    
-    if config.use_fsdp:
-        from accelerate import FullyShardedDataParallelPlugin
-        from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
-        set_fsdp_env()
-        fsdp_plugin = FullyShardedDataParallelPlugin(
-            state_dict_config=FullStateDictConfig(offload_to_cpu=False, rank0_only=False)
-        )
-    else:
-        fsdp_plugin = None
-    
-    from accelerate import Accelerator, DataLoaderConfiguration
-    dataloader_config = DataLoaderConfiguration(dispatch_batches=True)
-    
-    return Accelerator(
-        mixed_precision=config.mixed_precision,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        log_with=args.report_to,
-        project_dir=os.path.join(config.work_dir, "logs"),
-        fsdp_plugin=fsdp_plugin,
-        dataloader_config=dataloader_config,
-        kwargs_handlers=[init_handler]
-    )
-
-
-def _build_and_load_base_model(config, model_kwargs, accelerator, logger, max_length):
-    """Build base model and load pretrained weights"""
-    from diffusion.model.builder import build_model
-    
-    logger.info("Building PixCell model architecture...")
-    base_model = build_model(config.model, **model_kwargs).to(accelerator.device)
-    
-    if config.load_from is not None:
-        load_file = _find_model_file(config.load_from)
-        logger.info(f"Loading pretrained base model weights from {load_file}")
-        
-        missing, unexpect = load_checkpoint(
-            load_file,
-            base_model,
-            load_ema=config.get('load_ema', False),
-            max_length=max_length
-        )
-        
-        logger.info(f"Missing keys: {len(missing)}")
-        logger.info(f"Unexpected keys: {len(unexpect)}")
-        
-        if missing:
-            logger.warning(f"Missing keys: {missing}")
-        if unexpect:
-            logger.warning(f"Unexpected keys (first 10): {unexpect[:10]}")
-        
-        logger.info("Initializing ControlNet from base model weights...")
-        _initialize_controlnet_from_base(base_model)
-        _print_trainable_parameters(base_model, logger)
-    
-    # Enable gradient checkpointing
-    if hasattr(base_model, 'controlnet'):
-        for block in base_model.controlnet.control_blocks:
-            block.gradient_checkpointing = True
-    
-    logger.info(f"{base_model.__class__.__name__} Model Parameters: {sum(p.numel() for p in base_model.parameters()):,}")
-    logger.info(f"Trainable Parameters: {sum(p.numel() for p in base_model.parameters() if p.requires_grad):,}")
-    
-    return base_model
-
-
-def _find_model_file(load_from):
-    """Find safetensors file in directory or return path"""
-    load_path = Path(load_from)
-    if load_path.is_dir():
-        st_files = list(load_path.glob("**/diffusion_pytorch_model.safetensors"))
-        return str(st_files[0]) if st_files else str(load_from)
-    return str(load_from)
-
-
-def _build_ema_model(base_model, config, model_kwargs, accelerator, logger):
-    """Build EMA model and initialize from base model"""
-    from diffusion.model.builder import build_model
-    
-    logger.info("Initializing EMA model architecture...")
-    model_ema = build_model(config.model, **model_kwargs).to(accelerator.device)
-    model_ema.load_state_dict(base_model.state_dict())
-    model_ema.eval()
-    
-    for param in model_ema.parameters():
-        param.requires_grad = False
-    
-    logger.info("✓ EMA model initialized via state_dict copy.")
-    ema_update(model_ema, base_model, 0.)
-    
-    return model_ema
-
-
-def _build_discriminator(config, logger):
-    """Build discriminator for adversarial training"""
-    logger.info("Building discriminator for adversarial training...")
-    from discriminator import build_discriminator
-    
-    discriminator = build_discriminator(config.discriminator).train()
-    logger.info(f"Discriminator Parameters: {sum(p.numel() for p in discriminator.parameters()):,}")
-    
-    return discriminator
-
-
-def _build_segmentation_checker(config, accelerator, image_size, logger):
-    """Build segmentation consistency checker"""
-    logger.info("Building cell segmentation consistency checker with Cellpose...")
-    from cell_segmentation_consistency import CellSegmentationConsistency
-    
-    segmentation_checker = CellSegmentationConsistency(
-        model_type=config.get('cellpose_model_type', 'cyto2'),
-        device=accelerator.device,
-        image_size=image_size,
-        use_gpu=True,
-        diameter=config.get('cell_diameter', 30),
-    )
-    
-    if segmentation_checker.model is not None:
-        if hasattr(segmentation_checker.model, 'eval'):
-            logger.info(f"✓ Using Cellpose model: {config.get('cellpose_model_type', 'cyto2')}")
-        else:
-            logger.info(f"Segmentation Model Parameters: {sum(p.numel() for p in segmentation_checker.model.parameters()):,}")
-            for param in segmentation_checker.model.parameters():
-                param.requires_grad = False
-            logger.info("✓ Using lightweight U-Net segmentation model (frozen)")
-    
-    return segmentation_checker
-
-
-def _resume_from_checkpoint(config, base_model, model_ema, optimizer, lr_scheduler, max_length, logger):
-    """Resume training from checkpoint"""
-    resume_path = config.resume_from['checkpoint']
-    path = os.path.basename(resume_path)
-    start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
-    start_step = int(path.replace('.pth', '').split("_")[3])
-    
-    _, missing, unexpected = load_checkpoint(
-        **config.resume_from,
-        model=base_model,
-        model_ema=model_ema,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        max_length=max_length,
-    )
-    
-    logger.warning(f'Missing keys: {missing}')
-    logger.warning(f'Unexpected keys: {unexpected}')
-    
-    return start_epoch, start_step
-
-def extract_uni_emb(image_path, model_path=None):
-    import timm
-    if model_path is None:
-        model_path = "/home/ec2-user/PixCell/pretrained_models/uni-2h/"
-    model_path = Path(model_path)
-    weight_files = list(model_path.glob("*.pth")) + list(model_path.glob("pytorch_model.bin"))
-    timm_kwargs = {
-                'img_size': 224,
-                'patch_size': 14,
-                'depth': 24,
-                'num_heads': 24,
-                'init_values': 1e-5,
-                'embed_dim': 1536,
-                'mlp_ratio': 2.66667*2,
-                'num_classes': 0,
-                'no_embed_class': True,
-                'mlp_layer': timm.layers.SwiGLUPacked,
-                'act_layer': torch.nn.SiLU,
-                'reg_tokens': 8,
-                'dynamic_img_size': True
-            }
-
-    checkpoint = torch.load(weight_files[0], map_location='cpu')
-    uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
-    # Handle different checkpoint formats
-    if 'model' in checkpoint:
-        state_dict = checkpoint['model']
-    elif 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-    else:
-        state_dict = checkpoint
-    #uni_model.load_state_dict(state_dict, strict=False)
-    uni_model.eval()
-    uni_model.to('cpu')
-    from timm.data import resolve_data_config
-    from timm.data.transforms_factory import create_transform
-    uni_transforms = create_transform(**resolve_data_config(uni_model.pretrained_cfg, model=uni_model))
-    image = Image.open(image_path).convert("RGB")
-    uni_inp = uni_transforms(image).unsqueeze(dim=0)
-    with torch.inference_mode():
-        uni_emb = uni_model(uni_inp.to('cpu'))
-    # save the uni_emb
-    np.save("uni_emb.npy", uni_emb.cpu().numpy())
-    return uni_emb
-
-def _load_pixcell_model(module_name, file_path, checkpoints_folder, device='cuda'):
-    import importlib.util
-    import sys
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    pixcell_mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = pixcell_mod
-    spec.loader.exec_module(pixcell_mod)
-    PixCellTransformer2DModel = pixcell_mod.PixCellTransformer2DModel
-    model = PixCellTransformer2DModel.from_pretrained(
-        checkpoints_folder,
-        #subfolder="transformer"
-    )
-    model.to(device)
-    model.eval();
-    return model
-
-def pipeline_pixcell(model,
-                    vae, scheduler,
-                    guidance_scale=1.0,
-                    num_inference_steps=20,
-                    hist_image_path=None,
-                    uni_embeds_path=None,
-                    device='cuda'):
-
-    from PIL import Image
-    import matplotlib.pyplot as plt
-
-    scheduler.set_timesteps(num_inference_steps, device=device)
-    timesteps = scheduler.timesteps
-    latent_shape = (1, 16, 32, 32)
-    latents = torch.randn(latent_shape, device=device, dtype=torch.float16)
-    latents = latents * scheduler.init_noise_sigma
-    hist_image = Image.open(hist_image_path).convert("RGB")
-    if uni_embeds_path is None:
-        uni_embeds = extract_uni_emb(hist_image_path, model_path="../pretrained_models/uni-2h/")
-    else:
-        uni_embeds = torch.from_numpy(np.load(uni_embeds_path)).unsqueeze(1).unsqueeze(1)
-    uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    uncond_y = torch.randn(1, 1, 1, 1536).to(device)
-    uncond_y /= 1536 ** 0.5
-    uni_embeds_input = torch.cat([uncond_y, uni_embeds], dim=0)
-    latent_channels = model.config.in_channels
-    # ============================================
-    # 8. Denoising Loop
-    # ============================================
-    with torch.no_grad(), torch.amp.autocast('cuda'):
-        for i, t in enumerate(timesteps):
-            # Expand latents for CFG
-            latent_model_input = torch.cat([latents] * 2)
-            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-
-            # Prepare timestep
-            timestep = t
-            if not torch.is_tensor(timestep):
-                timestep = torch.tensor([timestep], dtype=torch.float32, device=device)
-            timestep = timestep.expand(latent_model_input.shape[0])
-            # Predict noise
-            noise_pred = model(
-                latent_model_input,
-                encoder_hidden_states=uni_embeds_input,
-                timestep=timestep,
-                return_dict=False,
-            )[0]
-            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-            # Handle learned sigma (if model predicts variance)
-            if model.config.out_channels // 2 == latent_channels:
-                noise_pred = noise_pred.chunk(2, dim=1)[0]
-
-            # Denoise step
-            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-            print(f"Step {i+1}/{num_inference_steps}")
-    
-    # ============================================
-    # 9. Decode Latents to Image
-    # ============================================
-    vae_scale = vae.config.scaling_factor
-    vae_shift = getattr(vae.config, "shift_factor", 0)
-    latents_for_decode = latents.float()
-
-    with torch.no_grad():
-        generated_image = vae.decode(
-            (latents_for_decode / vae_scale) + vae_shift,
-            return_dict=False
-        )[0]
-    generated_image = (generated_image / 2 + 0.5).clamp(0, 1)
-    generated_image = generated_image.cpu().permute(0, 2, 3, 1).numpy()
-    generated_image = (generated_image * 255).round().astype(np.uint8)
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(hist_image)
-    ax[0].set_title("Original Image")
-    ax[1].imshow(generated_image[0])
-    ax[1].set_title("Generated Image")
-    plt.show()
-    return generated_image[0]
-
-# %%
-if __name__ == "__main__":
-    # %%
-    init_data = initialize_config_and_accelerator([
-        '../configs/pan_cancer/config_controlnet_gan.py',
-    ])
-    config = init_data['config']
-    accelerator = init_data['accelerator']
-    logger = init_data['logger']
-    args = init_data['args']
-    # %%
+    # Initialize models
     model_data = initialize_models(config, accelerator, logger)
     base_model = model_data['base_model']
     model_ema = model_data['model_ema']
     vae = model_data['vae']
     train_diffusion = model_data['train_diffusion']
-    discriminator = model_data['discriminator']
-    segmentation_checker = model_data['segmentation_checker']
-    verify_controlnet_initialization(base_model)
-    verify_pixcell_checkpoint(base_model, checkpoint_path="../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors", device=accelerator.device)
-    # %%
+    
+    # Initialize dataset and optimizer
+    discriminator = None  # Add discriminator initialization if needed
     optim_data = initialize_dataset_and_optimizer(
-        config, accelerator, logger,
-        base_model,
-        discriminator
+        config, accelerator, logger, base_model, discriminator
     )
     train_dataloader = optim_data['train_dataloader']
     optimizer = optim_data['optimizer']
     optimizer_d = optim_data['optimizer_d']
     lr_scheduler = optim_data['lr_scheduler']
-    optim_data = initialize_dataset_and_optimizer(
-    config, accelerator, logger,
-    base_model,
-    discriminator
-    )
-    train_dataloader = optim_data['train_dataloader']
-    optimizer = optim_data['optimizer']
-    optimizer_d = optim_data['optimizer_d']
-    lr_scheduler = optim_data['lr_scheduler']
-
-    # Step 4: Prepare with accelerator (CRITICAL!)
+    
+    # Prepare with accelerator (CRITICAL!)
     base_model = accelerator.prepare(base_model)
     model_ema = accelerator.prepare(model_ema)
     optimizer = accelerator.prepare(optimizer)
     train_dataloader = accelerator.prepare(train_dataloader)
     lr_scheduler = accelerator.prepare(lr_scheduler)
-
+    
     if discriminator is not None:
         discriminator = accelerator.prepare(discriminator)
         optimizer_d = accelerator.prepare(optimizer_d)
-
-    # Step 5: Training state
+    
+    # Setup training state
     state_data = setup_training_state(
         config, accelerator, logger, args, train_dataloader,
         base_model, model_ema, optimizer, lr_scheduler
     )
-    device = accelerator.device
+    
+    # Prepare models dict for training
     models = {
-        # Core Models
         'base_model': base_model,
         'model_ema': model_ema,
         'vae': vae,
         'train_diffusion': train_diffusion,
-        
-        # Training Components
         'optimizer': optimizer,
         'optimizer_d': optimizer_d,
         'lr_scheduler': lr_scheduler,
         'train_dataloader': train_dataloader,
-        
-        # Optional Models
-        'discriminator': discriminator,
-        'segmentation_checker': segmentation_checker,
-        
-        # Accelerator & Config
         'accelerator': accelerator,
         'config': config,
         'logger': logger,
-        
-        # Training State
-        'start_epoch': state_data['start_epoch'],
-        'start_step': state_data['start_step'],
-        'skip_step': state_data['skip_step'],
-        'total_steps': state_data['total_steps'],
-        
-        # Additional info
         'args': args,
+        **state_data
     }
-    # %%
-    # reload the module
-    import importlib
-    import train_scripts.train_controlnet  # Import the module itself
-
-    # 1. Reload the module to pick up code changes
-    importlib.reload(train_scripts.train_controlnet)
-
-    # 2. Access the function from the freshly reloaded module
-    from train_scripts.train_controlnet import train
-
-    # 3. Execute
+    
+    # Start training
     train(models)
-    # %%
-    #models = initialize_all([
-    #    '../configs/pan_cancer/config_controlnet_gan.py',
-    #])
-    
-    import importlib
-    import inference
-    importlib.reload(inference)
-    from inference import load_models, generate_image, generate_image_independent_cfg
-    from torchvision.utils import save_image
-    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
-    import matplotlib.pyplot as plt
-    import torch
-    import numpy as np
-    import json
-    from PIL import Image
-    with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
-        scheduler_config = json.load(file)
-    scheduler = DPMSolverMultistepScheduler(**scheduler_config)
-    file_name = "../checkpoints/pixcell_controlnet_full/checkpoints/epoch_1_step_50.pth"
-    file_name = None
-    if file_name is not None:
-        model, vae, config = load_models(
-            model_path=f"{file_name}",
-            vae_path="../pretrained_models/sd-3.5-vae/vae",
-            config_path="../configs/pan_cancer/config_controlnet_gan.py",
-            device='cuda'
-        )
-    else:
-        model = base_model
-        vae = model_data['vae']
-        config = config
-
-    # %%
-    from diffusers import DPMSolverMultistepScheduler
-    module_name = "pixcell_transformer_2d"
-    file_path = "../pretrained_models/pixcell-256/transformer/pixcell_transformer_2d.py"
-    checkpoints_folder = "../pretrained_models/pixcell-256/transformer/"
-    device = 'cuda'
-    model = _load_pixcell_model(module_name, file_path, checkpoints_folder, device)
-    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(
-        scheduler_folder,
-    )
-    idx = 50
-    generated_image = pipeline_pixcell(model,
-                                        vae, scheduler,
-                                        guidance_scale=2,
-                                        num_inference_steps=20,
-                                        hist_image_path=f"../tcga_subset_0.1k/sample_{idx}.png",
-                                        uni_embeds_path=f"../features/sample_{idx}_uni.npy",
-                                        device=device)
-
-    # %%
 
 
-    # %% Inference without controlnet
-    from diffusion import IDDPM
-    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
-    x = torch.randn(1, 16, 32, 32).to(device)
-    y = torch.randn(1, 1, 1, 1536).to(device)
-    y /= 1536 ** 0.5
-    uni_idx = 10
-    #y = torch.from_numpy(np.load("uni_emb.npy")).unsqueeze(1).unsqueeze(1)
-    #y = torch.from_numpy(np.load(f"../features/sample_{uni_idx}_uni.npy"))
-    #y = y / 1536 ** 0.5
-    y = y.to(device)
-    y = y.view(1, 1, 1, 1536)
-    print(y.shape)
-    import json
-    with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
-        scheduler_config = json.load(file)
-    scheduler = DPMSolverMultistepScheduler(**scheduler_config)
-
-    num_inference_steps = 20
-    scheduler.set_timesteps(num_inference_steps, device=device)
-    timesteps = scheduler.timesteps
-    latents = x * scheduler.init_noise_sigma
-    # ============================================
-    # 8. Denoising Loop
-    # ============================================
-    with torch.no_grad(), torch.amp.autocast('cuda'):
-        for i, t in enumerate(timesteps):
-            # Expand latents for CFG
-            latent_model_input = latents
-            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-
-            # Prepare timestep
-            timestep = t
-            if not torch.is_tensor(timestep):
-                timestep = torch.tensor([timestep], dtype=torch.float32, device=device)
-            timestep = timestep.expand(latent_model_input.shape[0])
-
-            # Predict noise
-            noise_pred = model.forward_without_controlnet(
-                latent_model_input,
-                y=y,
-                timestep=timestep,
-            )
-            noise_pred, _ = noise_pred.chunk(2, dim=1)
-
-            # Denoise step
-            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-
-            print(f"Step {i+1}/{num_inference_steps}")
-    from torchvision.utils import save_image
-    # 6. Decode with proper scaling
-    vae_dtype = next(vae.parameters()).dtype
-    vae_scale = vae.config.scaling_factor
-    vae_shift = getattr(vae.config, "shift_factor", 0)
-
-    # 1. Math in float32, then cast to VAE's dtype
-    # Note: Use the formula that matches your specific model's config
-    latents_processed = (latents.float() / vae_scale) + vae_shift
-    #latents_processed = (latents.float() - vae_shift) / vae_scale
-    latents_to_decode = latents_processed.to(vae_dtype)
-
-    with torch.no_grad():
-        # Capture the output correctly
-        generated_image = vae.decode(latents_to_decode, return_dict=False)[0]
-
-    # 7. Post-process
-    # Map from [-1, 1] to [0, 1]
-    image_to_save = (generated_image / 2 + 0.5).clamp(0, 1)
-    print(image_to_save.shape)
-    # 8. Save and Display
-    # generated_image is [B, C, H, W], so image_to_save[0] is [C, H, W]
-    save_path = "new.png"
-    save_image(image_to_save[0], save_path)
-
-    from PIL import Image
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{uni_idx}.png"))
-    ax[1].imshow(Image.open(save_path))
-    plt.show()
-    
-    # %%
-    from huggingface_hub import hf_hub_download
-    from PIL import Image
-    from inference import load_models, generate_image, generate_image_independent_cfg
-    import torch
-    import json
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import os
-    from torchvision.utils import save_image
-    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
-    # This is an example image we provide
-    torch.cuda.empty_cache()
-    with open('../pretrained_models/pixcell-256/scheduler/scheduler_config.json', 'r', encoding='utf-8') as file:
-        scheduler_config = json.load(file)
-    scheduler = DPMSolverMultistepScheduler(**scheduler_config)
-    # reshape UNI to (bs, 1, D)
-    uni_emb = torch.from_numpy(np.load("uni_emb.npy")).unsqueeze(1).unsqueeze(1)
-    #uni_emb = uni_emb / 1536 ** 0.5
-    print("Extracted UNI:", uni_emb.shape)
-    device = 'cuda'
-    y = torch.randn(1, 1, 1,1536).to(device)
-    y /= 1536 ** 0.5
-    os.makedirs("../controlNet_gen", exist_ok=True)
-    for idx in range(1):
-        uni_feature = torch.from_numpy(np.load(f"../features/sample_{idx}_uni.npy"))
-        #uni_feature /= 1536 ** 0.5
-        #uni_feature = y
-        #uni_feature = uni_emb
-        image = generate_image_independent_cfg(
-            model=base_model,
-            vae=vae,
-            uni_feature=uni_feature,#f"features/sample_{idx}_uni.npy",#
-            cell_mask=f"../masks/sample_{idx}_mask.png",
-            config=config,
-            num_inference_steps=20,
-            seed=42,
-            scheduler=scheduler,
-            uni_guidance_scale=1,
-            mask_guidance_scale=0, 
-        )
-        print(image.max(), image.min(), image.shape)
-        save_image(image, f"../controlNet_gen/generated_{idx}.png")#, normalize=True)
-        print(f"✓ saved generated_{idx}.png")
-        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-        #ax[0].imshow(Image.open(f"../tcga_subset_0.1k/sample_{idx}.png"))
-        ax[0].imshow(Image.open(f"../test_image.png"))
-        ax[1].imshow(Image.open(f"../masks/sample_{idx}_mask.png"))
-        img = Image.open(f"../controlNet_gen/generated_{idx}.png")
-        ax[2].imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
-    plt.imshow(Image.open(f"../controlNet_gen/generated_{idx}.png"))
-# %%
+if __name__ == "__main__":
+    main()
