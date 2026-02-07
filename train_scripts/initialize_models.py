@@ -1,3 +1,4 @@
+# %%
 import os
 import argparse
 import datetime
@@ -18,7 +19,7 @@ from mmcv.runner import LogBuffer
 from diffusion import IDDPM
 from diffusion.data.builder import build_dataset, build_dataloader, set_data_root
 from diffusion.model.builder import build_model
-from diffusion.utils.checkpoint import save_checkpoint, load_checkpoint
+from diffusion.utils.checkpoint import save_checkpoint, load_checkpoint, save_checkpoint_controlnet
 from diffusion.utils.dist_utils import synchronize, get_world_size, clip_grad_norm_, flush
 from diffusion.utils.logger import get_root_logger, rename_file_with_creation_time
 from diffusion.utils.lr_scheduler import build_lr_scheduler
@@ -92,7 +93,7 @@ def _setup_accelerator(config, args):
     return accelerator
 
 
-def _resume_from_checkpoint(config, model, model_ema, optimizer, lr_scheduler, max_length, logger):
+def _resume_from_checkpoint(config, model, controlnet, model_ema, optimizer, lr_scheduler, max_length, logger):
     """Resume training from a checkpoint."""
     resume_path = config.resume_from['checkpoint']
     path = os.path.basename(resume_path)
@@ -102,6 +103,7 @@ def _resume_from_checkpoint(config, model, model_ema, optimizer, lr_scheduler, m
     _, missing, unexpected = load_checkpoint(
         **config.resume_from,
         model=model,
+        controlnet=controlnet,
         model_ema=model_ema,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
@@ -203,16 +205,28 @@ def initialize_config_and_accelerator(args_list=None):
 
 def initialize_models(config, accelerator, logger):
     """
-    Initialize all models: base model, EMA model, VAE, and diffusion.
+    Initialize all models for ControlNet training.
+    
+    Key changes from original:
+    1. Loads FROZEN base transformer (pixcell_controlnet_transformer)
+    2. Creates TRAINABLE ControlNet model
+    3. Copies weights from base to ControlNet's transformer blocks
     
     Returns:
-        dict with: base_model, model_ema, vae, train_diffusion
+        dict with: 
+            - base_model: FROZEN PixCellTransformer (for inference)
+            - controlnet: TRAINABLE PixCellControlNet
+            - model_ema: EMA version of ControlNet
+            - vae: VAE for encoding
+            - train_diffusion: Diffusion scheduler
     """
     image_size = config.image_size
     latent_size = int(image_size) // 8
     max_length = config.model_max_length
     
-    # VAE setup
+    # ===================================================================
+    # 1. VAE setup (unchanged)
+    # ===================================================================
     vae = None
     if not config.data.load_vae_feat:
         vae = AutoencoderKL.from_pretrained(
@@ -223,23 +237,12 @@ def initialize_models(config, accelerator, logger):
     
     logger.info(f"VAE scale factor: {config.scale_factor}")
     
-    # Build model kwargs
+    # ===================================================================
+    # 2. Build diffusion (unchanged)
+    # ===================================================================
     pred_sigma = getattr(config, 'pred_sigma', True)
     learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
-    kv_compress_config = config.kv_compress_config if config.kv_compress else None
     
-    model_kwargs = {
-        "pe_interpolation": config.pe_interpolation,
-        "config": config,
-        "model_max_length": max_length,
-        "qk_norm": config.qk_norm,
-        "kv_compress_config": kv_compress_config,
-        "micro_condition": config.micro_condition,
-        "add_pos_embed_to_cond": getattr(config, 'add_pos_embed_to_cond', False),
-        **config.get('model_kwargs', {})
-    }
-    
-    # Build diffusion
     train_diffusion = IDDPM(
         str(config.train_sampling_steps),
         learn_sigma=learn_sigma,
@@ -247,44 +250,167 @@ def initialize_models(config, accelerator, logger):
         snr=config.snr_loss
     )
     
-    # Build base model
+    # ===================================================================
+    # 3. Load FROZEN base transformer model
+    # ===================================================================
+    logger.info("Loading frozen base transformer model...")
+    
+    # Base model kwargs
+    kv_compress_config = config.kv_compress_config if config.kv_compress else None
+    base_model_kwargs = {
+        "pe_interpolation": config.pe_interpolation,
+        "config": config,
+        "model_max_length": max_length,
+        "qk_norm": config.qk_norm,
+        "kv_compress_config": kv_compress_config,
+        "micro_condition": config.micro_condition,
+        "add_pos_embed_to_cond": getattr(config, 'add_pos_embed_to_cond', False),
+        **config.get('base_model_kwargs', {})
+    }
+    
+    # Build base transformer (will be frozen)
     base_model = build_model(
-        config.model,
-        config.grad_checkpointing,
+        config.base_model,  # e.g., 'PixCell_Transformer_XL_2_UNI'
+        False,  # No grad checkpointing for frozen model
         config.get('fp32_attention', False),
         input_size=latent_size,
         learn_sigma=learn_sigma,
         pred_sigma=pred_sigma,
-        **model_kwargs
+        **base_model_kwargs
+    )
+    
+    # Load pretrained weights for base model
+    if config.base_model_path is None:
+        raise ValueError("config.base_model_path must be specified for ControlNet training!")
+    
+    load_file = _find_model_file(config.base_model_path)
+    missing, unexpected = load_checkpoint(
+        load_file,
+        base_model,
+        load_ema=config.get('load_base_ema', False),
+        max_length=max_length,
+        ignore_keys=config.get('base_ignore_keys', [])
+    )
+    logger.warning(f'Base model - Missing keys: {missing}')
+    logger.warning(f'Base model - Unexpected keys: {unexpected}')
+    
+    # FREEZE base model
+    base_model.eval()
+    for param in base_model.parameters():
+        param.requires_grad = False
+    
+    logger.info(
+        f"Frozen Base Model ({base_model.__class__.__name__}): "
+        f"{sum(p.numel() for p in base_model.parameters()):,} parameters (all frozen)"
+    )
+    
+    # ===================================================================
+    # 4. Build TRAINABLE ControlNet
+    # ===================================================================
+    logger.info("Building trainable ControlNet model...")
+    
+    # ControlNet kwargs
+    controlnet_model_kwargs = {
+        "pe_interpolation": config.pe_interpolation,
+        "config": config,
+        "model_max_length": max_length,
+        "qk_norm": config.qk_norm,
+        "kv_compress_config": kv_compress_config,
+        "conditioning_channels": config.controlnet_conditioning_channels,  # e.g., 16 for cell masks
+        "n_controlnet_blocks": getattr(config, 'n_controlnet_blocks', None),
+        **config.get('controlnet_model_kwargs', {})
+    }
+    
+    # Build ControlNet (all parameters trainable)
+    controlnet = build_model(
+        config.controlnet_model,  # e.g., 'PixCell_ControlNet_XL_2_UNI'
+        config.grad_checkpointing,
+        config.get('fp32_attention', False),
+        input_size=latent_size,
+        learn_sigma=False,  # ControlNet doesn't predict sigma
+        pred_sigma=False,
+        **controlnet_model_kwargs
     ).train()
     
     logger.info(
-        f"{base_model.__class__.__name__} Model Parameters: "
-        f"{sum(p.numel() for p in base_model.parameters()):,}"
+        f"ControlNet Model ({controlnet.__class__.__name__}): "
+        f"{sum(p.numel() for p in controlnet.parameters()):,} total parameters"
+    )
+    logger.info(
+        f"  Trainable: {sum(p.numel() for p in controlnet.parameters() if p.requires_grad):,}"
     )
     
-    # Load checkpoint if specified
-    if config.load_from is not None:
-        missing, unexpected = load_checkpoint(
-            config.load_from,
-            base_model,
-            load_ema=config.get('load_ema', False),
-            max_length=max_length,
-            ignore_keys=config.get('ignore_keys', [])
-        )
-        logger.warning(f'Missing keys: {missing}')
-        logger.warning(f'Unexpected keys: {unexpected}')
+    # ===================================================================
+    # 5. Copy weights from base model to ControlNet's transformer blocks
+    # ===================================================================
+    logger.info("Copying transformer block weights from base model to ControlNet...")
     
-    # Create EMA model
-    model_ema = deepcopy(base_model).eval()
-    ema_update(model_ema, base_model, 0.)
+    # Get base model state dict
+    base_state_dict = base_model.state_dict()
+    
+    # Copy matching weights
+    copied_count = 0
+    for name, param in controlnet.named_parameters():
+        # Try to find corresponding parameter in base model
+        # Adjust these mappings based on your actual model structure
+        possible_base_keys = [
+            name.replace('blocks.', 'transformer_blocks.'),  # If ControlNet uses 'blocks'
+            name,  # Direct match
+        ]
+        
+        for base_key in possible_base_keys:
+            if base_key in base_state_dict:
+                if param.shape == base_state_dict[base_key].shape:
+                    # Only copy to non-ControlNet-specific layers
+                    if 'controlnet_blocks' not in name and 'cond_embedder' not in name:
+                        param.data.copy_(base_state_dict[base_key])
+                        copied_count += 1
+                        break
+    
+    logger.info(f"✓ Copied {copied_count} parameters from base model to ControlNet")
+    
+    # Optional: Load ControlNet checkpoint if resuming training
+    if config.get('controlnet_load_from', None) is not None:
+        logger.info(f"Loading ControlNet checkpoint from {config.controlnet_load_from}")
+        load_file = _find_model_file(config.controlnet_load_from)
+        missing, unexpected = load_checkpoint(
+            load_file,
+            controlnet,
+            load_ema=False,
+            max_length=max_length,
+            ignore_keys=config.get('controlnet_ignore_keys', [])
+        )
+        logger.warning(f'ControlNet - Missing keys: {missing}')
+        logger.warning(f'ControlNet - Unexpected keys: {unexpected}')
+    
+    # ===================================================================
+    # 6. Create EMA model for ControlNet
+    # ===================================================================
+    logger.info("Creating EMA model for ControlNet...")
+    model_ema = deepcopy(controlnet).eval()
+    ema_update(model_ema, controlnet, 0.)
+    
+    logger.info("="*80)
+    logger.info("Model initialization complete!")
+    logger.info(f"  Base Model (frozen): {sum(p.numel() for p in base_model.parameters()):,} params")
+    logger.info(f"  ControlNet (trainable): {sum(p.numel() for p in controlnet.parameters() if p.requires_grad):,} params")
+    logger.info("="*80)
     
     return {
-        'base_model': base_model,
-        'model_ema': model_ema,
+        'base_model': base_model,  # Frozen transformer
+        'controlnet': controlnet,  # Trainable ControlNet
+        'model_ema': model_ema,    # EMA of ControlNet
         'vae': vae,
         'train_diffusion': train_diffusion,
     }
+
+def _find_model_file(load_from):
+    """Find safetensors file in directory or return path"""
+    load_path = Path(load_from)
+    if load_path.is_dir():
+        st_files = list(load_path.glob("**/diffusion_pytorch_model.safetensors"))
+        return str(st_files[0]) if st_files else str(load_from)
+    return str(load_from)
 
 
 def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, discriminator=None):
@@ -343,7 +469,7 @@ def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, di
 
 
 def setup_training_state(config, accelerator, logger, args, train_dataloader,
-                         base_model, model_ema, optimizer, lr_scheduler):
+                         base_model, controlnet, model_ema, optimizer, lr_scheduler):
     """
     Setup tracking, resume from checkpoint if needed, prepare with accelerator.
     
@@ -368,7 +494,7 @@ def setup_training_state(config, accelerator, logger, args, train_dataloader,
     # Resume from checkpoint if specified
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
         start_epoch, start_step = _resume_from_checkpoint(
-            config, base_model, model_ema, optimizer, lr_scheduler,
+            config, base_model, controlnet, model_ema, optimizer, lr_scheduler,
             config.model_max_length, logger
         )
     
@@ -387,16 +513,22 @@ def setup_training_state(config, accelerator, logger, args, train_dataloader,
     }
 
 
-def train(models_dict):
+def train_controlnet(models_dict):
     """
     Main training loop for PixCell ControlNet.
+    
+    Key differences from standard training:
+    1. base_model is FROZEN (only used for inference)
+    2. controlnet is TRAINABLE (optimized)
+    3. Forward pass: controlnet -> base_model (with controlnet outputs)
     
     Args:
         models_dict: Dictionary containing all models and training components
     """
     # Unpack models and components
-    base_model = models_dict['base_model']
-    model_ema = models_dict['model_ema']
+    base_model = models_dict['base_model']  # FROZEN transformer
+    controlnet = models_dict['controlnet']  # TRAINABLE ControlNet
+    model_ema = models_dict['model_ema']    # EMA of ControlNet
     vae = models_dict['vae']
     train_diffusion = models_dict['train_diffusion']
     optimizer = models_dict['optimizer']
@@ -415,8 +547,18 @@ def train(models_dict):
     
     # Setup debugging if needed
     if config.get('debug_nan', False):
-        DebugUnderflowOverflow(base_model)
-        logger.info('NaN debugger registered. Start to detect overflow during training.')
+        DebugUnderflowOverflow(controlnet)  # Debug ControlNet, not base_model
+        logger.info('NaN debugger registered for ControlNet. Start to detect overflow during training.')
+    
+    # Ensure base model is frozen
+    base_model.eval()
+    for param in base_model.parameters():
+        param.requires_grad = False
+    
+    # Ensure controlnet is trainable
+    controlnet.train()
+    for param in controlnet.parameters():
+        param.requires_grad = True
     
     # Training state
     time_start, last_tic = time.time(), time.time()
@@ -427,6 +569,10 @@ def train(models_dict):
     load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
     
     # Main training loop
+    logger.info("="*80)
+    logger.info("Starting ControlNet Training")
+    logger.info("="*80)
+    
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         data_time_start = time.time()
         data_time_all = 0
@@ -439,7 +585,9 @@ def train(models_dict):
                     logger.info(info)
                 continue
             
-            # Encode images to latent space
+            # ============================================================
+            # 1. Encode images to latent space
+            # ============================================================
             if load_vae_feat:
                 z = batch[0]
             else:
@@ -458,12 +606,30 @@ def train(models_dict):
                 z = z - config.shift_factor
             clean_images = z * config.scale_factor
             
-            # Unpack batch
-            y = batch[1]
-            control_input = batch[2]
-            data_info = batch[3]
-            
-            
+            # ============================================================
+            # 2. Unpack batch (includes control_input for ControlNet)
+            # ============================================================
+            y = batch[1]                # UNI embeddings
+            control_input = batch[2]    # Cell masks for ControlNet
+            vae_mask = batch[3]    # VAE masks for ControlNet
+            data_info = batch[4]
+            if 1:
+                print(f"clean_images.shape: {clean_images.shape}")
+                print(f"y.shape: {y.shape}")
+                print(f"control_input.shape: {control_input.shape}")
+                print(f"vae_mask.shape: {vae_mask.shape}")
+                asd()
+            if control_input.shape[-1] != clean_images.shape[-1]:
+                control_input = nn.functional.interpolate(
+                    control_input.float(), 
+                    size=(clean_images.shape[-2], clean_images.shape[-1]), 
+                    mode='nearest'
+                ).to(clean_images.device)
+            if control_input.shape[1] != config.controlnet_conditioning_channels:
+                control_input = control_input.repeat(1, config.controlnet_conditioning_channels, 1, 1)
+            if 0:
+                print(f"y.shape: {y.shape}")
+                print(f"control_input.shape: {control_input.shape}")
             # Sample timesteps
             bs = clean_images.shape[0]
             timesteps = torch.randint(
@@ -473,119 +639,237 @@ def train(models_dict):
             grad_norm = None
             data_time_all += time.time() - data_time_start
             
-            # Training step
-            with accelerator.accumulate(base_model):
+            # ============================================================
+            # 3. Training step with ControlNet
+            # ============================================================
+            with accelerator.accumulate(controlnet):  # Accumulate gradients for ControlNet
                 optimizer.zero_grad()
                 
-                # Forward pass
+                # Forward pass through ControlNet AND base model
                 model_kwargs = dict(
                     y=y,
                     mask=None,
                     data_info=data_info,
-                    control_input=control_input
+                    control_input=control_input  # This is the key difference!
                 )
-                loss_term = train_diffusion.training_losses(
-                    base_model, clean_images, timesteps, model_kwargs=model_kwargs
+                
+                # Compute loss using custom training_losses_controlnet
+                loss_term = training_losses_controlnet(
+                    train_diffusion,
+                    controlnet,      # Trainable
+                    base_model,      # Frozen
+                    clean_images,
+                    timesteps,
+                    model_kwargs=model_kwargs,
+                    config=config
                 )
                 loss = loss_term['loss'].mean()
                 
-                # Backward pass
+                # Backward pass (only ControlNet gets gradients)
                 accelerator.backward(loss)
-                
+
                 if accelerator.sync_gradients:
-                    grad_norm = accelerator.clip_grad_norm_(
-                        base_model.parameters(), config.gradient_clip
+                    # 1. This triggers the 'inf check' and marks the optimizer as unscaled
+                    #accelerator.unscale_gradients(optimizer)
+                    
+                    # 2. Use torch.nn.utils directly since accelerator.unscale_gradients 
+                    # already handled the mixed-precision logic.
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        controlnet.parameters(), 
+                        config.gradient_clip
                     )
-                
+                    
+                    # 3. Step will now work because 'inf checks' were recorded during unscale
                 optimizer.step()
                 lr_scheduler.step()
-                
-                # Update EMA
-                if accelerator.sync_gradients:
-                    ema_update(model_ema, base_model, config.ema_rate)
-            
-            # Logging
-            lr = lr_scheduler.get_last_lr()[0]
-            logs = {args.loss_report_name: accelerator.gather(loss).mean().item()}
-            if grad_norm is not None:
-                logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
-            log_buffer.update(logs)
-            
-            if (step + 1) % config.log_interval == 0 or (step + 1) == 1:
-                t = (time.time() - last_tic) / config.log_interval
-                t_d = data_time_all / config.log_interval
-                avg_time = (time.time() - time_start) / (global_step + 1)
-                eta = str(datetime.timedelta(seconds=int(avg_time * (total_steps - global_step - 1))))
-                eta_epoch = str(datetime.timedelta(seconds=int(avg_time * (len(train_dataloader) - step - 1))))
-                log_buffer.average()
-                
-                info = (
-                    f"Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}]: "
-                    f"total_eta: {eta}, epoch_eta:{eta_epoch}, time_all:{t:.3f}, "
-                    f"time_data:{t_d:.3f}, lr:{lr:.3e}, "
-                )
-                
-                if hasattr(base_model, 'module'):
-                    info += f's:({base_model.module.h}, {base_model.module.w}), '
-                else:
-                    info += f's:({base_model.h}, {base_model.w}), '
-                
-                info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
-                logger.info(info)
-                
-                last_tic = time.time()
-                log_buffer.clear()
-                data_time_all = 0
-            
-            logs.update(lr=lr)
-            accelerator.log(logs, step=global_step)
-            
-            global_step += 1
-            data_time_start = time.time()
-            
-            # Checkpoint saving
-            def save_checkpoint_fn():
-                accelerator.wait_for_everyone()
+                #optimizer.zero_grad()
+
                 if accelerator.is_main_process:
-                    os.umask(0o000)
-                    save_checkpoint(
-                        os.path.join(config.work_dir, 'checkpoints'),
-                        epoch=epoch,
-                        step=global_step,
-                        model=accelerator.unwrap_model(base_model),
-                        model_ema=accelerator.unwrap_model(model_ema),
-                        optimizer=optimizer,
-                        lr_scheduler=lr_scheduler
+                    ema_update(model_ema, controlnet, config.ema_rate)
+            
+            # ============================================================
+            # 4. Logging and monitoring
+            # ============================================================
+            if accelerator.sync_gradients:
+                global_step += 1
+                
+                # Log metrics
+                log_buffer.update({
+                    'loss': loss.item(),
+                    'lr': optimizer.param_groups[0]['lr'],
+                })
+                
+                if grad_norm is not None:
+                    log_buffer.update({'grad_norm': grad_norm.item()})
+                
+                # Print training info
+                if global_step % config.log_interval == 0:
+                    time_cost = time.time() - last_tic
+                    samples_per_sec = config.log_interval * config.train_batch_size / time_cost
+                    
+                    info = (
+                        f"Epoch [{epoch}/{config.num_epochs}] "
+                        f"Step [{global_step}/{total_steps}] "
+                        f"Loss: {loss.item():.4f} "
+                        f"LR: {optimizer.param_groups[0]['lr']:.2e} "
+                        f"Samples/s: {samples_per_sec:.2f}"
+                    )
+                    
+                    if grad_norm is not None:
+                        info += f" GradNorm: {grad_norm.item():.4f}"
+                    
+                    logger.info(info)
+                    last_tic = time.time()
+                
+                # Save checkpoint
+                if global_step % config.save_model_steps == 0:
+                    save_checkpoint_controlnet(
+                        accelerator,
+                        controlnet,
+                        model_ema,
+                        optimizer,
+                        lr_scheduler,
+                        global_step,
+                        epoch,
+                        config,
+                        logger
                     )
             
-            # Check time limit
-            time_elapsed_minutes = (time.time() - time_start) / 60
-            time_to_save = (time_elapsed_minutes >= args.slurm_time_limit) and (not ckpt_time_limit_saved)
+            data_time_start = time.time()
             
-            if (config.save_model_steps and global_step % config.save_model_steps == 0) or time_to_save:
-                if not ckpt_time_limit_saved:
-                    ckpt_time_limit_saved = True
-                save_checkpoint_fn()
+            # Check if we've reached max steps
+            if global_step >= total_steps:
+                logger.info(f"Reached max steps ({total_steps}). Stopping training.")
+                break
         
-        # Epoch checkpoint
-        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
-            save_checkpoint_fn()
-        
-        accelerator.wait_for_everyone()
+        # End of epoch
+        if global_step >= total_steps:
+            break
+    
+    logger.info("="*80)
+    logger.info("Training Complete!")
+    logger.info("="*80)
 
 
+def training_losses_controlnet(
+    diffusion, 
+    controlnet, 
+    base_model, 
+    x_start, 
+    timesteps, 
+    model_kwargs=None,
+    config=None
+):
+    """
+    Custom training loss function that uses both ControlNet and base model.
+    
+    Flow:
+    1. ControlNet processes latents + conditioning → outputs residuals
+    2. Base model uses residuals to predict noise
+    3. Compute loss between predicted and actual noise
+    
+    Args:
+        diffusion: Diffusion scheduler
+        controlnet: Trainable ControlNet model
+        base_model: Frozen base transformer model
+        x_start: Clean latent images
+        timesteps: Sampled timesteps
+        model_kwargs: Dict with 'y', 'control_input', 'data_info', etc.
+        config: Training config
+    
+    Returns:
+        Dict with 'loss' and other metrics
+    """
+    if model_kwargs is None:
+        model_kwargs = {}
+    
+    # Add noise to clean images
+    noise = torch.randn_like(x_start).float()
+    x_t = diffusion.q_sample(x_start, timesteps, noise=noise)
+    # Extract control input
+    control_input = model_kwargs.pop('control_input', None)
+    
+    if control_input is None:
+        raise ValueError("control_input must be provided in model_kwargs for ControlNet training!")
+    
+    # Get conditioning scale (can be dynamic during training)
+    conditioning_scale = getattr(config, 'controlnet_conditioning_scale', 1.0)
+    
+    pred_sigma = getattr(config, 'pred_sigma', True)
+    learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
+
+    # ============================================================
+    # Forward through ControlNet (TRAINABLE)
+    # ============================================================
+    controlnet_outputs = controlnet(
+        hidden_states=x_t,
+        conditioning=control_input,
+        encoder_hidden_states=model_kwargs['y'],
+        timestep=timesteps,
+        conditioning_scale=conditioning_scale,
+        mask=model_kwargs.get('mask', None),
+        data_info=model_kwargs.get('data_info', None),
+    )
+    
+    # Extract outputs (controlnet returns tuple)
+    if isinstance(controlnet_outputs, tuple):
+        controlnet_residuals = controlnet_outputs[0]
+    else:
+        controlnet_residuals = controlnet_outputs['controlnet_block_samples']
+    if config.mixed_precision in ['fp16', 'bf16']:
+        controlnet_residuals = [r.float() for r in controlnet_residuals]
+    # ============================================================
+    # Forward through base model (FROZEN)
+    # ============================================================
+    model_output = base_model(
+        x=x_t,
+        y=model_kwargs['y'],
+        timestep=timesteps,
+        controlnet_outputs=controlnet_residuals,  # Add ControlNet residuals
+        attention_mask=model_kwargs.get('mask', None),
+        return_dict=True,
+    )
+    
+    # Get predicted noise
+    if hasattr(model_output, 'sample'):
+        model_pred = model_output.sample
+    else:
+        model_pred = model_output
+
+
+    model_var_values = None
+    if learn_sigma and model_pred.shape[1] == x_start.shape[1] * 2:
+        # Model is predicting both noise and variance
+        model_pred, model_var_values = model_pred.chunk(2, dim=1)
+    # ============================================================
+    # Compute loss
+    # ============================================================
+    # Standard MSE loss between predicted and actual noise
+    loss = torch.nn.functional.mse_loss(model_pred, noise, reduction='none')
+    loss = loss.mean(dim=list(range(1, len(loss.shape))))
+    return {
+        'loss': loss,
+        'pred': model_pred,
+        'target': noise,
+        'var_values': model_var_values if learn_sigma else None,
+    }
+# %%
 def main():
     """Main entry point for training."""
+    # %%
     # Initialize config and accelerator
-    init_data = initialize_config_and_accelerator()
+    init_data = initialize_config_and_accelerator([
+        '../configs/pan_cancer/config_controlnet_gan.py',
+    ])
     config = init_data['config']
     accelerator = init_data['accelerator']
     logger = init_data['logger']
     args = init_data['args']
-    
+    device = accelerator.device
     # Initialize models
     model_data = initialize_models(config, accelerator, logger)
     base_model = model_data['base_model']
+    controlnet = model_data['controlnet']
     model_ema = model_data['model_ema']
     vae = model_data['vae']
     train_diffusion = model_data['train_diffusion']
@@ -600,12 +884,22 @@ def main():
     optimizer_d = optim_data['optimizer_d']
     lr_scheduler = optim_data['lr_scheduler']
     
-    # Prepare with accelerator (CRITICAL!)
-    base_model = accelerator.prepare(base_model)
-    model_ema = accelerator.prepare(model_ema)
-    optimizer = accelerator.prepare(optimizer)
-    train_dataloader = accelerator.prepare(train_dataloader)
-    lr_scheduler = accelerator.prepare(lr_scheduler)
+    # Prepare with accelerator
+    (
+        base_model, 
+        controlnet, 
+        model_ema, 
+        optimizer, 
+        train_dataloader, 
+        lr_scheduler
+    ) = accelerator.prepare(
+        base_model, 
+        controlnet, 
+        model_ema, 
+        optimizer, 
+        train_dataloader, 
+        lr_scheduler
+    )
     
     if discriminator is not None:
         discriminator = accelerator.prepare(discriminator)
@@ -614,12 +908,13 @@ def main():
     # Setup training state
     state_data = setup_training_state(
         config, accelerator, logger, args, train_dataloader,
-        base_model, model_ema, optimizer, lr_scheduler
+        base_model, controlnet, model_ema, optimizer, lr_scheduler
     )
     
     # Prepare models dict for training
     models = {
         'base_model': base_model,
+        'controlnet': controlnet,
         'model_ema': model_ema,
         'vae': vae,
         'train_diffusion': train_diffusion,
@@ -633,10 +928,11 @@ def main():
         'args': args,
         **state_data
     }
-    
+    # %%
     # Start training
-    train(models)
+    train_controlnet(models)
 
-
+# %%
 if __name__ == "__main__":
     main()
+# %%

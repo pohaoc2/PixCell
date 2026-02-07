@@ -60,7 +60,7 @@ class PixArtBlock(nn.Module):
 #                                 Core PixArt Model                                #
 #################################################################################
 @MODELS.register_module()
-class PixArt(nn.Module):
+class PixArt_ControlNet(nn.Module):
     """
     Diffusion model with a Transformer backbone.
     """
@@ -154,7 +154,7 @@ class PixArt(nn.Module):
             print(f"kv compress config: {self.kv_compress_config}")
 
 
-    def forward(self, x, timestep, y, mask=None, data_info=None, **kwargs):
+    def forward(self, x, timestep, y, mask=None, data_info=None, controlnet_outputs=None, **kwargs):
         """
         Forward pass of PixArt.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -191,8 +191,11 @@ class PixArt(nn.Module):
         else:
             y_lens = [y.shape[2]] * y.shape[0]
             y = y.squeeze(1).view(1, -1, x.shape[-1])
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             x = auto_grad_checkpoint(block, x, y, t0, y_lens)  # (N, T, D) #support grad checkpoint
+            if controlnet_outputs is not None:
+                if i < len(controlnet_outputs):
+                    x = x + controlnet_outputs[i]
         x = self.final_layer(x, t)  # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)  # (N, out_channels, H, W)
         return x
@@ -205,14 +208,15 @@ class PixArt(nn.Module):
         model_out = self.forward(x, timestep, y, mask)
         return model_out.chunk(2, dim=1)[0]
 
-    def forward_with_cfg(self, x, timestep, y, cfg_scale, mask=None, **kwargs):
+    def forward_with_cfg(self, x, timestep, y, cfg_scale, mask=None, controlnet_outputs=None, **kwargs):
         """
-        Forward pass of PixArt, but also batches the unconditional forward pass for classifier-free guidance.
+        Forward pass with classifier-free guidance.
+        
+        Note: controlnet_outputs should already be batched [uncond, cond]
         """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, timestep, y, mask, kwargs)
+        model_out = self.forward(combined, timestep, y, mask, controlnet_outputs=controlnet_outputs, **kwargs)
         model_out = model_out['x'] if isinstance(model_out, dict) else model_out
         eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
@@ -343,15 +347,15 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, phase=0):
 #################################################################################
 @MODELS.register_module()
 def PixArt_XL_2(**kwargs):
-    return PixArt(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+    return PixArt_ControlNet(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
 
 
 
 @MODELS.register_module()
 def PixArt_XL_2_CONCH_16ch(**kwargs):
-    return PixArt(in_channels=16, caption_channels=768, **kwargs)
+    return PixArt_ControlNet(in_channels=16, caption_channels=768, **kwargs)
 
 
 @MODELS.register_module()
 def PixArt_XL_2_UNI(**kwargs):
-    return PixArt(in_channels=16, caption_channels=1536, **kwargs)
+    return PixArt_ControlNet(in_channels=16, caption_channels=1536, **kwargs)

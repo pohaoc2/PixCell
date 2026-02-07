@@ -4,11 +4,8 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 from timm.models.layers import DropPath
-from timm.models.vision_transformer import Mlp
-
-# Reuse existing functions from diffusers (matching your original code)
-from diffusers.models.embeddings import PatchEmbed
-from diffusers.models.controlnet import zero_module
+from timm.models.vision_transformer import Mlp, PatchEmbed
+from diffusers.models.controlnets.controlnet import zero_module
 from diffusers.models.activations import deprecate, FP32SiLU
 
 # PixArt imports for registration and core blocks
@@ -219,14 +216,8 @@ class PixCellControlNet(nn.Module):
         self.depth = depth
         self.hidden_size = hidden_size
         
-        # 1. Input embeddings (using diffusers PatchEmbed - reusing existing)
-        self.x_embedder = PatchEmbed(
-            height=input_size,
-            width=input_size,
-            patch_size=patch_size,
-            in_channels=in_channels,
-            embed_dim=hidden_size,
-        )
+        # 1. Input embeddings
+        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         # Reusing existing TimestepEmbedder from PixArt
         self.t_embedder = TimestepEmbedder(hidden_size)
         
@@ -253,13 +244,7 @@ class PixCellControlNet(nn.Module):
         )
         
         # 4. Conditioning embedder (cell masks) - using diffusers PatchEmbed + zero_module
-        self.cond_embedder = PatchEmbed(
-            height=input_size,
-            width=input_size,
-            patch_size=patch_size,
-            in_channels=conditioning_channels,
-            embed_dim=hidden_size,
-        )
+        self.cond_embedder = PatchEmbed(input_size, patch_size, conditioning_channels, hidden_size, bias=True)
         # Zero-initialize using diffusers' zero_module
         self.cond_embedder = zero_module(self.cond_embedder)
         
@@ -422,7 +407,6 @@ class PixCellControlNet(nn.Module):
         for block_output, controlnet_block in zip(block_outputs, self.controlnet_blocks):
             controlnet_out = controlnet_block(block_output)
             controlnet_outputs.append(controlnet_out * conditioning_scale)
-        
         return (controlnet_outputs,)
     
     @property

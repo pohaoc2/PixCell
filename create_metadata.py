@@ -29,10 +29,12 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
     # Get root directory
     root = image_dir.parent if image_dir.name == 'patches' else image_dir.parent.parent
     features_dir = root / 'features'
+    features_mask_dir = root / 'features_mask'
     mask_dir = Path(mask_dir) if mask_dir else root / 'masks'
     
     print(f"Looking for images in: {image_dir}")
     print(f"Looking for features in: {features_dir}")
+    print(f"Looking for features_mask in: {features_mask_dir}")
     print(f"Looking for masks in: {mask_dir}")
     
     # Find all images
@@ -55,7 +57,7 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
         vae_path = features_dir / f"{base_name}_{vae_prefix}.npy"
         uni_path = features_dir / f"{base_name}_{uni_prefix}.npy"
         mask_path = mask_dir / f"{base_name}_{mask_prefix}.png"
-        
+        vae_mask_path = features_mask_dir / f"{base_name}_mask_{vae_prefix}.npy"
         # Also check .npy for masks
         if not mask_path.exists():
             mask_path = mask_dir / f"{base_name}_{mask_prefix}.npy"
@@ -63,8 +65,8 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
         has_vae = vae_path.exists()
         has_uni = uni_path.exists()
         has_mask = mask_path.exists()
-        
-        if has_vae and has_uni and has_mask:
+        has_vae_mask = vae_mask_path.exists()
+        if has_vae and has_uni and has_mask and has_vae_mask:
             valid_images.append(img_name)
         else:
             if not has_vae:
@@ -73,13 +75,15 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
                 missing_files['uni'] += 1
             if not has_mask:
                 missing_files['mask'] += 1
-    
+            if not has_vae_mask:
+                missing_files['vae_mask'] += 1
     print(f"\n✓ Valid images (with all files): {len(valid_images)}")
     if sum(missing_files.values()) > 0:
         print(f"\n⚠ Skipped images due to missing files:")
         print(f"  - Missing VAE features: {missing_files['vae']}")
         print(f"  - Missing UNI embeddings: {missing_files['uni']}")
         print(f"  - Missing masks: {missing_files['mask']}")
+        print(f"  - Missing VAE masks: {missing_files['vae_mask']}")
     
     if len(valid_images) == 0:
         print("\n❌ No valid images found! Check your file naming conventions.")
@@ -88,6 +92,7 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
         print(f"  - VAE: {features_dir}/example_{vae_prefix}.npy")
         print(f"  - UNI: {features_dir}/example_{uni_prefix}.npy")
         print(f"  - Mask: {mask_dir}/example_{mask_prefix}.png")
+        print(f"  - VAE mask: {features_mask_dir}/example_mask_{vae_prefix}.npy")
         return
     
     # Create HDF5 file
