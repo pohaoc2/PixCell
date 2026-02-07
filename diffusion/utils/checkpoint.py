@@ -36,6 +36,51 @@ def save_checkpoint(work_dir,
             if os.path.exists(previous_ckgt):
                 os.remove(previous_ckgt)
 
+def save_checkpoint_controlnet(
+    accelerator, 
+    controlnet, 
+    model_ema, 
+    optimizer, 
+    lr_scheduler, 
+    global_step, 
+    epoch, 
+    config, 
+    logger
+):
+    """
+    Save ControlNet checkpoint.
+    
+    Note: Only saves ControlNet weights, not the frozen base model.
+    """
+    if not accelerator.is_main_process:
+        return
+    
+    import os
+    
+    save_dir = os.path.join(config.work_dir, 'checkpoints')
+    os.makedirs(save_dir, exist_ok=True)
+    
+    checkpoint_path = os.path.join(save_dir, f'controlnet_step_{global_step:07d}.pth')
+    
+    # Prepare checkpoint
+    checkpoint = {
+        'controlnet_state_dict': accelerator.unwrap_model(controlnet).state_dict(),
+        'ema_state_dict': accelerator.unwrap_model(model_ema).state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+        'global_step': global_step,
+        'epoch': epoch,
+        'config': config,
+    }
+    
+    torch.save(checkpoint, checkpoint_path)
+    logger.info(f"✓ Saved ControlNet checkpoint to {checkpoint_path}")
+    
+    # Also save a "latest" checkpoint
+    latest_path = os.path.join(save_dir, 'controlnet_latest.pth')
+    torch.save(checkpoint, latest_path)
+    logger.info(f"✓ Saved latest checkpoint to {latest_path}")
+
 
 def remap_pixcell_to_pixart_alpha(state_dict):
     """
@@ -174,8 +219,11 @@ def remap_pixcell_to_pixart_alpha(state_dict):
             processed_keys.add(key)
     
     return final_dict
+
+
 def load_checkpoint(checkpoint,
                     model,
+                    controlnet=None,
                     model_ema=None,
                     optimizer=None,
                     lr_scheduler=None,
@@ -228,6 +276,8 @@ def load_checkpoint(checkpoint,
 
     # 6. Optional: Load EMA/Optimizer/Scheduler (Usually only in .pth)
     if not is_safetensors:
+        if controlnet is not None and 'controlnet_state_dict' in checkpoint_data:
+            controlnet.load_state_dict(checkpoint_data['controlnet_state_dict'], strict=False)
         if model_ema is not None and 'state_dict_ema' in checkpoint_data:
             model_ema.load_state_dict(checkpoint_data['state_dict_ema'], strict=False)
         if optimizer is not None and resume_optimizer and 'optimizer' in checkpoint_data:

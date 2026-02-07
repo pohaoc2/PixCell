@@ -1,3 +1,2 @@
-from .PixArt import PixArt, PixArt_XL_2
-from .PixArtControlNet import PixArt_UNI_ControlNet
-from .pixcell_controlnet import PixCellControlNet_GAN
+from .PixArt import PixArt_ControlNet, PixArt_XL_2_UNI
+from .PixArtControlNet import PixCell_ControlNet_XL_2_UNI

@@ -44,6 +44,7 @@ class PanCancerControlNetData(Dataset):
         self.image_list_h5 = self.root / f"patches/metadata/{patch_names_file}"
         self.features_dir = self.root / "features"
         self.masks_dir = self.root / "masks"  # Directory for cell masks
+        self.vae_mask_dir = self.root / "features_mask"
 
         # Load metadata from the HDF5 file
         self._load_metadata()
@@ -121,18 +122,22 @@ class PanCancerControlNetData(Dataset):
         vae_path = img_name.replace(".jpeg", f"_{self.vae_prefix}.npy")
         ssl_path = img_name.replace(".jpeg", f"_{self.ssl_prefix}.npy")
         mask_path = img_name.replace(".jpeg", f"_{self.mask_prefix}.npy")
-        
+        vae_mask_path = img_name.replace(".jpeg", f"_mask_{self.vae_prefix}.npy")
+
         vae_path = img_name.replace(".png", f"_{self.vae_prefix}.npy")
         ssl_path = img_name.replace(".png", f"_{self.ssl_prefix}.npy")
         mask_path = img_name.replace(".png", f"_{self.mask_prefix}.png")
-
+        vae_mask_path = img_name.replace(".png", f"_mask_{self.vae_prefix}.npy")
+ 
         vae_feat = self._vae_feat_loader(self.features_dir / vae_path)
+        vae_mask = self._vae_feat_loader(self.vae_mask_dir / vae_mask_path).squeeze(0)
         # Add this line to remove the extra batch dimension:
         if vae_feat.ndim == 4 and vae_feat.shape[0] == 1:
             vae_feat = vae_feat.squeeze(0)  # (1, 16, 32, 32) -> (16, 32, 32)
 
         lt_sz = self.resolution // 8
         assert vae_feat.shape == (16, lt_sz, lt_sz)
+        assert vae_mask.shape == (16, lt_sz, lt_sz)
         ssl_feat = torch.from_numpy(np.load(self.features_dir / ssl_path))
         cell_mask = self._mask_loader(self.masks_dir / mask_path)
         cell_mask = cell_mask.unsqueeze(0) # (c, h, w) -> (1, c, h, w)
@@ -144,6 +149,7 @@ class PanCancerControlNetData(Dataset):
         cell_mask = cell_mask.squeeze(0)
         lt_sz = self.resolution // 8
         assert vae_feat.shape == (16, lt_sz, lt_sz), f"Expected VAE shape (16, {lt_sz}, {lt_sz}), got {vae_feat.shape}"
+        assert vae_mask.shape == (16, lt_sz, lt_sz), f"Expected VAE mask shape (16, {lt_sz}, {lt_sz}), got {vae_mask.shape}"
         assert cell_mask.shape[-2:] == (self.resolution, self.resolution), \
             f"Expected mask shape (..., {self.resolution}, {self.resolution}), got {cell_mask.shape}"
         #print(img_name)
@@ -157,8 +163,8 @@ class PanCancerControlNetData(Dataset):
         if self.return_img:
             img = Image.open(self.root / f"patches/{img_name}")
             img = np.array(img)
-            return vae_feat, ssl_feat, cell_mask, img
-        return vae_feat, ssl_feat, cell_mask, data_info
+            return vae_feat, ssl_feat, cell_mask, vae_mask, img
+        return vae_feat, ssl_feat, cell_mask, vae_mask, data_info
 
     def get_data(self, idx):
         """
@@ -196,10 +202,10 @@ class PanCancerControlNetData(Dataset):
         """
         retries = 3
         for _ in range(retries):
-            try:
+            #try:
                 return self.get_data(idx)
-            except Exception as e:
-                print(f"Failed to load data for index {idx}: {e}. Retrying...")
-                idx = np.random.randint(len(self))
+            #except Exception as e:
+            #    print(f"Failed to load data for index {idx}: {e}. Retrying...")
+            #    idx = np.random.randint(len(self))
 
         raise RuntimeError(f"Failed to load data after {retries} attempts.")

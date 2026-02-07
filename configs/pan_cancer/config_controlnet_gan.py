@@ -26,19 +26,12 @@ data = dict(
 )
 
 # Model setting
-model = "PixArt_XL_2_UNI_ControlNet"
-model = dict(
-    type='PixArt_XL_2_UNI_ControlNet',
-    control_channels=1,        # Cell mask channels
-    controlnet_depth=14,       # Reduced depth (half of 28)
-    freeze_base=True,          # Keep base model frozen
-)
-#model = "PixArt_XL_2_UNI"
-
-model_path = f"{root}/pretrained_models/pixcell-256/transformer"
+base_model = "PixArt_XL_2_UNI"
+base_model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
+controlnet_model = "PixCell_ControlNet_XL_2_UNI"
 controlnet_depth = 14
-
+controlnet_conditioning_channels = 16
 pixcell_controlnet_module_name = "pixcell_controlnet_transformer"
 pixcell_controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
 pixcell_controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/transformer/"
@@ -46,7 +39,7 @@ controlnet_module_name = "pixcell_controlnet"
 controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
 controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/"
 
-mixed_precision = 'fp16'
+mixed_precision = 'no'#fp16'
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model

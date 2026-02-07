@@ -15,6 +15,8 @@ from diffusers.models import AutoencoderKL
 from torchvision import transforms
 from timm.data.transforms_factory import create_transform
 from timm.data import resolve_data_config
+import os
+from huggingface_hub import login
 
 class UNI2hExtractor:
     """
@@ -23,7 +25,7 @@ class UNI2hExtractor:
     UNI-2h is a vision transformer trained on 100M+ histopathology images
     Output: 1024-dimensional feature vector
     """
-    def __init__(self, model_path, device='cuda'):
+    def __init__(self, model_path, device='cuda', token=None):
         """
         Initialize UNI-2h model
         
@@ -33,7 +35,11 @@ class UNI2hExtractor:
         """
         self.device = device if torch.cuda.is_available() else 'cpu'
         print(f"Loading UNI-2h model from {model_path}...")
-        
+        if token:
+            login(token=token)
+        if token is None:
+            token = os.getenv("HF_TOKEN")
+            login(token=token)
         # Load UNI-2h model (ViT architecture)
         # The model is a Vision Transformer pretrained on histopathology
         timm_kwargs = {
@@ -137,7 +143,7 @@ class SD3VAEExtractor:
     Extracts latent representations (mean and std) for diffusion training
     Output: (2, 16, 32, 32) for 256x256 input
     """
-    def __init__(self, model_path, device='cuda', dtype=torch.float16, size=256):
+    def __init__(self, model_path, device='cuda', dtype=torch.float16, size=256, token=None):
         """
         Initialize SD3.5 VAE model
         
@@ -150,7 +156,11 @@ class SD3VAEExtractor:
         self.dtype = dtype
         self.size = size
         print(f"Loading SD3.5 VAE from {model_path}...")
-        
+        if token:
+            login(token=token)
+        if token is None:
+            token = os.getenv("HF_TOKEN")
+            login(token=token)
         # Load VAE
         model_path = Path(model_path)
         
@@ -166,7 +176,7 @@ class SD3VAEExtractor:
                 try:
                     self.vae = AutoencoderKL.from_pretrained(
                         str(vae_path),
-                        torch_dtype=dtype
+                        torch_dtype=dtype,
                     ).to(device)
                     print(f"✓ Loaded VAE from {vae_path}")
                     vae_loaded = True
