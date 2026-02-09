@@ -97,8 +97,8 @@ def _resume_from_checkpoint(config, model, controlnet, model_ema, optimizer, lr_
     """Resume training from a checkpoint."""
     resume_path = config.resume_from['checkpoint']
     path = os.path.basename(resume_path)
-    start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
-    start_step = int(path.replace('.pth', '').split("_")[3])
+    start_epoch = int(path.replace('.pth', '').split("_")[2]) - 1
+    start_step = int(path.replace('.pth', '').split("_")[4])
     
     _, missing, unexpected = load_checkpoint(
         **config.resume_from,
@@ -286,7 +286,7 @@ def initialize_models(config, accelerator, logger):
     load_file = _find_model_file(config.base_model_path)
     missing, unexpected = load_checkpoint(
         load_file,
-        base_model,
+        model=base_model,
         load_ema=config.get('load_base_ema', False),
         max_length=max_length,
         ignore_keys=config.get('base_ignore_keys', [])
@@ -375,7 +375,7 @@ def initialize_models(config, accelerator, logger):
         load_file = _find_model_file(config.controlnet_load_from)
         missing, unexpected = load_checkpoint(
             load_file,
-            controlnet,
+            controlnet=controlnet,
             load_ema=False,
             max_length=max_length,
             ignore_keys=config.get('controlnet_ignore_keys', [])
@@ -413,7 +413,7 @@ def _find_model_file(load_from):
     return str(load_from)
 
 
-def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, discriminator=None):
+def initialize_dataset_and_optimizer(config, accelerator, logger, model, discriminator=None):
     """
     Initialize dataset, dataloader, optimizer, and lr_scheduler.
     
@@ -451,7 +451,7 @@ def initialize_dataset_and_optimizer(config, accelerator, logger, base_model, di
         )
     
     # Build optimizer for base model
-    optimizer = build_optimizer(base_model, config.optimizer)
+    optimizer = build_optimizer(model, config.optimizer)
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
     
     # Build discriminator optimizer if needed
@@ -539,7 +539,6 @@ def train_controlnet(models_dict):
     config = models_dict['config']
     logger = models_dict['logger']
     args = models_dict['args']
-    
     start_epoch = models_dict['start_epoch']
     start_step = models_dict['start_step']
     skip_step = models_dict['skip_step']
@@ -571,8 +570,10 @@ def train_controlnet(models_dict):
     # Main training loop
     logger.info("="*80)
     logger.info("Starting ControlNet Training")
+    # Print current training state
+    logger.info(f"start_epoch: {start_epoch}, start_step: {start_step}, total_steps: {total_steps}")
     logger.info("="*80)
-    
+
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         data_time_start = time.time()
         data_time_all = 0
@@ -613,7 +614,7 @@ def train_controlnet(models_dict):
             control_input = batch[2]    # Cell masks for ControlNet
             vae_mask = batch[3]    # VAE masks for ControlNet
             data_info = batch[4]
-            if 1:
+            if 0:
                 print(f"clean_images.shape: {clean_images.shape}")
                 print(f"y.shape: {y.shape}")
                 print(f"control_input.shape: {control_input.shape}")
@@ -644,13 +645,12 @@ def train_controlnet(models_dict):
             # ============================================================
             with accelerator.accumulate(controlnet):  # Accumulate gradients for ControlNet
                 optimizer.zero_grad()
-                
                 # Forward pass through ControlNet AND base model
                 model_kwargs = dict(
                     y=y,
                     mask=None,
                     data_info=data_info,
-                    control_input=control_input  # This is the key difference!
+                    control_input=vae_mask #control_input  # This is the key difference!
                 )
                 
                 # Compute loss using custom training_losses_controlnet
@@ -669,19 +669,25 @@ def train_controlnet(models_dict):
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    # 1. This triggers the 'inf check' and marks the optimizer as unscaled
-                    #accelerator.unscale_gradients(optimizer)
+                    # --- DIAGNOSTIC START ---
+                    #print(f"DEBUG: Optimizer Param Groups: {len(optimizer.param_groups)}")
+                    #print(f"DEBUG: Current LR: {optimizer.param_groups[0]['lr']:.10f}")
                     
-                    # 2. Use torch.nn.utils directly since accelerator.unscale_gradients 
-                    # already handled the mixed-precision logic.
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        controlnet.parameters(), 
-                        config.gradient_clip
-                    )
-                    
-                    # 3. Step will now work because 'inf checks' were recorded during unscale
-                optimizer.step()
-                lr_scheduler.step()
+                    # Check if the optimizer is actually tracking the weights we care about
+                    # We'll check if the object ID of the weight is in the optimizer's state
+                    target_param = controlnet.controlnet_blocks[0].weight
+                    is_tracked = any(target_param is p for group in optimizer.param_groups for p in group['params'])
+                    #print(f"DEBUG: Is weight_0 tracked by optimizer? {is_tracked}")
+                    # --- DIAGNOSTIC END ---
+                    accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    with torch.no_grad():
+                            weight_0 = controlnet.controlnet_blocks[0].weight
+                            #print(f"--- SYNC STEP COMPLETE ---")
+                            #print(f"Did weights move? {(weight_0 != 0).any().item()}")
+                            #print(f"New Max Weight: {weight_0.abs().max().item():.15f}")
+                #asd()
                 #optimizer.zero_grad()
 
                 if accelerator.is_main_process:
@@ -736,12 +742,24 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            
+            #break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")
                 break
         
+        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
+            save_checkpoint_controlnet(
+                accelerator,
+                controlnet,
+                model_ema,
+                optimizer,
+                lr_scheduler,
+                global_step,
+                epoch,
+                config,
+                logger
+            )
         # End of epoch
         if global_step >= total_steps:
             break
@@ -866,6 +884,7 @@ def main():
     logger = init_data['logger']
     args = init_data['args']
     device = accelerator.device
+
     # Initialize models
     model_data = initialize_models(config, accelerator, logger)
     base_model = model_data['base_model']
@@ -873,17 +892,17 @@ def main():
     model_ema = model_data['model_ema']
     vae = model_data['vae']
     train_diffusion = model_data['train_diffusion']
-    
+
     # Initialize dataset and optimizer
     discriminator = None  # Add discriminator initialization if needed
     optim_data = initialize_dataset_and_optimizer(
-        config, accelerator, logger, base_model, discriminator
+        config, accelerator, logger, model=controlnet, discriminator=discriminator
     )
     train_dataloader = optim_data['train_dataloader']
     optimizer = optim_data['optimizer']
     optimizer_d = optim_data['optimizer_d']
     lr_scheduler = optim_data['lr_scheduler']
-    
+    # %%
     # Prepare with accelerator
     (
         base_model, 
@@ -910,7 +929,7 @@ def main():
         config, accelerator, logger, args, train_dataloader,
         base_model, controlnet, model_ema, optimizer, lr_scheduler
     )
-    
+
     # Prepare models dict for training
     models = {
         'base_model': base_model,

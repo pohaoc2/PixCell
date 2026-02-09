@@ -3,10 +3,14 @@ from diffusers import DPMSolverMultistepScheduler
 from diffusers import AutoencoderKL
 import torch
 import numpy as np
-from train_scripts.initialize_models import extract_uni_emb
 import matplotlib.pyplot as plt
+import os
 from PIL import Image
-from huggingface_hub import hf_hub_download
+from diffusion.model.builder import MODELS
+from diffusion.utils.checkpoint import load_checkpoint
+from diffusion.utils.misc import read_config
+from diffusion.model.builder import build_model
+
 
 def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
@@ -16,13 +20,41 @@ def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cu
     sys.modules[module_name] = controlnet_mod
     spec.loader.exec_module(controlnet_mod)
     PixCellControlNet = controlnet_mod.PixCellControlNet
-    model = PixCellControlNet.from_pretrained(
-        checkpoints_folder,
-        #subfolder="transformer"
-    )
+    model = PixCellControlNet.from_pretrained(checkpoints_folder)
     model.to(device)
     model.eval();
     return model
+
+def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device='cuda'):
+    config = read_config(config_file_path)
+    kv_compress_config = config.kv_compress_config if config.kv_compress else None
+    max_length = config.model_max_length
+    latent_size = int(config.image_size) // 8
+    controlnet_model_kwargs = {
+        "pe_interpolation": config.pe_interpolation,
+        "config": config,
+        "model_max_length": max_length,
+        "qk_norm": config.qk_norm,
+        "kv_compress_config": kv_compress_config,
+        "conditioning_channels": config.controlnet_conditioning_channels,  # e.g., 16 for cell masks
+        "n_controlnet_blocks": getattr(config, 'n_controlnet_blocks', None),
+        **config.get('controlnet_model_kwargs', {})
+    }
+    
+    # Build ControlNet (all parameters trainable)
+    controlnet = build_model(
+        config.controlnet_model,  # e.g., 'PixCell_ControlNet_XL_2_UNI'
+        config.grad_checkpointing,
+        config.get('fp32_attention', False),
+        input_size=latent_size,
+        learn_sigma=False,  # ControlNet doesn't predict sigma
+        pred_sigma=False,
+        **controlnet_model_kwargs
+    )
+    _ = load_checkpoint(state_file_path, controlnet=controlnet)
+    controlnet.to(device)
+    controlnet.eval();
+    return controlnet
 
 def load_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
@@ -170,6 +202,7 @@ def prepare_controlnet_input(idx):
     latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
     latents = latents * scheduler.init_noise_sigma
     uni_embeds = torch.from_numpy(np.load(f"../features/sample_{idx}_uni.npy"))
+    uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB"))
@@ -213,6 +246,7 @@ if __name__ == "__main__":
     # %%
     device = 'cuda'
     only_init_models = False
+    from_checkpoint = True
     pixcell_controlnet_module_name = "pixcell_controlnet_transformer"
     pixcell_controlnet_file_path = "../pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
     pixcell_controlnet_checkpoints_folder = "../pretrained_models/pixcell-256-controlnet/transformer/"
@@ -224,8 +258,24 @@ if __name__ == "__main__":
         controlnet_model = initialize_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
     else:
         pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
-        controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
-    
+        if from_checkpoint:
+            print("Loading ControlNet from checkpoint")
+            config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
+            state_file_path = '../checkpoints/pixcell_controlnet_full/checkpoints/controlnet_epoch_1_step_50.pth'
+            controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
+        else:
+            print("Loading ControlNet from pretrained model")
+            controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
+    # %%
+    #controlnet_model.load_state_dict(checkpoint_data['controlnet_state_dict'], strict=False)
+    with torch.no_grad():
+        weight_0 = controlnet_model.controlnet_blocks[0].weight
+        has_changed = (weight_0 != 0).any().item()
+        max_val = weight_0.abs().max().item()
+        
+        print(f"Did weights move from zero? {has_changed}")
+        print(f"Absolute max weight value: {max_val:.15f}")
+    #asd()
     # %%
     vae = load_vae("../pretrained_models/sd-3.5-vae/vae", device)
     scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
@@ -254,7 +304,7 @@ if __name__ == "__main__":
             device='cuda')
     # %%
     hist_image = Image.open(f"../tcga_subset_0.1k/sample_{idx}.png")
-    #hist_image = Image.open(f"../test_control_image.png")
+    hist_image = Image.open(f"../test_control_image.png")
     mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
     mask_path = "../test_mask.png"
     mask_image = Image.open(mask_path).convert("RGB")

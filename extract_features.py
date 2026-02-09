@@ -344,7 +344,7 @@ def extract_features_from_images(
         # Extract features
         try:
             # UNI-2h embeddings
-            uni_features = uni_extractor.extract_batch(batch_images)
+            #uni_features = uni_extractor.extract_batch(batch_images)
             # VAE features (mean + std)
             vae_features = vae_extractor.extract_batch(batch_images)
             
@@ -357,8 +357,8 @@ def extract_features_from_images(
                 np.save(vae_output, vae_features[j])
                 
                 # Save UNI embeddings
-                uni_output = output_dir / f"{base_name}_{uni_prefix}.npy"
-                np.save(uni_output, uni_features[j])
+                #uni_output = output_dir / f"{base_name}_{uni_prefix}.npy"
+                #np.save(uni_output, uni_features[j])
             
         except Exception as e:
             print(f"\n⚠ Error processing batch: {e}")
