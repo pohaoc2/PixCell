@@ -13,6 +13,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 image_size = 256
 root = "/home/pohaoc2/UW/bagherilab/PixCell"
 root = "/home/ec2-user/PixCell"
+root = "./"
 
 # Dataset configuration
 data = dict(
@@ -44,7 +45,9 @@ fp32_attention = True
 
 # Load pretrained PixCell-256 base model
 load_from = f"{root}/pretrained_models/pixcell-256/transformer"
-resume_from = None
+resume_from = None #{
+#    'checkpoint': f"{root}/checkpoints/pixcell_controlnet_full/checkpoints/controlnet_epoch_1_step_50.pth",
+#}
 
 vae_pretrained = f"{root}/pretrained_models/sd-3.5-vae/vae"
 pe_interpolation = 0.5
@@ -52,7 +55,7 @@ pe_interpolation = 0.5
 # Training setting
 num_workers = 2
 train_batch_size = 2
-num_epochs = 1
+num_epochs = 15
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 0.01
@@ -70,8 +73,8 @@ lr_schedule_args = dict(num_warmup_steps=500)
 auto_lr = None
 
 log_interval = 50
-save_model_epochs = 5
-save_model_steps = 5000
+save_model_epochs = 15
+save_model_steps = 50000
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 
 # VAE configuration

@@ -7,7 +7,8 @@ from timm.models.layers import DropPath
 from timm.models.vision_transformer import Mlp, PatchEmbed
 from diffusers.models.controlnets.controlnet import zero_module
 from diffusers.models.activations import deprecate, FP32SiLU
-
+from diffusers.models.modeling_utils import ModelMixin
+from diffusers.configuration_utils import ConfigMixin
 # PixArt imports for registration and core blocks
 from diffusion.model.builder import MODELS
 from diffusion.model.utils import auto_grad_checkpoint, to_2tuple
@@ -169,7 +170,7 @@ class PixArtBlock(nn.Module):
 
 
 @MODELS.register_module()
-class PixCellControlNet(nn.Module):
+class PixCellControlNet(ModelMixin, ConfigMixin):
     """
     ControlNet for PixCell/PixArt architecture.
     
@@ -193,7 +194,7 @@ class PixCellControlNet(nn.Module):
         patch_size=2,
         in_channels=16,
         hidden_size=1152,
-        depth=28,
+        controlnet_depth=28,
         num_heads=16,
         mlp_ratio=4.0,
         drop_path=0.0,
@@ -213,7 +214,7 @@ class PixCellControlNet(nn.Module):
         self.patch_size = patch_size
         self.num_heads = num_heads
         self.pe_interpolation = pe_interpolation
-        self.depth = depth
+        self.controlnet_depth = controlnet_depth
         self.hidden_size = hidden_size
         
         # 1. Input embeddings
@@ -249,7 +250,7 @@ class PixCellControlNet(nn.Module):
         self.cond_embedder = zero_module(self.cond_embedder)
         
         # 5. TRAINABLE Transformer blocks (copied from base model)
-        drop_path_list = [x.item() for x in torch.linspace(0, drop_path, depth)]
+        drop_path_list = [x.item() for x in torch.linspace(0, drop_path, controlnet_depth)]
         
         self.kv_compress_config = kv_compress_config or {
             'sampling': None,
@@ -267,12 +268,12 @@ class PixCellControlNet(nn.Module):
                     if i in self.kv_compress_config['kv_compress_layer'] else 1,
                 qk_norm=qk_norm,
             )
-            for i in range(depth)
+            for i in range(controlnet_depth)
         ])
         
         # Optional: use only subset of blocks
-        self.n_controlnet_blocks = n_controlnet_blocks or depth
-        if self.n_controlnet_blocks < depth:
+        self.n_controlnet_blocks = n_controlnet_blocks or controlnet_depth
+        if self.n_controlnet_blocks < controlnet_depth:
             self.blocks = self.blocks[:self.n_controlnet_blocks]
         
         # 6. TRAINABLE ControlNet output blocks (ZERO INITIALIZED using diffusers' zero_module)
@@ -297,10 +298,15 @@ class PixCellControlNet(nn.Module):
     def initialize_weights(self):
         """Initialize transformer layers"""
         def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
+                if isinstance(module, nn.Linear):
+                    # Check if this linear layer is inside our controlnet_blocks
+                    # We don't want to overwrite the zeros!
+                    is_controlnet_output = any(module is b for b in self.controlnet_blocks)
+                    
+                    if not is_controlnet_output:
+                        torch.nn.init.xavier_uniform_(module.weight)
+                        if module.bias is not None:
+                            nn.init.constant_(module.bias, 0)
         
         self.apply(_basic_init)
         
@@ -330,7 +336,9 @@ class PixCellControlNet(nn.Module):
             nn.init.constant_(block.cross_attn.proj.bias, 0)
         
         # ControlNet blocks already zero-initialized using zero_module
-    
+        for block in self.controlnet_blocks:
+                nn.init.constant_(block.weight, 0)
+                nn.init.constant_(block.bias, 0)
     def forward(
         self, 
         hidden_states, 
@@ -524,8 +532,11 @@ class PixCellControlNet(nn.Module):
 @MODELS.register_module()
 def PixCell_ControlNet_XL_2_UNI(**kwargs):
     """PixCell ControlNet XL with UNI conditioning"""
+    print(f"kwargs: {kwargs}")
+    depth = kwargs.get('controlnet_depth', 28)
+    print(f"controlnet_depth: {depth}")
     return PixCellControlNet(
-        depth=28, 
+        controlnet_depth=14, 
         hidden_size=1152, 
         patch_size=2, 
         num_heads=16,

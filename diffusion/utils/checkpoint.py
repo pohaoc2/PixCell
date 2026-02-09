@@ -60,7 +60,7 @@ def save_checkpoint_controlnet(
     save_dir = os.path.join(config.work_dir, 'checkpoints')
     os.makedirs(save_dir, exist_ok=True)
     
-    checkpoint_path = os.path.join(save_dir, f'controlnet_step_{global_step:07d}.pth')
+    checkpoint_path = os.path.join(save_dir, f'controlnet_epoch_{epoch}_step_{global_step}.pth')
     
     # Prepare checkpoint
     checkpoint = {
@@ -72,14 +72,10 @@ def save_checkpoint_controlnet(
         'epoch': epoch,
         'config': config,
     }
-    
+    controlnet.save_config(save_directory=save_dir)
     torch.save(checkpoint, checkpoint_path)
     logger.info(f"✓ Saved ControlNet checkpoint to {checkpoint_path}")
-    
-    # Also save a "latest" checkpoint
-    latest_path = os.path.join(save_dir, 'controlnet_latest.pth')
-    torch.save(checkpoint, latest_path)
-    logger.info(f"✓ Saved latest checkpoint to {latest_path}")
+    logger.info(f"✓ Saved ControlNet config to {os.path.join(save_dir, 'config.json')}")
 
 
 def remap_pixcell_to_pixart_alpha(state_dict):
@@ -222,7 +218,7 @@ def remap_pixcell_to_pixart_alpha(state_dict):
 
 
 def load_checkpoint(checkpoint,
-                    model,
+                    model=None,
                     controlnet=None,
                     model_ema=None,
                     optimizer=None,
@@ -272,11 +268,16 @@ def load_checkpoint(checkpoint,
                     del state_dict[key]
 
     # 5. Load into Model
-    missing, unexpect = model.load_state_dict(state_dict, strict=False)
+    if model is not None:
+        missing, unexpect = model.load_state_dict(state_dict, strict=False)
+    else:
+        missing, unexpect = [], []
 
     # 6. Optional: Load EMA/Optimizer/Scheduler (Usually only in .pth)
     if not is_safetensors:
+        print("is_safetensors is False")
         if controlnet is not None and 'controlnet_state_dict' in checkpoint_data:
+            print("controlnet is not None and 'controlnet_state_dict' in checkpoint_data")
             controlnet.load_state_dict(checkpoint_data['controlnet_state_dict'], strict=False)
         if model_ema is not None and 'state_dict_ema' in checkpoint_data:
             model_ema.load_state_dict(checkpoint_data['state_dict_ema'], strict=False)
