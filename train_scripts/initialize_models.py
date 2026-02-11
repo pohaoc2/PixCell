@@ -227,13 +227,11 @@ def initialize_models(config, accelerator, logger):
     # ===================================================================
     # 1. VAE setup (unchanged)
     # ===================================================================
-    vae = None
-    if not config.data.load_vae_feat:
-        vae = AutoencoderKL.from_pretrained(
-            config.vae_pretrained, 
-            torch_dtype=torch.float16
-        ).to(accelerator.device)
-        config.scale_factor = vae.config.scaling_factor
+    vae = AutoencoderKL.from_pretrained(
+        config.vae_pretrained, 
+        torch_dtype=torch.float16
+    ).to(accelerator.device)
+    config.scale_factor = vae.config.scaling_factor
     
     logger.info(f"VAE scale factor: {config.scale_factor}")
     
@@ -433,12 +431,11 @@ def initialize_dataset_and_optimizer(config, accelerator, logger, model, discrim
         max_length=max_length,
         config=config,
     )
-    
     train_dataloader = build_dataloader(
         dataset,
         num_workers=config.num_workers,
         batch_size=config.train_batch_size,
-        shuffle=True
+        shuffle=True,
     )
     
     # Auto-scale learning rate if needed
@@ -566,7 +563,6 @@ def train_controlnet(models_dict):
     global_step = start_step + 1
     
     load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
-    
     # Main training loop
     logger.info("="*80)
     logger.info("Starting ControlNet Training")
@@ -614,12 +610,32 @@ def train_controlnet(models_dict):
             control_input = batch[2]    # Cell masks for ControlNet
             vae_mask = batch[3]    # VAE masks for ControlNet
             data_info = batch[4]
-            if 0:
-                print(f"clean_images.shape: {clean_images.shape}")
-                print(f"y.shape: {y.shape}")
-                print(f"control_input.shape: {control_input.shape}")
-                print(f"vae_mask.shape: {vae_mask.shape}")
-                asd()
+
+            if 1:
+                if 0:
+                    print(f"control_input.shape: {control_input.shape}")
+                    print(f"control_input.min(): {control_input.min()}")
+                    print(f"control_input.max(): {control_input.max()}")
+                    print(f"vae_mask.shape: {vae_mask.shape}")
+                controlnet_input_torch = (control_input.float()).to(accelerator.device)
+                controlnet_input_torch = 2*(controlnet_input_torch-0.5)
+                controlnet_input_torch = controlnet_input_torch.to(accelerator.device, dtype=vae.dtype)
+                # repeat to match channels of clean_images
+                controlnet_input_torch = controlnet_input_torch.repeat(1, 3, 1, 1)
+
+                vae_scale = config.scale_factor
+                vae_shift = config.shift_factor
+                controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
+                controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+                if 0:
+                    #print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
+                    #print(f"controlnet_input_latent.min(): {controlnet_input_latent.min()}")
+                    #print(f"controlnet_input_latent.max(): {controlnet_input_latent.max()}")
+                    print(f"y.min(): {y.min()}")
+                    print(f"y.max(): {y.max()}")
+                    #print(f"clean_images.shape: {clean_images.shape}")
+                    print(f"y.shape: {y.shape}")
+                    asd()
             if control_input.shape[-1] != clean_images.shape[-1]:
                 control_input = nn.functional.interpolate(
                     control_input.float(), 
@@ -628,15 +644,12 @@ def train_controlnet(models_dict):
                 ).to(clean_images.device)
             if control_input.shape[1] != config.controlnet_conditioning_channels:
                 control_input = control_input.repeat(1, config.controlnet_conditioning_channels, 1, 1)
-            if 0:
-                print(f"y.shape: {y.shape}")
-                print(f"control_input.shape: {control_input.shape}")
             # Sample timesteps
             bs = clean_images.shape[0]
             timesteps = torch.randint(
                 0, config.train_sampling_steps, (bs,), device=clean_images.device
             ).long()
-            
+            vae_mask = controlnet_input_latent
             grad_norm = None
             data_time_all += time.time() - data_time_start
             
@@ -650,20 +663,21 @@ def train_controlnet(models_dict):
                     y=y,
                     mask=None,
                     data_info=data_info,
-                    control_input=vae_mask #control_input  # This is the key difference!
+                    control_input=vae_mask, #control_input  # This is the key difference!
+                    #conditioning_scale=0.0,
                 )
                 
                 # Compute loss using custom training_losses_controlnet
                 loss_term = training_losses_controlnet(
-                    train_diffusion,
-                    controlnet,      # Trainable
-                    base_model,      # Frozen
-                    clean_images,
-                    timesteps,
+                    diffusion=train_diffusion,
+                    controlnet=controlnet,      # Trainable
+                    base_model=base_model,      # Frozen
+                    x_start=clean_images,
+                    timesteps=timesteps,
                     model_kwargs=model_kwargs,
                     config=config
                 )
-                loss = loss_term['loss'].mean()
+                loss = loss_term['loss']
                 
                 # Backward pass (only ControlNet gets gradients)
                 accelerator.backward(loss)
@@ -683,16 +697,26 @@ def train_controlnet(models_dict):
                     optimizer.step()
                     lr_scheduler.step()
                     with torch.no_grad():
-                            weight_0 = controlnet.controlnet_blocks[0].weight
-                            #print(f"--- SYNC STEP COMPLETE ---")
-                            #print(f"Did weights move? {(weight_0 != 0).any().item()}")
-                            #print(f"New Max Weight: {weight_0.abs().max().item():.15f}")
-                #asd()
-                #optimizer.zero_grad()
-
+                        weight_0 = controlnet.controlnet_blocks[0].weight
+                        #print(f"Did weights move? {(weight_0 != 0).any().item()}")
+                        #print(f"New Max Weight: {weight_0.abs().max().item():.15f}")
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
-            
+            if step % 5 == 0:
+                print(f"Step {step}:")
+                print(f"  Loss = {loss.item():.6f}")
+                
+                # Check gradient norms:
+                total_norm = 0
+                for p in controlnet.parameters():
+                    if p.grad is not None:
+                        total_norm += p.grad.data.norm(2).item() ** 2
+                total_norm = total_norm ** 0.5
+                print(f"  Gradient norm: {total_norm:.6f}")
+                
+                # Check weight magnitudes:
+                weight_norm = controlnet.controlnet_blocks[0].weight.norm().item()
+                print(f"  Weight norm: {weight_norm:.6f}")
             # ============================================================
             # 4. Logging and monitoring
             # ============================================================
@@ -742,7 +766,7 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            #break
+            #if step == 3: break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")
@@ -866,7 +890,7 @@ def training_losses_controlnet(
     loss = torch.nn.functional.mse_loss(model_pred, noise, reduction='none')
     loss = loss.mean(dim=list(range(1, len(loss.shape))))
     return {
-        'loss': loss,
+        'loss': loss.mean(),
         'pred': model_pred,
         'target': noise,
         'var_values': model_var_values if learn_sigma else None,
@@ -884,7 +908,7 @@ def main():
     logger = init_data['logger']
     args = init_data['args']
     device = accelerator.device
-
+    # %%
     # Initialize models
     model_data = initialize_models(config, accelerator, logger)
     base_model = model_data['base_model']
@@ -892,7 +916,7 @@ def main():
     model_ema = model_data['model_ema']
     vae = model_data['vae']
     train_diffusion = model_data['train_diffusion']
-
+    # %%
     # Initialize dataset and optimizer
     discriminator = None  # Add discriminator initialization if needed
     optim_data = initialize_dataset_and_optimizer(
@@ -947,6 +971,7 @@ def main():
         'args': args,
         **state_data
     }
+
     # %%
     # Start training
     train_controlnet(models)

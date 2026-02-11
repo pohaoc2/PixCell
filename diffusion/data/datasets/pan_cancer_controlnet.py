@@ -83,6 +83,12 @@ class PanCancerControlNetData(Dataset):
         )
         return mean + std * sample
     
+
+    @staticmethod
+    def _vae_mask_loader(path):
+        """Load VAE mask from a .npy file."""
+        mean, _ = torch.from_numpy(np.load(path)).chunk(2)
+        return mean
     @staticmethod
     def _mask_loader(path):
         """Load cell mask from a .npy or .png file."""
@@ -130,7 +136,9 @@ class PanCancerControlNetData(Dataset):
         vae_mask_path = img_name.replace(".png", f"_mask_{self.vae_prefix}.npy")
  
         vae_feat = self._vae_feat_loader(self.features_dir / vae_path)
-        vae_mask = self._vae_feat_loader(self.vae_mask_dir / vae_mask_path).squeeze(0)
+        vae_mask = self._vae_mask_loader(self.vae_mask_dir / vae_mask_path)
+        if vae_mask.ndim == 4 and vae_mask.shape[0] == 1:
+            vae_mask = vae_mask.squeeze(0)  # (1, 16, 32, 32) -> (16, 32, 32)
         # Add this line to remove the extra batch dimension:
         if vae_feat.ndim == 4 and vae_feat.shape[0] == 1:
             vae_feat = vae_feat.squeeze(0)  # (1, 16, 32, 32) -> (16, 32, 32)
@@ -161,7 +169,7 @@ class PanCancerControlNetData(Dataset):
         }
 
         if self.return_img:
-            img = Image.open(self.root / f"patches/{img_name}")
+            img = Image.open(self.root / f"tcga_subset_10k/{img_name}")
             img = np.array(img)
             return vae_feat, ssl_feat, cell_mask, vae_mask, img
         return vae_feat, ssl_feat, cell_mask, vae_mask, data_info

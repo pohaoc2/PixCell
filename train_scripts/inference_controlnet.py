@@ -25,6 +25,35 @@ def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cu
     model.eval();
     return model
 
+def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path, device='cuda'):
+    config = read_config(config_file_path)
+    kv_compress_config = config.kv_compress_config if config.kv_compress else None
+    max_length = config.model_max_length
+    latent_size = int(config.image_size) // 8
+    pixcell_controlnet_model_kwargs = {
+        "pe_interpolation": config.pe_interpolation,
+        "config": config,
+        "model_max_length": max_length,
+        "qk_norm": config.qk_norm,
+        "kv_compress_config": kv_compress_config,
+        "conditioning_channels": config.controlnet_conditioning_channels,  # e.g., 16 for cell masks
+        "n_controlnet_blocks": getattr(config, 'n_controlnet_blocks', None),
+        **config.get('pixcell_controlnet_model_kwargs', {})
+    }
+    pixcell_controlnet = build_model(
+        config.base_model,  # e.g., 'PixCell_Transformer_XL_2_UNI'
+        config.grad_checkpointing,
+        config.get('fp32_attention', False),
+        input_size=latent_size,
+        learn_sigma=False,  # ControlNet doesn't predict sigma
+        pred_sigma=False,
+        **pixcell_controlnet_model_kwargs
+    )
+    _ = load_checkpoint(state_file_path, model=pixcell_controlnet)
+    pixcell_controlnet.to(device)
+    pixcell_controlnet.eval();
+    return pixcell_controlnet
+
 def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device='cuda'):
     config = read_config(config_file_path)
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
@@ -151,29 +180,29 @@ def denoise(latents,
                 # This runs cond and uncond in ONE pass
                 latent_model_input = torch.cat([latents] * 2)
                 latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-                
+                latent_single = scheduler.scale_model_input(latents, t)
                 current_timestep = t.expand(latent_model_input.shape[0])
 
                 # --- ControlNet Pass ---
                 # We only need ControlNet for the conditional part (the second half of the batch)
                 # but many pipelines prefer passing a batch or zero-filled residuals
                 controlnet_outputs = controlnet_model(
-                    hidden_states=latents, # Single pass for control signals
+                    hidden_states=latent_single, # Single pass for control signals
                     conditioning=controlnet_input_latent,
                     encoder_hidden_states=uni_embeds,
                     timestep=t.expand(latents.shape[0]),
                     return_dict=False,
+                    #conditioning_scale=0.0,
                 )[0]
-
                 # --- Transformer Pass (The Memory Hog) ---
                 # Concatenate embeds: [uncond, cond]
+                #controlnet_outputs = [torch.zeros_like(res) for res in controlnet_outputs]
                 batch_embeds = torch.cat([uncond_uni_embeds, uni_embeds])
                 
                 # Prepare ControlNet residuals for the batch
                 # Uncond gets None/Zeros, Cond gets the outputs
                 uncond_residuals = [torch.zeros_like(res) for res in controlnet_outputs]
                 batched_residuals = [torch.cat([u, c]) for u, c in zip(uncond_residuals, controlnet_outputs)]
-
                 noise_pred_batch = pixcell_controlnet_model(
                     latent_model_input,
                     encoder_hidden_states=batch_embeds,
@@ -215,6 +244,11 @@ def prepare_controlnet_input(idx):
     vae_shift = getattr(vae.config, "shift_factor", 0)
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    print(f"vae_scale: {vae_scale}")
+    print(f"vae_shift: {vae_shift}")
+    #controlnet_input_latent = np.load(f"../features_mask/sample_{idx}_mask_sd3_vae.npy")
+    #controlnet_input_latent = torch.from_numpy(controlnet_input_latent).to(device)
+    #controlnet_input_latent = controlnet_input_latent[:1]
     return latents, uni_embeds, controlnet_input_latent
 
 def decode_latents(latents, vae, hist_image, mask_image, save_path):
@@ -261,20 +295,21 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_file_path = '../checkpoints/pixcell_controlnet_full/checkpoints/controlnet_epoch_1_step_50.pth'
+            state_name = 'controlnet_epoch_5_step_250.pth'
+            state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
+            print(f"Loaded {state_name}!")
         else:
             print("Loading ControlNet from pretrained model")
             controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
     # %%
-    #controlnet_model.load_state_dict(checkpoint_data['controlnet_state_dict'], strict=False)
     with torch.no_grad():
         weight_0 = controlnet_model.controlnet_blocks[0].weight
         has_changed = (weight_0 != 0).any().item()
         max_val = weight_0.abs().max().item()
         
         print(f"Did weights move from zero? {has_changed}")
-        print(f"Absolute max weight value: {max_val:.15f}")
+        print(f"Absolute max weight value: {max_val:.20f}")
     #asd()
     # %%
     vae = load_vae("../pretrained_models/sd-3.5-vae/vae", device)
@@ -289,8 +324,8 @@ if __name__ == "__main__":
     print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
     #uni_embeds /= uni_embeds.shape[-1] ** 0.5
     #controlnet_input_latent /= controlnet_input_latent.shape[-1] ** 0.5
-    print(f"Normalized UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
-    print(f"Normalized Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+    #print(f"Normalized UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+    #print(f"Normalized Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
     print("UNI shape: ", uni_embeds.shape)
     # %%
     denoised_latents = denoise(latents,
@@ -299,7 +334,7 @@ if __name__ == "__main__":
             scheduler,
             controlnet_model,
             pixcell_controlnet_model=pixcell_controlnet_model,
-            guidance_scale=2.0,
+            guidance_scale=1.5,
             num_inference_steps=50,
             device='cuda')
     # %%
