@@ -625,7 +625,7 @@ def train_controlnet(models_dict):
                 vae_scale = config.scale_factor
                 vae_shift = config.shift_factor
                 controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
-                controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+                #controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
                 
                 if 0:
                     print(f"control_input_latent.shape: {controlnet_input_latent.shape}")
@@ -770,7 +770,7 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            if step == 30: break
+            #if step == 30: break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")

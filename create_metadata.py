@@ -28,8 +28,8 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
     
     # Get root directory
     root = image_dir.parent if image_dir.name == 'patches' else image_dir.parent.parent
-    features_dir = root / 'features'
-    features_mask_dir = root / 'features_mask'
+    features_dir = root / 'features_consep'
+    features_mask_dir = root / 'features_consep_masks'
     mask_dir = Path(mask_dir) if mask_dir else root / 'masks'
     
     print(f"Looking for images in: {image_dir}")
