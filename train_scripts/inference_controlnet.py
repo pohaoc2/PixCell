@@ -192,7 +192,7 @@ def denoise(latents,
                     encoder_hidden_states=uni_embeds,
                     timestep=t.expand(latents.shape[0]),
                     return_dict=False,
-                    #conditioning_scale=0.0,
+                    conditioning_scale=1.0,
                 )[0]
                 # --- Transformer Pass (The Memory Hog) ---
                 # Concatenate embeds: [uncond, cond]
@@ -230,8 +230,9 @@ def prepare_controlnet_input(idx):
     latent_shape = (1, 16, 32, 32)
     latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
     latents = latents * scheduler.init_noise_sigma
-    uni_embeds = torch.from_numpy(np.load(f"../features/sample_{idx}_uni.npy"))
+    
     uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
+    uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB"))
@@ -243,10 +244,7 @@ def prepare_controlnet_input(idx):
     vae_scale = vae.config.scaling_factor
     vae_shift = getattr(vae.config, "shift_factor", 0)
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
-    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-    #controlnet_input_latent = np.load(f"../features_mask/sample_{idx}_mask_sd3_vae.npy")
-    #controlnet_input_latent = torch.from_numpy(controlnet_input_latent).to(device)
-    #controlnet_input_latent = controlnet_input_latent[:1]
+    #controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
     return latents, uni_embeds, controlnet_input_latent
 
 def decode_latents(latents, vae, hist_image, mask_image, save_path):
@@ -330,6 +328,7 @@ if __name__ == "__main__":
     vae_shift = getattr(vae.config, "shift_factor", 0)
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+
     decoded_image = vae.decode(controlnet_input_latent).sample
     decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
     decoded_image = decoded_image.cpu().permute(0, 2, 3, 1).detach().numpy()
@@ -342,7 +341,28 @@ if __name__ == "__main__":
     plt.show()
 
     # %%
-    idx = 67
+    idx = 0
+    hist_image = Image.open(f"../consep/sample_{idx}.png")
+    hist_image = Image.open(f"../consep_masks/sample_{idx}_mask.png")
+    latent = np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")
+    latent = torch.from_numpy(latent).to(device)[0]
+    latent = latent.unsqueeze(0)
+    #latent = (latent - vae.config.shift_factor)*vae.config.scaling_factor
+    vae.to(latent.device, dtype=latent.dtype)
+    # Now decode
+    with torch.no_grad():
+        decoded_image = vae.decode(latent).sample
+    decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
+    decoded_image = decoded_image.cpu().permute(0, 2, 3, 1).detach().numpy()
+    decoded_image = (decoded_image * 255).round().astype(np.uint8)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(hist_image)
+    ax[0].set_title("Controlnet Input")
+    ax[1].imshow(decoded_image[0])
+    ax[1].set_title("Decoded Image")
+    plt.show()
+    # %%
+    idx = 10
     latents, uni_embeds, controlnet_input_latent = prepare_controlnet_input(idx)
     print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
     print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
@@ -362,8 +382,9 @@ if __name__ == "__main__":
             num_inference_steps=50,
             device='cuda')
     # %%
-    hist_image = Image.open(f"../tcga_subset_0.1k/sample_{idx}.png")
+    
     hist_image = Image.open(f"../test_control_image.png")
+    hist_image = Image.open(f"../consep/sample_{idx}.png")
     mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
     mask_path = "../test_mask.png"
     mask_image = Image.open(mask_path).convert("RGB")
