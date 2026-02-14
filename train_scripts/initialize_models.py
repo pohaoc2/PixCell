@@ -602,7 +602,6 @@ def train_controlnet(models_dict):
             if hasattr(config, 'shift_factor'):
                 z = z - config.shift_factor
             clean_images = z * config.scale_factor
-            
             # ============================================================
             # 2. Unpack batch (includes control_input for ControlNet)
             # ============================================================
@@ -627,10 +626,13 @@ def train_controlnet(models_dict):
                 vae_shift = config.shift_factor
                 controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
                 controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+                
                 if 0:
-                    #print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
-                    #print(f"controlnet_input_latent.min(): {controlnet_input_latent.min()}")
-                    #print(f"controlnet_input_latent.max(): {controlnet_input_latent.max()}")
+                    print(f"control_input_latent.shape: {controlnet_input_latent.shape}")
+                    print(f"controlnet_input_latent.min(): {controlnet_input_latent.min()}")
+                    print(f"controlnet_input_latent.max(): {controlnet_input_latent.max()}")
+                    asd()
+                if 0:
                     print(f"y.min(): {y.min()}")
                     print(f"y.max(): {y.max()}")
                     #print(f"clean_images.shape: {clean_images.shape}")
@@ -644,12 +646,14 @@ def train_controlnet(models_dict):
                 ).to(clean_images.device)
             if control_input.shape[1] != config.controlnet_conditioning_channels:
                 control_input = control_input.repeat(1, config.controlnet_conditioning_channels, 1, 1)
+            #print(f"control_input.shape: {control_input.shape}")
+            #asd()
             # Sample timesteps
             bs = clean_images.shape[0]
             timesteps = torch.randint(
                 0, config.train_sampling_steps, (bs,), device=clean_images.device
             ).long()
-            vae_mask = controlnet_input_latent
+            vae_mask = controlnet_input_latent #control_input #
             grad_norm = None
             data_time_all += time.time() - data_time_start
             
@@ -663,7 +667,7 @@ def train_controlnet(models_dict):
                     y=y,
                     mask=None,
                     data_info=data_info,
-                    control_input=vae_mask, #control_input  # This is the key difference!
+                    control_input=vae_mask,
                     #conditioning_scale=0.0,
                 )
                 
@@ -766,7 +770,7 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            #if step == 3: break
+            if step == 30: break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")
@@ -971,7 +975,43 @@ def main():
         'args': args,
         **state_data
     }
+    # %%
+    import cv2
+    import numpy as np
+    import matplotlib.pyplot as plt
 
+    for step, batch in enumerate(train_dataloader):
+        # Adjust indexing based on your return: 
+        # batch[-2] is img, batch[-4] is cell_mask (binary)
+        hist_image = batch[-2][0].cpu().numpy() # Assuming 'img' is last
+        mask_image = batch[-1][0].cpu().numpy() # Assuming 'cell_mask' is here
+        bg_img = hist_image.transpose(1, 2, 0)
+        bg_img = bg_img.clip(0, 255).astype(np.uint8)
+        overlap_img = bg_img.copy()
+
+        # 2. Extract Contours
+        # Ensure mask is 2D uint8 (H, W)
+        binary_mask = (mask_image[0] > 0.5).astype(np.uint8)
+        if binary_mask.ndim == 3:
+            binary_mask = binary_mask.squeeze()
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # 3. Draw Contours (Color is BGR, so (0, 255, 0) is Green)
+        cv2.drawContours(overlap_img, contours, -1, (0, 255, 0), 1)
+
+        # 4. Plot
+        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+        ax[0].imshow(bg_img)
+        ax[0].set_title("Original Hist")
+        
+        ax[1].imshow(binary_mask, cmap='gray')
+        ax[1].set_title("Binary Mask")
+        
+        ax[2].imshow(overlap_img)
+        ax[2].set_title("Overlap (Contours)")
+        plt.show()
+        if step == 0:break
+    # %%
     # %%
     # Start training
     train_controlnet(models)

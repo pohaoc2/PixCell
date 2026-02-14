@@ -244,8 +244,6 @@ def prepare_controlnet_input(idx):
     vae_shift = getattr(vae.config, "shift_factor", 0)
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-    print(f"vae_scale: {vae_scale}")
-    print(f"vae_shift: {vae_shift}")
     #controlnet_input_latent = np.load(f"../features_mask/sample_{idx}_mask_sd3_vae.npy")
     #controlnet_input_latent = torch.from_numpy(controlnet_input_latent).to(device)
     #controlnet_input_latent = controlnet_input_latent[:1]
@@ -295,7 +293,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_5_step_250.pth'
+            state_name = 'controlnet_epoch_1_step_32.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
@@ -312,11 +310,37 @@ if __name__ == "__main__":
         print(f"Absolute max weight value: {max_val:.20f}")
     #asd()
     # %%
+    device = 'cuda'
     vae = load_vae("../pretrained_models/sd-3.5-vae/vae", device)
     scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
     scheduler = DPMSolverMultistepScheduler.from_pretrained(
         scheduler_folder,
     )
+    # %%
+    
+    mask_path = "../test_mask.png"
+    mask_path = "../consep_masks/sample_0_mask.png"
+    controlnet_input = np.asarray(Image.open(mask_path).convert("RGB"))
+    #controlnet_input = np.array(Image.open(f"../masks/sample_{idx}_mask.png"))
+    #controlnet_input = np.repeat(controlnet_input[..., None], 3, axis=-1)
+    controlnet_input_torch = torch.from_numpy(controlnet_input.copy()/255.).float().to(device)
+    controlnet_input_torch = controlnet_input_torch.permute(2, 0, 1).unsqueeze(0)
+    controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
+    vae_scale = vae.config.scaling_factor
+    vae_shift = getattr(vae.config, "shift_factor", 0)
+    controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
+    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    decoded_image = vae.decode(controlnet_input_latent).sample
+    decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
+    decoded_image = decoded_image.cpu().permute(0, 2, 3, 1).detach().numpy()
+    decoded_image = (decoded_image * 255).round().astype(np.uint8)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(controlnet_input)
+    ax[0].set_title("Controlnet Input")
+    ax[1].imshow(decoded_image[0])
+    ax[1].set_title("Decoded Image")
+    plt.show()
+
     # %%
     idx = 67
     latents, uni_embeds, controlnet_input_latent = prepare_controlnet_input(idx)
