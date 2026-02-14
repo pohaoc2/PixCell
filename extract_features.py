@@ -257,8 +257,6 @@ class SD3VAEExtractor:
             numpy array of shape (N, 2, 16, 32, 32) or (N, 16, 32, 32)
         """
         # Preprocess batch
-        print(f"images length: {len(images)}")
-        print(f"return_latent: {return_latent}")
         x = torch.stack([self.transform(img if isinstance(img, Image.Image) else Image.fromarray(img)) 
                         for img in images]).to(self.device).to(self.dtype)
         
@@ -267,8 +265,6 @@ class SD3VAEExtractor:
         
         if return_latent:
             z = posterior.mode()
-            print(f"z.shape: {z.shape}")
-            asd()
             return z.cpu().numpy()
         else:
             mean = posterior.mean
@@ -323,8 +319,8 @@ def extract_features_from_images(
     
     # Initialize extractors
     print("\nInitializing feature extractors...")
-    #uni_extractor = UNI2hExtractor(uni_model_path, device=device)
-    vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
+    uni_extractor = UNI2hExtractor(uni_model_path, device=device)
+    #vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
     
     # Process images
     print(f"\nExtracting features (batch_size={batch_size})...")
@@ -348,21 +344,21 @@ def extract_features_from_images(
         # Extract features
         #try:
             # UNI-2h embeddings
-        #uni_features = uni_extractor.extract_batch(batch_images)
+        uni_features = uni_extractor.extract_batch(batch_images)
         # VAE features (mean + std)
-        vae_features = vae_extractor.extract_batch(batch_images)
+        #vae_features = vae_extractor.extract_batch(batch_images)
         
         # Save features
         for j, img_path in enumerate(batch_images_paths[:len(batch_images)]):
             base_name = img_path.stem
             
             # Save VAE features
-            vae_output = output_dir / f"{base_name}_{vae_prefix}.npy"
-            np.save(vae_output, vae_features[j])
+            #vae_output = output_dir / f"{base_name}_{vae_prefix}.npy"
+            #np.save(vae_output, vae_features[j])
             
             # Save UNI embeddings
-            #uni_output = output_dir / f"{base_name}_{uni_prefix}.npy"
-            #np.save(uni_output, uni_features[j])
+            uni_output = output_dir / f"{base_name}_{uni_prefix}.npy"
+            np.save(uni_output, uni_features[j])
             
         #except Exception as e:
         #     print(f"\n⚠ Error processing batch: {e}")

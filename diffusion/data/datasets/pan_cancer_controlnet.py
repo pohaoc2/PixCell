@@ -40,11 +40,10 @@ class PanCancerControlNetData(Dataset):
         self.train_subset_keys = kwargs.get("train_subset_keys", None)
 
         patch_names_file = kwargs.get("patch_names_file", "patch_names_controlnet.hdf5")
-
         self.image_list_h5 = self.root / f"patches/metadata/{patch_names_file}"
-        self.features_dir = self.root / "features"
-        self.masks_dir = self.root / "masks"  # Directory for cell masks
-        self.vae_mask_dir = self.root / "features_mask"
+        self.features_dir = self.root / "features_consep"
+        self.masks_dir = self.root / "consep_masks"
+        self.vae_mask_dir = self.root / "features_consep_masks"
 
         # Load metadata from the HDF5 file
         self._load_metadata()
@@ -125,16 +124,10 @@ class PanCancerControlNetData(Dataset):
             tuple: (vae_feat, ssl_feat, cell_mask, data_info)
         """
         # Load VAE and SSL features
-        vae_path = img_name.replace(".jpeg", f"_{self.vae_prefix}.npy")
-        ssl_path = img_name.replace(".jpeg", f"_{self.ssl_prefix}.npy")
-        mask_path = img_name.replace(".jpeg", f"_{self.mask_prefix}.npy")
-        vae_mask_path = img_name.replace(".jpeg", f"_mask_{self.vae_prefix}.npy")
-
         vae_path = img_name.replace(".png", f"_{self.vae_prefix}.npy")
         ssl_path = img_name.replace(".png", f"_{self.ssl_prefix}.npy")
         mask_path = img_name.replace(".png", f"_{self.mask_prefix}.png")
         vae_mask_path = img_name.replace(".png", f"_mask_{self.vae_prefix}.npy")
- 
         vae_feat = self._vae_feat_loader(self.features_dir / vae_path)
         vae_mask = self._vae_mask_loader(self.vae_mask_dir / vae_mask_path)
         if vae_mask.ndim == 4 and vae_mask.shape[0] == 1:
@@ -164,14 +157,21 @@ class PanCancerControlNetData(Dataset):
         data_info = {
             "img_hw": torch.tensor([self.resolution] * 2, dtype=torch.float32),
             "aspect_ratio": torch.tensor(1.0),
-            #"mask_type": "binary",
-            #"img_name": img_name
+            #"img_name": img_name  # Keep it as a raw string here
         }
-
         if self.return_img:
-            img = Image.open(self.root / f"tcga_subset_10k/{img_name}")
+            img = Image.open(self.root / f"consep/{img_name}")
             img = np.array(img)
-            return vae_feat, ssl_feat, cell_mask, vae_mask, img
+            img = torch.from_numpy(img).permute(2, 0, 1).float()
+            img = img.unsqueeze(0)
+            img = F.interpolate(
+                img,
+                size=(self.resolution, self.resolution),
+                mode='bilinear',
+                align_corners=False
+            )
+            img = img.squeeze(0)
+            return vae_feat, ssl_feat, cell_mask, vae_mask, img, cell_mask
         return vae_feat, ssl_feat, cell_mask, vae_mask, data_info
 
     def get_data(self, idx):
