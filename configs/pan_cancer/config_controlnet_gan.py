@@ -34,7 +34,7 @@ base_model = "PixArt_XL_2_UNI"
 base_model_path = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 controlnet_model = "PixCell_ControlNet_XL_2_UNI"
-controlnet_depth = 14
+controlnet_depth = 28
 controlnet_conditioning_channels = 16
 pixcell_controlnet_module_name = "pixcell_controlnet_transformer"
 pixcell_controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
@@ -58,7 +58,7 @@ pe_interpolation = 0.5
 # Training setting
 num_workers = 2
 train_batch_size = 64
-num_epochs = 15
+num_epochs = 5
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0
