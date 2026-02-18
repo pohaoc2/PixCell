@@ -25,7 +25,7 @@ from diffusion.utils.logger import get_root_logger, rename_file_with_creation_ti
 from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
-
+import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore")
 
 
@@ -563,6 +563,7 @@ def train_controlnet(models_dict):
     global_step = start_step + 1
     
     load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
+    print(f"load_vae_feat: {load_vae_feat}")
     # Main training loop
     logger.info("="*80)
     logger.info("Starting ControlNet Training")
@@ -599,9 +600,7 @@ def train_controlnet(models_dict):
                             z = posterior.mode()
             
             # Apply shift and scale
-            if hasattr(config, 'shift_factor'):
-                z = z - config.shift_factor
-            clean_images = z * config.scale_factor
+            clean_images = (z.float() - config.shift_factor) * config.scale_factor
             # ============================================================
             # 2. Unpack batch (includes control_input for ControlNet)
             # ============================================================
@@ -609,24 +608,114 @@ def train_controlnet(models_dict):
             control_input = batch[2]    # Cell masks for ControlNet
             vae_mask = batch[3]    # VAE masks for ControlNet
             data_info = batch[4]
-
-            if 1:
-                if 0:
+            #print(f"vae_mask.shape: {vae_mask.shape}")
+            #print(f"vae_mask.mean(): {vae_mask.mean()}")
+            #print(f"vae_mask.std(): {vae_mask.std()}")
+            import matplotlib.pyplot as plt
+            if 0:
+                if 1:
                     print(f"control_input.shape: {control_input.shape}")
                     print(f"control_input.min(): {control_input.min()}")
                     print(f"control_input.max(): {control_input.max()}")
-                    print(f"vae_mask.shape: {vae_mask.shape}")
-                controlnet_input_torch = (control_input.float()).to(accelerator.device)
-                controlnet_input_torch = 2*(controlnet_input_torch-0.5)
-                controlnet_input_torch = controlnet_input_torch.to(accelerator.device, dtype=vae.dtype)
-                # repeat to match channels of clean_images
-                controlnet_input_torch = controlnet_input_torch.repeat(1, 3, 1, 1)
+                from PIL import Image
+                control_inputs = []
+                for i in range(control_input.shape[0]):
+                    plt_image = (control_input[i][0].cpu().numpy()*255.).clip(0, 255).astype(np.uint8)
+                    control_inputs.append(Image.fromarray(plt_image))
+                from torchvision import transforms as T
+
+                transform = T.Compose(
+                    [
+                        T.Lambda(lambda img: img.convert("RGB")),
+                        T.Resize((256, 256)),
+                        T.ToTensor(),
+                        T.Normalize([0.5], [0.5]),
+                    ]
+                )
+
+                controlnet_input_torch = []
+                for i in range(len(control_inputs)):
+                    controlnet_input_torch.append(transform(control_inputs[i]).unsqueeze(0).to(accelerator.device).to(vae.dtype))
+                controlnet_input_torch = torch.cat(controlnet_input_torch, dim=0)
+                print(f"controlnet_input_torch.shape: {controlnet_input_torch.shape}")
+                print(f"controlnet_input_torch.min(): {controlnet_input_torch.min()}")
+                print(f"controlnet_input_torch.max(): {controlnet_input_torch.max()}")
+                print(f"controlnet_input_torch.mean(): {controlnet_input_torch.mean()}")
+                print(f"controlnet_input_torch.std(): {controlnet_input_torch.std()}")
 
                 vae_scale = config.scale_factor
                 vae_shift = config.shift_factor
                 controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
-                #controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-                
+                controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+                print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
+                print(f"controlnet_input_latent.mean(): {controlnet_input_latent.mean()}")
+                print(f"controlnet_input_latent.std(): {controlnet_input_latent.std()}")
+                #asd()
+                if 0:
+                    from diffusers import DPMSolverMultistepScheduler
+                    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
+                    scheduler = DPMSolverMultistepScheduler.from_pretrained(
+                        scheduler_folder,
+                    )
+                    scheduler.set_timesteps(config.train_sampling_steps, device=accelerator.device)
+                    timesteps = scheduler.timesteps
+                    latent_shape = (1, 16, 32, 32)
+                    latents = torch.randn(latent_shape, device=accelerator.device, dtype=torch.float32).to(accelerator.device)
+                    latents = latents * config.train_sampling_steps
+                    with torch.no_grad():
+                        with torch.amp.autocast(device_type="cuda", enabled=(accelerator.device=='cuda')):
+                            for t in timesteps:
+                                # Expand for Classifier-Free Guidance (CFG) batching
+                                # This runs cond and uncond in ONE pass
+                                latent_model_input = torch.cat([latents] * 1)
+                                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+                                current_timestep = t.expand(latent_model_input.shape[0])
+                                
+                                noise_pred = base_model(
+                                    x=latent_model_input,
+                                    y=y[:1],
+                                    timestep=current_timestep,
+                                    controlnet_outputs=None,
+                                    return_dict=False,
+                                )[0]
+                                # --- Step ---
+                                print(f"noise_pred.shape: {noise_pred.shape}")
+                                print(f"t: {t}")
+                                print(f"latents.shape: {latents.shape}")
+                                print(f"latent_input.shape: {latent_model_input.shape}")
+                                print(f"current_timestep: {current_timestep}")
+                                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                    asd()
+                if 0:
+                    with torch.no_grad():
+                        controlnet_input_latent = controlnet_input_latent/vae_scale+vae_shift
+                        decoded_image = vae.decode(controlnet_input_latent).sample
+                        decoded_image_mask = vae.decode(vae_mask).sample
+                        #decoded_image = vae.decode(z).sample
+                    decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
+                    decoded_image = decoded_image.cpu().permute(0, 2, 3, 1).detach().numpy()
+                    decoded_image = (decoded_image * 255).round().astype(np.uint8)
+                    import matplotlib.pyplot as plt
+                    hist_image = batch[-2][0].cpu().numpy().transpose(1, 2, 0)
+                    hist_image = hist_image.clip(0, 255).astype(np.uint8)
+                    hist_image = batch[-1][0].cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
+                    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+                    ax[0].imshow(hist_image)
+                    ax[0].set_title("Controlnet Input")
+                    ax[1].imshow(decoded_image[0])
+                    ax[1].set_title("Decoded Image")
+                    decoded_image_mask = (decoded_image_mask / 2 + 0.5).clamp(0, 1)
+                    decoded_image_mask = decoded_image_mask.cpu().permute(0, 2, 3, 1).detach().numpy()
+                    decoded_image_mask = (decoded_image_mask * 255).round().astype(np.uint8)
+                    ax[2].imshow(decoded_image_mask[0])
+                    ax[2].set_title("Decoded Image Mask")
+                    plt.show()
+                    asd()
+                if 0:
+                    latent_shape = (1, 16, 32, 32)
+                    latents = torch.randn(latent_shape, device=accelerator.device, dtype=torch.float32).to(accelerator.device)
+                    latents = latents * config.train_sampling_steps
+                    
                 if 0:
                     print(f"control_input_latent.shape: {controlnet_input_latent.shape}")
                     print(f"controlnet_input_latent.min(): {controlnet_input_latent.min()}")
@@ -653,7 +742,7 @@ def train_controlnet(models_dict):
             timesteps = torch.randint(
                 0, config.train_sampling_steps, (bs,), device=clean_images.device
             ).long()
-            vae_mask = controlnet_input_latent #control_input #
+            vae_mask = vae_mask #controlnet_input_latent
             grad_norm = None
             data_time_all += time.time() - data_time_start
             
@@ -672,6 +761,21 @@ def train_controlnet(models_dict):
                 )
                 
                 # Compute loss using custom training_losses_controlnet
+                if 0:
+                    print(f"clean_images.shape: {clean_images.shape}")
+                    print(f"clean_images.mean(): {clean_images.mean()}")
+                    print(f"clean_images.std(): {clean_images.std()}")
+                    print('--------------------------------')
+                    print(f"timesteps.shape: {timesteps.shape}")
+                    print(f"y.shape: {y.shape}")
+                    print(f"y.mean(): {y.mean()}")
+                    print(f"y.std(): {y.std()}")
+                    print('--------------------------------')
+                    print(f"vae_mask.shape: {vae_mask.shape}")
+                    print(f"vae_mask.mean(): {vae_mask.mean()}")
+                    print(f"vae_mask.std(): {vae_mask.std()}")
+                    print('--------------------------------')
+                    asd()
                 loss_term = training_losses_controlnet(
                     diffusion=train_diffusion,
                     controlnet=controlnet,      # Trainable
@@ -770,7 +874,7 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            #if step == 30: break
+            if step == 70: break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")
@@ -856,7 +960,7 @@ def training_losses_controlnet(
         mask=model_kwargs.get('mask', None),
         data_info=model_kwargs.get('data_info', None),
     )
-    
+
     # Extract outputs (controlnet returns tuple)
     if isinstance(controlnet_outputs, tuple):
         controlnet_residuals = controlnet_outputs[0]
@@ -901,6 +1005,10 @@ def training_losses_controlnet(
     }
 # %%
 def main():
+    # %%
+    # Start training
+    train_controlnet(models)
+    # %%
     """Main entry point for training."""
     # %%
     # Initialize config and accelerator
@@ -1011,7 +1119,79 @@ def main():
         ax[2].set_title("Overlap (Contours)")
         plt.show()
         if step == 0:break
-    # %%
+    # %% [Check ssl features]
+    from diffusers import DPMSolverMultistepScheduler
+    from diffusers.utils.torch_utils import randn_tensor
+    for step, batch in enumerate(train_dataloader):
+        y = batch[1][:1]
+        break
+    y = y.unsqueeze(0)
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(
+        "StonyBrook-CVLab/PixCell-256",
+        subfolder="scheduler"
+    )
+    latent_shape = (
+        1,
+        16,
+        32,
+        32,
+    )
+    latent_channels = base_model.in_channels
+    generator = torch.Generator(device=device).manual_seed(42)
+    num_inference_steps = 20
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    timesteps = scheduler.timesteps
+    latents = randn_tensor(latent_shape, generator=generator, device=device, dtype=torch.float16)
+    latents = latents * scheduler.init_noise_sigma
+    # ============================================
+    # 8. Denoising Loop
+    # ============================================
+    with torch.no_grad(), torch.amp.autocast('cuda'):
+        for i, t in enumerate(timesteps):
+            # Expand latents for CFG
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Prepare timestep
+            timestep = t
+            if not torch.is_tensor(timestep):
+                timestep = torch.tensor([timestep], dtype=torch.float32, device=device)
+            timestep = timestep.expand(latent_model_input.shape[0])
+            # Predict noise
+            noise_pred = base_model(
+                x=latent_model_input,
+                y=y,
+                timestep=timestep,
+                controlnet_outputs=None,
+                return_dict=False,
+            )
+            if base_model.out_channels // 2 == latent_channels:
+                noise_pred = noise_pred.chunk(2, dim=1)[0]
+            # Denoise step
+            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+            print(f"Step {i+1}/{num_inference_steps}")
+    vae_scale = vae.config.scaling_factor
+    vae_shift = getattr(vae.config, "shift_factor", 0)
+    # Convert latents to float32 to match VAE's dtype
+    latents_for_decode = latents.float()
+
+    with torch.no_grad():
+        latents_in = (latents_for_decode / vae_scale) + vae_shift
+        latents_in = latents_in.to(dtype=vae.dtype, device=vae.device)  # match fp16/fp32 + device
+
+        generated_image = vae.decode(latents_in, return_dict=False)[0]
+
+    # Post-process to PIL image
+    generated_image = (generated_image / 2 + 0.5).clamp(0, 1)
+    generated_image = generated_image.cpu().permute(0, 2, 3, 1).numpy()
+    generated_image = (generated_image * 255).round().astype(np.uint8)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(batch[-2][0].cpu().numpy().transpose(1, 2, 0).astype(np.uint8))
+    ax[0].set_title("Original Image")
+    ax[1].imshow(generated_image[0])
+    ax[1].set_title("Generated Image")
+    plt.show()
     # %%
     # Start training
     train_controlnet(models)
