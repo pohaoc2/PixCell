@@ -820,7 +820,7 @@ def train_controlnet(models_dict):
                         #print(f"New Max Weight: {weight_0.abs().max().item():.15f}")
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
-            if step % 5 == 0:
+            if step % 50 == 0:
                 print(f"Step {step}:")
                 print(f"  Loss = {loss.item():.6f}")
                 
@@ -1017,7 +1017,7 @@ def training_losses_controlnet(
 def main():
     # %%
     # Start training
-    train_controlnet(models)
+    # train_controlnet(models)
     # %%
     """Main entry point for training."""
     # %%
