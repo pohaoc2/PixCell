@@ -298,15 +298,15 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
     def initialize_weights(self):
         """Initialize transformer layers"""
         def _basic_init(module):
-                if isinstance(module, nn.Linear):
-                    # Check if this linear layer is inside our controlnet_blocks
-                    # We don't want to overwrite the zeros!
-                    is_controlnet_output = any(module is b for b in self.controlnet_blocks)
-                    
-                    if not is_controlnet_output:
-                        torch.nn.init.xavier_uniform_(module.weight)
-                        if module.bias is not None:
-                            nn.init.constant_(module.bias, 0)
+            if isinstance(module, nn.Linear):
+                # Check if this linear layer is inside our controlnet_blocks
+                # We don't want to overwrite the zeros!
+                is_controlnet_output = any(module is b for b in self.controlnet_blocks)
+                
+                if not is_controlnet_output:
+                    torch.nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
         
         self.apply(_basic_init)
         

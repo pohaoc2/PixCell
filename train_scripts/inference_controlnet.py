@@ -194,6 +194,7 @@ def denoise(latents,
                     return_dict=False,
                     conditioning_scale=0.60,
                 )[0]
+                controlnet_outputs = controlnet_outputs[:1]
                 # --- Transformer Pass (The Memory Hog) ---
                 # Concatenate embeds: [uncond, cond]
                 #controlnet_outputs = [torch.zeros_like(res) for res in controlnet_outputs]
@@ -210,7 +211,6 @@ def denoise(latents,
                     timestep=current_timestep,
                     return_dict=False,
                 )[0]
-
                 # --- CFG Logic ---
                 noise_pred_uncond, noise_pred_cond = noise_pred_batch.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
@@ -235,7 +235,7 @@ def prepare_controlnet_input(idx):
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
-    mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     # resize to 256x256
    # import torchvision.transforms as T
@@ -295,7 +295,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_1_step_72.pth'
+            state_name = 'controlnet_epoch_5_step_105.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
@@ -368,7 +368,7 @@ if __name__ == "__main__":
     ax[1].set_title("Decoded Image")
     plt.show()
     # %%
-    idx = 11
+    idx = 10
     latents, uni_embeds, controlnet_input_latent = prepare_controlnet_input(idx)
     print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
     print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
@@ -393,7 +393,7 @@ if __name__ == "__main__":
     hist_image = Image.open(f"../consep/sample_{idx}.png")
     mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
     mask_path = "../test_mask.png"
-    mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     mask_image = Image.open(mask_path).convert("RGB")
     generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
     # %%
