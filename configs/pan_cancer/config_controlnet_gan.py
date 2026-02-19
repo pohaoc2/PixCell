@@ -13,7 +13,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 image_size = 256
 root = "/home/pohaoc2/UW/bagherilab/PixCell"
 root = "/home/ec2-user/PixCell"
-root = "./"
+#root = "./"
 
 # Dataset configuration
 data = dict(
@@ -24,7 +24,8 @@ data = dict(
     ssl_prefix="uni",
     mask_prefix="mask",
     #patch_names_file="patch_names_controlnet.hdf5",
-    patch_names_file="controlnet_consep.hdf5",
+    #patch_names_file="controlnet_consep.hdf5",
+    patch_names_file="controlnet_consep_small.hdf5",
     load_vae_feat=True,
     return_img=True,
 )
@@ -43,7 +44,7 @@ controlnet_module_name = "pixcell_controlnet"
 controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
 controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/"
 
-mixed_precision = 'bf16'
+mixed_precision = 'no' #'bf16'
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
@@ -57,8 +58,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 2
-train_batch_size = 32
-num_epochs = 20
+train_batch_size = 4
+num_epochs = 100
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0
@@ -72,7 +73,7 @@ optimizer = dict(
     eps=1e-8
 )
 
-lr_schedule_args = dict(num_warmup_steps=100)
+lr_schedule_args = dict(num_warmup_steps=120)
 auto_lr = None
 
 log_interval = 50

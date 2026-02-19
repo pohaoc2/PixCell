@@ -36,17 +36,17 @@ def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_p
         "model_max_length": max_length,
         "qk_norm": config.qk_norm,
         "kv_compress_config": kv_compress_config,
-        "conditioning_channels": config.controlnet_conditioning_channels,  # e.g., 16 for cell masks
-        "n_controlnet_blocks": getattr(config, 'n_controlnet_blocks', None),
-        **config.get('pixcell_controlnet_model_kwargs', {})
+        "micro_condition": config.micro_condition,
+        "add_pos_embed_to_cond": getattr(config, 'add_pos_embed_to_cond', False),
+        **config.get('base_model_kwargs', {})
     }
     pixcell_controlnet = build_model(
         config.base_model,  # e.g., 'PixCell_Transformer_XL_2_UNI'
-        config.grad_checkpointing,
+        False,  # No grad checkpointing for frozen model
         config.get('fp32_attention', False),
         input_size=latent_size,
-        learn_sigma=False,  # ControlNet doesn't predict sigma
-        pred_sigma=False,
+        learn_sigma=True,
+        pred_sigma=True,
         **pixcell_controlnet_model_kwargs
     )
     _ = load_checkpoint(state_file_path, model=pixcell_controlnet)
@@ -170,7 +170,7 @@ def denoise(latents,
     
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
-    latent_channels = pixcell_controlnet_model.config.in_channels
+    latent_channels = getattr(pixcell_controlnet_model, 'in_channels', 16)
 
     # 3. Inference Loop with Autocast
     with torch.no_grad():
@@ -192,9 +192,9 @@ def denoise(latents,
                     encoder_hidden_states=uni_embeds,
                     timestep=t.expand(latents.shape[0]),
                     return_dict=False,
-                    conditioning_scale=0.60,
+                    conditioning_scale=0.0,
                 )[0]
-                controlnet_outputs = controlnet_outputs[:1]
+                #controlnet_outputs = controlnet_outputs[:14]
                 # --- Transformer Pass (The Memory Hog) ---
                 # Concatenate embeds: [uncond, cond]
                 #controlnet_outputs = [torch.zeros_like(res) for res in controlnet_outputs]
@@ -205,21 +205,26 @@ def denoise(latents,
                 uncond_residuals = [torch.zeros_like(res) for res in controlnet_outputs]
                 batched_residuals = [torch.cat([u, c]) for u, c in zip(uncond_residuals, controlnet_outputs)]
                 noise_pred_batch = pixcell_controlnet_model(
-                    latent_model_input,
-                    encoder_hidden_states=batch_embeds,
-                    controlnet_outputs=batched_residuals,
+                    x=latent_model_input,
+                    y=batch_embeds,
+                    #controlnet_outputs=batched_residuals,
                     timestep=current_timestep,
+                    controlnet_outputs=None,
                     return_dict=False,
                 )[0]
+                print(f"noise_pred_batch.shape: {noise_pred_batch.shape}")
+                print(f"out channels: {pixcell_controlnet_model.out_channels}")
+                print(f"in channels: {pixcell_controlnet_model.in_channels}")
+                print("="*100)
                 # --- CFG Logic ---
                 noise_pred_uncond, noise_pred_cond = noise_pred_batch.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-
                 # --- Learned Sigma (Variance) Handling ---
-                if pixcell_controlnet_model.config.out_channels // 2 == latent_channels:
-                    noise_pred = noise_pred.chunk(2, dim=1)[0]
-
+                #if pixcell_controlnet_model.out_channels // 2 == latent_channels:
+                #    noise_pred = noise_pred.chunk(2, dim=1)[0]
                 # --- Step ---
+                print(f"noise_pred.shape: {noise_pred.shape}")
+                asd()
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
     return latents
@@ -287,15 +292,20 @@ if __name__ == "__main__":
     controlnet_module_name = "pixcell_controlnet"
     controlnet_file_path = "../pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
     controlnet_checkpoints_folder = "../pretrained_models/pixcell-256-controlnet/controlnet/"
+    
+    config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
+    state_name = 'controlnet_epoch_50_step_1050.pth'
+    state_file_path = f'../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors'
+    pixcell_controlnet_model = load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
     if only_init_models:
         pixcell_controlnet_model = initialize_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
         controlnet_model = initialize_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
     else:
-        pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
+        #pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_5_step_105.pth'
+            state_name = 'controlnet_epoch_50_step_1050.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
