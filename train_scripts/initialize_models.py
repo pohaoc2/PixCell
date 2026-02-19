@@ -348,6 +348,7 @@ def initialize_models(config, accelerator, logger):
     
     # Copy matching weights
     copied_count = 0
+    copied_params_count = 0
     for name, param in controlnet.named_parameters():
         # Try to find corresponding parameter in base model
         # Adjust these mappings based on your actual model structure
@@ -363,10 +364,19 @@ def initialize_models(config, accelerator, logger):
                     if 'controlnet_blocks' not in name and 'cond_embedder' not in name:
                         param.data.copy_(base_state_dict[base_key])
                         copied_count += 1
+                        copied_params_count += param.numel()
                         break
     
     logger.info(f"✓ Copied {copied_count} parameters from base model to ControlNet")
-    
+    logger.info(f"✓ Copied {copied_params_count} parameters from base model to ControlNet")
+
+
+    # frozen controlnet except for controlnet_blocks
+    #for name, param in controlnet.named_parameters():
+    #    if 'controlnet_blocks' not in name:
+    #        param.requires_grad = False
+    # print trainable parameters
+    logger.info(f"Trainable parameters: {sum(p.numel() for p in controlnet.parameters() if p.requires_grad):,}")
     # Optional: Load ControlNet checkpoint if resuming training
     if config.get('controlnet_load_from', None) is not None:
         logger.info(f"Loading ControlNet checkpoint from {config.controlnet_load_from}")
@@ -874,7 +884,7 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            if step == 70: break
+            if step == 50: break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")
