@@ -192,7 +192,7 @@ class PixArt_ControlNet(nn.Module):
             y_lens = [y.shape[2]] * y.shape[0]
             y = y.squeeze(1).view(1, -1, x.shape[-1])
         for i, block in enumerate(self.blocks):
-            x = auto_grad_checkpoint(block, x, y, t0, y_lens)  # (N, T, D) #support grad checkpoint
+            x = auto_grad_checkpoint(block, x, y, t0, y_lens)  # (N, T, D) #support grad checkpoint 
             if controlnet_outputs is not None:
                 if i < len(controlnet_outputs):
                     x = x + controlnet_outputs[i]
