@@ -587,6 +587,7 @@ def train_controlnet(models_dict):
         
         for step, batch in enumerate(train_dataloader):
             # Skip steps if resuming
+            #print(f"Step: {step}")
             if step < skip_step:
                 if (step + 1) % 50 == 0 and accelerator.is_main_process:
                     info = f"Skipping Step/Epoch [{global_step}/{epoch}][{step + 1}/{len(train_dataloader)}]"
@@ -618,9 +619,6 @@ def train_controlnet(models_dict):
             control_input = batch[2]    # Cell masks for ControlNet
             vae_mask = batch[3]    # VAE masks for ControlNet
             data_info = batch[4]
-            #print(f"vae_mask.shape: {vae_mask.shape}")
-            #print(f"vae_mask.mean(): {vae_mask.mean()}")
-            #print(f"vae_mask.std(): {vae_mask.std()}")
             import matplotlib.pyplot as plt
             if 0:
                 if 1:
@@ -752,6 +750,7 @@ def train_controlnet(models_dict):
             timesteps = torch.randint(
                 0, config.train_sampling_steps, (bs,), device=clean_images.device
             ).long()
+            vae_mask = (vae_mask-vae_shift)*vae_scale
             vae_mask = vae_mask #controlnet_input_latent
             grad_norm = None
             data_time_all += time.time() - data_time_start
@@ -796,7 +795,6 @@ def train_controlnet(models_dict):
                     config=config
                 )
                 loss = loss_term['loss']
-                
                 # Backward pass (only ControlNet gets gradients)
                 accelerator.backward(loss)
 
@@ -814,13 +812,9 @@ def train_controlnet(models_dict):
                     accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
                     optimizer.step()
                     lr_scheduler.step()
-                    with torch.no_grad():
-                        weight_0 = controlnet.controlnet_blocks[0].weight
-                        #print(f"Did weights move? {(weight_0 != 0).any().item()}")
-                        #print(f"New Max Weight: {weight_0.abs().max().item():.15f}")
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
-            if step % 50 == 0:
+            if 0:#step % 50 == 0:
                 print(f"Step {step}:")
                 print(f"  Loss = {loss.item():.6f}")
                 
@@ -884,7 +878,7 @@ def train_controlnet(models_dict):
                     )
             
             data_time_start = time.time()
-            if step == 50: break
+            #if step == 10: break
             # Check if we've reached max steps
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping training.")

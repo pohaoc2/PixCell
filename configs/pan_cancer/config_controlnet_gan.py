@@ -13,7 +13,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 image_size = 256
 root = "/home/pohaoc2/UW/bagherilab/PixCell"
 root = "/home/ec2-user/PixCell"
-#root = "./"
+root = "./"
 
 # Dataset configuration
 data = dict(
@@ -44,7 +44,7 @@ controlnet_module_name = "pixcell_controlnet"
 controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
 controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/"
 
-mixed_precision = 'no' #'bf16'
+mixed_precision = 'bf16'
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
@@ -67,17 +67,17 @@ gradient_clip = 1.0
 # AdamW optimizer for generator
 optimizer = dict(
     type='AdamW',
-    lr=1e-6,
+    lr=1e-5,
     weight_decay=0.0, 
     betas=(0.9, 0.999),
     eps=1e-8
 )
 
-lr_schedule_args = dict(num_warmup_steps=120)
+lr_schedule_args = dict(num_warmup_steps=130)
 auto_lr = None
 
-log_interval = 50
-save_model_epochs = 15
+log_interval = 10
+save_model_epochs = 100
 save_model_steps = 50000
 work_dir = f"{root}/checkpoints/pixcell_controlnet_full"
 

@@ -166,6 +166,7 @@ def denoise(latents,
     # 2. Create Unconditional Embeddings
     # Using zeros or random is standard, but must match dtype/device
     uncond_uni_embeds = torch.randn(1, 1, 1, 1536).to(device, dtype=dtype)
+    uncond_uni_embeds = torch.randn(1, 1536).to(device, dtype=dtype)
     uncond_uni_embeds /= 1536 ** 0.5
     
     scheduler.set_timesteps(num_inference_steps, device=device)
@@ -192,7 +193,7 @@ def denoise(latents,
                     encoder_hidden_states=uni_embeds,
                     timestep=t.expand(latents.shape[0]),
                     return_dict=False,
-                    conditioning_scale=0.0,
+                    conditioning_scale=0.5,
                 )[0]
                 #controlnet_outputs = controlnet_outputs[:14]
                 # --- Transformer Pass (The Memory Hog) ---
@@ -207,26 +208,19 @@ def denoise(latents,
                 noise_pred_batch = pixcell_controlnet_model(
                     x=latent_model_input,
                     y=batch_embeds,
-                    #controlnet_outputs=batched_residuals,
+                    controlnet_outputs=batched_residuals,
                     timestep=current_timestep,
-                    controlnet_outputs=None,
+                    #controlnet_outputs=None,
                     return_dict=False,
-                )[0]
-                print(f"noise_pred_batch.shape: {noise_pred_batch.shape}")
-                print(f"out channels: {pixcell_controlnet_model.out_channels}")
-                print(f"in channels: {pixcell_controlnet_model.in_channels}")
-                print("="*100)
+                )
                 # --- CFG Logic ---
                 noise_pred_uncond, noise_pred_cond = noise_pred_batch.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                 # --- Learned Sigma (Variance) Handling ---
-                #if pixcell_controlnet_model.out_channels // 2 == latent_channels:
-                #    noise_pred = noise_pred.chunk(2, dim=1)[0]
+                if pixcell_controlnet_model.out_channels // 2 == latent_channels:
+                    noise_pred = noise_pred.chunk(2, dim=1)[0]
                 # --- Step ---
-                print(f"noise_pred.shape: {noise_pred.shape}")
-                asd()
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-
     return latents
 
 
@@ -239,6 +233,7 @@ def prepare_controlnet_input(idx):
     uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
+    uni_embeds = uni_embeds.view(1, 1536).to(device)
     mask_path = "../test_mask.png"
     #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
@@ -254,6 +249,8 @@ def prepare_controlnet_input(idx):
     vae_shift = getattr(vae.config, "shift_factor", 0)
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    controlnet_input_latent, _ = torch.from_numpy(np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")).chunk(2)
+    #controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
     return latents, uni_embeds, controlnet_input_latent
 
 def decode_latents(latents, vae, hist_image, mask_image, save_path):
@@ -305,7 +302,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_50_step_1050.pth'
+            state_name = 'controlnet_epoch_300_step_3900.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
@@ -328,6 +325,19 @@ if __name__ == "__main__":
     scheduler = DPMSolverMultistepScheduler.from_pretrained(
         scheduler_folder,
     )
+    from diffusers import DDPMScheduler
+
+    scheduler = DDPMScheduler(
+        num_train_timesteps=1000,
+        beta_start=0.0001,
+        beta_end=0.02,
+        beta_schedule="linear",
+        prediction_type="epsilon",
+        clip_sample=False,
+    )
+    scheduler.set_timesteps(20, device=device)
+    print(type(scheduler))
+    print(scheduler.config)
     # %%
     
     mask_path = "../test_mask.png"
@@ -378,16 +388,13 @@ if __name__ == "__main__":
     ax[1].set_title("Decoded Image")
     plt.show()
     # %%
-    idx = 10
+    idx = 1
     latents, uni_embeds, controlnet_input_latent = prepare_controlnet_input(idx)
     print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+    print("UNI shape: ", uni_embeds.shape)
     print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
     print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
-    #uni_embeds /= uni_embeds.shape[-1] ** 0.5
-    #controlnet_input_latent /= controlnet_input_latent.shape[-1] ** 0.5
-    #print(f"Normalized UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
-    #print(f"Normalized Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
-    print("UNI shape: ", uni_embeds.shape)
+    
     # %%
     denoised_latents = denoise(latents,
             uni_embeds,
