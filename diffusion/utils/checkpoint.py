@@ -240,7 +240,6 @@ def load_checkpoint(checkpoint,
         checkpoint_data = {'state_dict': state_dict}
     else:
         checkpoint_data = torch.load(ckpt_file, map_location="cpu", weights_only=False)
-
     # 2. Extract state_dict based on format
     if is_safetensors:
         state_dict = checkpoint_data['state_dict']

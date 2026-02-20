@@ -1,10 +1,12 @@
 # %%
+from re import T
 from diffusers import DPMSolverMultistepScheduler
 from diffusers import AutoencoderKL
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import copy
 from PIL import Image
 from diffusion.model.builder import MODELS
 from diffusion.utils.checkpoint import load_checkpoint
@@ -25,7 +27,7 @@ def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cu
     model.eval();
     return model
 
-def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path, device='cuda'):
+def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path):
     config = read_config(config_file_path)
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
     max_length = config.model_max_length
@@ -50,9 +52,22 @@ def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_p
         **pixcell_controlnet_model_kwargs
     )
     _ = load_checkpoint(state_file_path, model=pixcell_controlnet)
-    pixcell_controlnet.to(device)
     pixcell_controlnet.eval();
     return pixcell_controlnet
+
+def load_base_model_checkpoint(base_model, checkpoint_path):
+    finetuned = torch.load(checkpoint_path, map_location='cpu')
+    finetuned_sd = finetuned['state_dict'] if 'state_dict' in finetuned else finetuned
+    
+    # NO remapping needed — both checkpoint and model use 'blocks.' naming
+    missing, unexpected = base_model.load_state_dict(finetuned_sd, strict=False)
+    
+    print(f"Total missing: {len(missing)}, Total unexpected: {len(unexpected)}")
+    if missing:
+        print(f"Missing examples: {missing[:3]}")
+    if unexpected:
+        print(f"Unexpected examples: {unexpected[:3]}")
+    return base_model
 
 def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device='cuda'):
     config = read_config(config_file_path)
@@ -80,7 +95,13 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
         pred_sigma=False,
         **controlnet_model_kwargs
     )
-    _ = load_checkpoint(state_file_path, controlnet=controlnet)
+    checkpoint = torch.load(state_file_path, map_location='cpu')
+    sd = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+    missing, unexpected = controlnet.load_state_dict(sd, strict=True)
+    print(f"\nMissing: {len(missing)}, Unexpected: {len(unexpected)}")
+    print(f"Missing examples: {missing[:3]}")
+    print(f"Unexpected examples: {unexpected[:3]}")
+    #_ = load_checkpoint(state_file_path, controlnet=controlnet)
     controlnet.to(device)
     controlnet.eval();
     return controlnet
@@ -183,6 +204,7 @@ def denoise(latents,
                 latent_model_input = scheduler.scale_model_input(latent_model_input, t)
                 latent_single = scheduler.scale_model_input(latents, t)
                 current_timestep = t.expand(latent_model_input.shape[0])
+                #print(f"t={t.item()}: latents mean={latents.mean():.3f} std={latents.std():.3f}")
 
                 # --- ControlNet Pass ---
                 # We only need ControlNet for the conditional part (the second half of the batch)
@@ -193,8 +215,10 @@ def denoise(latents,
                     encoder_hidden_states=uni_embeds,
                     timestep=t.expand(latents.shape[0]),
                     return_dict=False,
-                    conditioning_scale=0.5,
+                    conditioning_scale=1.0,
                 )[0]
+                if 0:#t == timesteps[0]:
+                    print(f"len(controlnet_outputs): {len(controlnet_outputs)}")
                 #controlnet_outputs = controlnet_outputs[:14]
                 # --- Transformer Pass (The Memory Hog) ---
                 # Concatenate embeds: [uncond, cond]
@@ -220,7 +244,13 @@ def denoise(latents,
                 if pixcell_controlnet_model.out_channels // 2 == latent_channels:
                     noise_pred = noise_pred.chunk(2, dim=1)[0]
                 # --- Step ---
+                # ... forward pass ...
+                #print(f"  noise_pred mean={noise_pred.mean():.3f} std={noise_pred.std():.3f}")
+
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                #print(f"  after step: mean={latents.mean():.3f} std={latents.std():.3f}")
+                #if t == timesteps[2]: break  # just first 3 steps
+    print(f"Final latents: mean={latents.mean():.3f}, std={latents.std():.3f}")
     return latents
 
 
@@ -235,7 +265,7 @@ def prepare_controlnet_input(idx):
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     uni_embeds = uni_embeds.view(1, 1536).to(device)
     mask_path = "../test_mask.png"
-    mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     # resize to 256x256
    # import torchvision.transforms as T
@@ -250,7 +280,7 @@ def prepare_controlnet_input(idx):
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
     controlnet_input_latent, _ = torch.from_numpy(np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")).chunk(2)
-    #controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
     return latents, uni_embeds, controlnet_input_latent
 
 def decode_latents(latents, vae, hist_image, mask_image, save_path):
@@ -293,7 +323,31 @@ if __name__ == "__main__":
     config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
     state_name = 'controlnet_epoch_50_step_1050.pth'
     state_file_path = f'../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors'
-    pixcell_controlnet_model = load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
+    state_name = 'base_model_unfrozen_epoch_700_step_9100.pth'
+    state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
+    #pixcell_controlnet_model = load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
+    #base_model = load_base_model_checkpoint(pixcell_controlnet_model, state_file_path)
+    #asd()
+    # %%
+    state_file_path = f'../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors'
+    pixcell_controlnet_model_base = load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path)
+    state_name = 'base_model_unfrozen_epoch_700_step_9100.pth'
+    state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
+    pixcell_controlnet_model = copy.deepcopy(pixcell_controlnet_model_base)
+    pixcell_controlnet_model_base.to(device)
+    pixcell_controlnet_model = load_base_model_checkpoint(pixcell_controlnet_model, state_file_path)
+    pixcell_controlnet_model.to(device)
+    # %%
+    n_blocks = len(pixcell_controlnet_model.blocks)  # should be 28
+    print(f"n_blocks: {n_blocks}")
+    for i in range(4):
+        block_idx = n_blocks - 4 + i  # 24, 25, 26, 27
+        cn_weight = pixcell_controlnet_model.blocks[block_idx].scale_shift_table
+        base_weight = pixcell_controlnet_model_base.blocks[block_idx].scale_shift_table
+        diff = (cn_weight - base_weight).abs().max().item()
+        print(f"blocks[{block_idx}]: controlnet_max={cn_weight.abs().max():.6f}, base_max={base_weight.abs().max():.6f}, diff={diff:.6f}")
+
+    # %%
     if only_init_models:
         pixcell_controlnet_model = initialize_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
         controlnet_model = initialize_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
@@ -302,7 +356,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_100_step_1300.pth'
+            state_name = 'controlnet_epoch_700_step_9100.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
@@ -310,6 +364,8 @@ if __name__ == "__main__":
             print("Loading ControlNet from pretrained model")
             controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
     # %%
+    print(f"controlnet_blocks[0].weight max: {controlnet_model.controlnet_blocks[0].weight.abs().max():.6f}")
+    # If this is 0.0, the model was re-initialized after loading
     with torch.no_grad():
         weight_0 = controlnet_model.controlnet_blocks[0].weight
         has_changed = (weight_0 != 0).any().item()
@@ -413,4 +469,9 @@ if __name__ == "__main__":
     #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     mask_image = Image.open(mask_path).convert("RGB")
     generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
+    # if generated_image = hist_image
+    if np.array_equal(generated_image, hist_image):
+        print("Generated image is the same as the original image")
+    else:
+        print("Generated image is different from the original image")
     # %%
