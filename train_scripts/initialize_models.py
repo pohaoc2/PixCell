@@ -296,10 +296,10 @@ def initialize_models(config, accelerator, logger):
     base_model.eval()
     for param in base_model.parameters():
         param.requires_grad = False
-    for block in base_model.blocks[-4:]:
-        block.train()  # re-enable train mode for these blocks
-        for param in block.parameters():
-            param.requires_grad = True
+    #for block in base_model.blocks[-4:]:
+    #    block.train()  # re-enable train mode for these blocks
+    #    for param in block.parameters():
+    #        param.requires_grad = True
 
 
     logger.info(
@@ -809,7 +809,6 @@ def train_controlnet(models_dict):
                 loss = loss_term['loss']
                 # Backward pass (only ControlNet gets gradients)
                 accelerator.backward(loss)
-
                 if accelerator.sync_gradients:
                     # --- DIAGNOSTIC START ---
                     #print(f"DEBUG: Optimizer Param Groups: {len(optimizer.param_groups)}")
@@ -826,7 +825,7 @@ def train_controlnet(models_dict):
                     lr_scheduler.step()
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
-            if 0:#step % 50 == 0:
+            if step % 50 == 0:
                 print(f"Step {step}:")
                 print(f"  Loss = {loss.item():.6f}")
                 
@@ -1103,14 +1102,14 @@ def main():
             self.unfrozen_base_blocks = unfrozen_base_blocks
 
     # Unfreeze last 4 blocks
-    unfrozen_blocks = nn.ModuleList(base_model.blocks[-4:])
-    for param in unfrozen_blocks.parameters():
-        param.requires_grad = True
+    #unfrozen_blocks = nn.ModuleList(base_model.blocks[-4:])
+    #for param in unfrozen_blocks.parameters():
+    #    param.requires_grad = True
 
-    combined = CombinedModel(controlnet, unfrozen_blocks)
+    #combined = CombinedModel(controlnet, unfrozen_blocks)
     discriminator = None  # Add discriminator initialization if needed
     optim_data = initialize_dataset_and_optimizer(
-        config, accelerator, logger, model=combined, discriminator=discriminator
+        config, accelerator, logger, model=controlnet, discriminator=discriminator
     )
     train_dataloader = optim_data['train_dataloader']
     optimizer = optim_data['optimizer']
