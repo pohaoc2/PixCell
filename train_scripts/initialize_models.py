@@ -296,7 +296,12 @@ def initialize_models(config, accelerator, logger):
     base_model.eval()
     for param in base_model.parameters():
         param.requires_grad = False
-    
+    for block in base_model.blocks[-4:]:
+        block.train()  # re-enable train mode for these blocks
+        for param in block.parameters():
+            param.requires_grad = True
+
+
     logger.info(
         f"Frozen Base Model ({base_model.__class__.__name__}): "
         f"{sum(p.numel() for p in base_model.parameters()):,} parameters (all frozen)"
@@ -400,8 +405,12 @@ def initialize_models(config, accelerator, logger):
     
     logger.info("="*80)
     logger.info("Model initialization complete!")
-    logger.info(f"  Base Model (frozen): {sum(p.numel() for p in base_model.parameters()):,} params")
-    logger.info(f"  ControlNet (trainable): {sum(p.numel() for p in controlnet.parameters() if p.requires_grad):,} params")
+    frozen_base_params = sum(p.numel() for p in base_model.parameters())
+    trainable_base_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+    trainable_controlnet_params = sum(p.numel() for p in controlnet.parameters() if p.requires_grad)
+    logger.info(f"  Base Model (frozen): {frozen_base_params:,} params")
+    logger.info(f"  Base Model (trainable): {trainable_base_params:,} params")
+    logger.info(f"  ControlNet (trainable): {trainable_controlnet_params:,} params")
     logger.info("="*80)
     
     return {
@@ -458,7 +467,9 @@ def initialize_dataset_and_optimizer(config, accelerator, logger, model, discrim
         )
     
     # Build optimizer for base model
+
     optimizer = build_optimizer(model, config.optimizer)
+    #copy optimizer parameters to base model with lr /10
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
     
     # Build discriminator optimizer if needed
@@ -557,9 +568,9 @@ def train_controlnet(models_dict):
         logger.info('NaN debugger registered for ControlNet. Start to detect overflow during training.')
     
     # Ensure base model is frozen
-    base_model.eval()
-    for param in base_model.parameters():
-        param.requires_grad = False
+    #base_model.eval()
+    #for param in base_model.parameters():
+    #    param.requires_grad = False
     
     # Ensure controlnet is trainable
     controlnet.train()
@@ -580,7 +591,8 @@ def train_controlnet(models_dict):
     # Print current training state
     logger.info(f"start_epoch: {start_epoch}, start_step: {start_step}, total_steps: {total_steps}")
     logger.info("="*80)
-
+    vae_scale = config.scale_factor
+    vae_shift = config.shift_factor
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         data_time_start = time.time()
         data_time_all = 0
@@ -853,7 +865,8 @@ def train_controlnet(models_dict):
                         f"Epoch [{epoch}/{config.num_epochs}] "
                         f"Step [{global_step}/{total_steps}] "
                         f"Loss: {loss.item():.4f} "
-                        f"LR: {optimizer.param_groups[0]['lr']:.2e} "
+                        f"LR_controlnet: {optimizer.param_groups[0]['lr']:.2e} "
+                        f"LR_base: {optimizer.param_groups[-1]['lr']:.2e} "
                         f"Samples/s: {samples_per_sec:.2f}"
                     )
                     
@@ -865,6 +878,7 @@ def train_controlnet(models_dict):
                 
                 # Save checkpoint
                 if global_step % config.save_model_steps == 0:
+                    """
                     save_checkpoint_controlnet(
                         accelerator,
                         controlnet,
@@ -876,7 +890,30 @@ def train_controlnet(models_dict):
                         config,
                         logger
                     )
-            
+                    """
+                    # Save ControlNet
+                    save_checkpoint(
+                        work_dir=os.path.join(config.work_dir, 'checkpoints'),
+                        epoch=epoch,
+                        model=accelerator.unwrap_model(controlnet),
+                        model_ema=model_ema,
+                        optimizer=optimizer,
+                        lr_scheduler=lr_scheduler,
+                        step=global_step,
+                        keep_last=False,
+                        model_type='controlnet',
+                    )
+                    # Save unfrozen base blocks
+                    save_checkpoint(
+                        work_dir=os.path.join(config.work_dir, 'checkpoints'),
+                        epoch=epoch,
+                        model=accelerator.unwrap_model(base_model),  # saves full base_model state_dict
+                        optimizer=None,   # optimizer already saved above
+                        lr_scheduler=None,
+                        step=global_step,
+                        keep_last=False,
+                        model_type='base_model_unfrozen',
+                    )
             data_time_start = time.time()
             #if step == 10: break
             # Check if we've reached max steps
@@ -885,6 +922,7 @@ def train_controlnet(models_dict):
                 break
         
         if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
+            """
             save_checkpoint_controlnet(
                 accelerator,
                 controlnet,
@@ -895,6 +933,30 @@ def train_controlnet(models_dict):
                 epoch,
                 config,
                 logger
+            )
+            """
+            # Save ControlNet
+            save_checkpoint(
+                work_dir=os.path.join(config.work_dir, 'checkpoints'),
+                epoch=epoch,
+                model=accelerator.unwrap_model(controlnet),
+                model_ema=model_ema,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                step=global_step,
+                keep_last=False,
+                model_type='controlnet',
+            )
+            # Save unfrozen base blocks
+            save_checkpoint(
+                work_dir=os.path.join(config.work_dir, 'checkpoints'),
+                epoch=epoch,
+                model=accelerator.unwrap_model(base_model),  # saves full base_model state_dict
+                optimizer=None,   # optimizer already saved above
+                lr_scheduler=None,
+                step=global_step,
+                keep_last=False,
+                model_type='base_model_unfrozen',
             )
         # End of epoch
         if global_step >= total_steps:
@@ -1034,9 +1096,21 @@ def main():
     train_diffusion = model_data['train_diffusion']
     # %%
     # Initialize dataset and optimizer
+    class CombinedModel(nn.Module):
+        def __init__(self, controlnet, unfrozen_base_blocks):
+            super().__init__()
+            self.controlnet = controlnet
+            self.unfrozen_base_blocks = unfrozen_base_blocks
+
+    # Unfreeze last 4 blocks
+    unfrozen_blocks = nn.ModuleList(base_model.blocks[-4:])
+    for param in unfrozen_blocks.parameters():
+        param.requires_grad = True
+
+    combined = CombinedModel(controlnet, unfrozen_blocks)
     discriminator = None  # Add discriminator initialization if needed
     optim_data = initialize_dataset_and_optimizer(
-        config, accelerator, logger, model=controlnet, discriminator=discriminator
+        config, accelerator, logger, model=combined, discriminator=discriminator
     )
     train_dataloader = optim_data['train_dataloader']
     optimizer = optim_data['optimizer']

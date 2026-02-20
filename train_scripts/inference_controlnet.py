@@ -235,7 +235,7 @@ def prepare_controlnet_input(idx):
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     uni_embeds = uni_embeds.view(1, 1536).to(device)
     mask_path = "../test_mask.png"
-    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     # resize to 256x256
    # import torchvision.transforms as T
@@ -302,7 +302,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_300_step_3900.pth'
+            state_name = 'controlnet_epoch_100_step_1300.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
