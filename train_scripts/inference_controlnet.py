@@ -176,6 +176,7 @@ def denoise(latents,
             pixcell_controlnet_model,
             guidance_scale=1.5, # Standard for PixCell/PixArt
             num_inference_steps=20,
+            conditioning_scale=1.0,
             device='cuda'):
     
     # 1. Prepare Tensors & Dtype (Crucial for VRAM)
@@ -187,7 +188,6 @@ def denoise(latents,
     # 2. Create Unconditional Embeddings
     # Using zeros or random is standard, but must match dtype/device
     uncond_uni_embeds = torch.randn(1, 1, 1, 1536).to(device, dtype=dtype)
-    uncond_uni_embeds = torch.randn(1, 1536).to(device, dtype=dtype)
     uncond_uni_embeds /= 1536 ** 0.5
     
     scheduler.set_timesteps(num_inference_steps, device=device)
@@ -215,7 +215,7 @@ def denoise(latents,
                     encoder_hidden_states=uni_embeds,
                     timestep=t.expand(latents.shape[0]),
                     return_dict=False,
-                    conditioning_scale=1.0,
+                    conditioning_scale=conditioning_scale,
                 )[0]
                 if 0:#t == timesteps[0]:
                     print(f"len(controlnet_outputs): {len(controlnet_outputs)}")
@@ -260,10 +260,8 @@ def prepare_controlnet_input(idx):
     latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
     latents = latents * scheduler.init_noise_sigma
     
-    uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    uni_embeds = uni_embeds.view(1, 1536).to(device)
     mask_path = "../test_mask.png"
     #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
@@ -281,7 +279,7 @@ def prepare_controlnet_input(idx):
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
     controlnet_input_latent, _ = torch.from_numpy(np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")).chunk(2)
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-    return latents, uni_embeds, controlnet_input_latent
+    return latents, uni_embeds, controlnet_input_latent, controlnet_input
 
 def decode_latents(latents, vae, hist_image, mask_image, save_path):
     vae_scale = vae.config.scaling_factor
@@ -335,7 +333,7 @@ if __name__ == "__main__":
     state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
     pixcell_controlnet_model = copy.deepcopy(pixcell_controlnet_model_base)
     pixcell_controlnet_model_base.to(device)
-    pixcell_controlnet_model = load_base_model_checkpoint(pixcell_controlnet_model, state_file_path)
+    #pixcell_controlnet_model = load_base_model_checkpoint(pixcell_controlnet_model, state_file_path)
     pixcell_controlnet_model.to(device)
     # %%
     n_blocks = len(pixcell_controlnet_model.blocks)  # should be 28
@@ -356,7 +354,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_700_step_9100.pth'
+            state_name = 'controlnet_epoch_10_step_420.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
@@ -445,7 +443,7 @@ if __name__ == "__main__":
     plt.show()
     # %%
     idx = 1
-    latents, uni_embeds, controlnet_input_latent = prepare_controlnet_input(idx)
+    latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx)
     print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
     print("UNI shape: ", uni_embeds.shape)
     print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
@@ -460,14 +458,11 @@ if __name__ == "__main__":
             pixcell_controlnet_model=pixcell_controlnet_model,
             guidance_scale=1.5,
             num_inference_steps=50,
+            conditioning_scale=1.0,
             device='cuda')
     # %%
-    hist_image = Image.open(f"../test_control_image.png")
     hist_image = Image.open(f"../consep/sample_{idx}.png")
-    mask_image = Image.open(f"../masks/sample_{idx}_mask.png")
-    mask_path = "../test_mask.png"
-    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
-    mask_image = Image.open(mask_path).convert("RGB")
+    mask_image = controlnet_input
     generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
     # if generated_image = hist_image
     if np.array_equal(generated_image, hist_image):

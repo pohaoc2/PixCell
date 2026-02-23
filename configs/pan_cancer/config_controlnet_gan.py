@@ -43,6 +43,8 @@ pixcell_controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-c
 controlnet_module_name = "pixcell_controlnet"
 controlnet_file_path = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
 controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/"
+controlnet_conditioning_scale = 1.0
+
 
 mixed_precision = 'bf16'
 fp32_attention = True
@@ -58,8 +60,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 2
-train_batch_size = 16
-num_epochs = 400
+train_batch_size = 32
+num_epochs = 100
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0
@@ -67,7 +69,7 @@ gradient_clip = 1.0
 # AdamW optimizer for generator
 optimizer = dict(
     type='AdamW',
-    lr=1e-5,          # base lr → applies to controlnet
+    lr=4e-5,          # base lr → applies to controlnet
     weight_decay=0.0, 
     betas=(0.9, 0.999),
     eps=1e-8,
