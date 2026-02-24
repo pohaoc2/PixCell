@@ -263,7 +263,7 @@ def prepare_controlnet_input(idx):
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
-    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     # resize to 256x256
    # import torchvision.transforms as T
