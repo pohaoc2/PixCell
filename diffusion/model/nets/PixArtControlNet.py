@@ -283,6 +283,13 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
             controlnet_block = zero_module(controlnet_block)  # Reusing zero_module
             self.controlnet_blocks.append(controlnet_block)
         
+        self.mask_encoder = nn.Sequential(
+            nn.Conv2d(1, 4, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(4, 8, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(8, 16, kernel_size=1),
+        )
         self.initialize_weights()
         
         if config:
@@ -377,6 +384,17 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
             encoder_hidden_states = encoder_hidden_states.unsqueeze(1).unsqueeze(1)
         if len(encoder_hidden_states.shape) == 3:
             encoder_hidden_states = encoder_hidden_states.unsqueeze(1)
+        # Encode at full resolution first
+        conditioning = self.mask_encoder(conditioning)  # (B, 16, 256, 256)
+        
+        # Then downsample to latent size
+        conditioning = nn.functional.interpolate(
+            conditioning, 
+            size=(hidden_states.shape[-2], hidden_states.shape[-1]),  # 32x32
+            mode='bilinear',
+            align_corners=False
+        )  # (B, 16, 32, 32)
+
         
         pos_embed = self.pos_embed.to(self.dtype)
         
