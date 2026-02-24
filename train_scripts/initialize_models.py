@@ -825,7 +825,7 @@ def train_controlnet(models_dict):
                     lr_scheduler.step()
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
-            if step % 50 == 0:
+            if 0:#step % 50 == 0:
                 print(f"Step {step}:")
                 print(f"  Loss = {loss.item():.6f}")
                 

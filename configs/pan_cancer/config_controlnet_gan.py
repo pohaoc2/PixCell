@@ -24,8 +24,8 @@ data = dict(
     ssl_prefix="uni",
     mask_prefix="mask",
     #patch_names_file="patch_names_controlnet.hdf5",
-    patch_names_file="controlnet_consep.hdf5",
-    #patch_names_file="controlnet_consep_small.hdf5",
+    #patch_names_file="controlnet_consep.hdf5",
+    patch_names_file="controlnet_consep_small.hdf5",
     load_vae_feat=True,
     return_img=True,
 )
@@ -46,7 +46,7 @@ controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-controlne
 controlnet_conditioning_scale = 1.0
 
 
-mixed_precision = 'bf16'
+mixed_precision = 'no' #'bf16'
 fp32_attention = True
 
 # Load pretrained PixCell-256 base model
@@ -60,8 +60,8 @@ pe_interpolation = 0.5
 
 # Training setting
 num_workers = 2
-train_batch_size = 32
-num_epochs = 100
+train_batch_size = 4
+num_epochs = 1000
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0
@@ -69,7 +69,7 @@ gradient_clip = 1.0
 # AdamW optimizer for generator
 optimizer = dict(
     type='AdamW',
-    lr=4e-5,          # base lr → applies to controlnet
+    lr=1e-5,          # base lr → applies to controlnet
     weight_decay=0.0, 
     betas=(0.9, 0.999),
     eps=1e-8,

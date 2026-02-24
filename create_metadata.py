@@ -43,7 +43,7 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
     for ext in image_extensions:
         images.extend(image_dir.glob(f'*{ext}'))
     images = sorted(images, key=lambda x: int(x.name.split('.')[0].split('_')[-1]))
-    #images = images[:49]
+    images = images[:49]
     print(f"\nFound {len(images)} image files")
     # sort image by index
     
