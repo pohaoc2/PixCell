@@ -219,6 +219,9 @@ def denoise(latents,
                 )[0]
                 if 0:#t == timesteps[0]:
                     print(f"len(controlnet_outputs): {len(controlnet_outputs)}")
+                #for i in range(len(controlnet_outputs)):
+                #    print(f"controlnet_outputs[{i}] mean: {controlnet_outputs[i].mean():.6f}, std: {controlnet_outputs[i].std():.3f}")
+                #asd()
                 #controlnet_outputs = controlnet_outputs[:14]
                 # --- Transformer Pass (The Memory Hog) ---
                 # Concatenate embeds: [uncond, cond]
@@ -263,7 +266,7 @@ def prepare_controlnet_input(idx):
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
-    mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     # resize to 256x256
    # import torchvision.transforms as T
@@ -354,7 +357,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_10_step_420.pth'
+            state_name = 'controlnet_epoch_1000_step_13000.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")

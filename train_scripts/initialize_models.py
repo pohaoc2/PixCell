@@ -747,15 +747,17 @@ def train_controlnet(models_dict):
                     #print(f"clean_images.shape: {clean_images.shape}")
                     print(f"y.shape: {y.shape}")
                     asd()
-            if control_input.shape[-1] != clean_images.shape[-1]:
-                control_input = nn.functional.interpolate(
-                    control_input.float(), 
-                    size=(clean_images.shape[-2], clean_images.shape[-1]), 
-                    mode='nearest'
-                ).to(clean_images.device)
-            if control_input.shape[1] != config.controlnet_conditioning_channels:
-                control_input = control_input.repeat(1, config.controlnet_conditioning_channels, 1, 1)
-            #print(f"control_input.shape: {control_input.shape}")
+            if 0:
+                if control_input.shape[-1] != clean_images.shape[-1]:
+                    control_input = nn.functional.interpolate(
+                        control_input.float(), 
+                        size=(clean_images.shape[-2], clean_images.shape[-1]), 
+                        mode='nearest'
+                    ).to(clean_images.device)
+                if control_input.shape[1] != config.controlnet_conditioning_channels:
+                    control_input = control_input.repeat(1, config.controlnet_conditioning_channels, 1, 1)
+
+
             #asd()
             # Sample timesteps
             bs = clean_images.shape[0]
@@ -763,7 +765,7 @@ def train_controlnet(models_dict):
                 0, config.train_sampling_steps, (bs,), device=clean_images.device
             ).long()
             vae_mask = (vae_mask-vae_shift)*vae_scale
-            vae_mask = vae_mask #controlnet_input_latent
+            vae_mask = control_input #vae_mask #controlnet_input_latent
             grad_norm = None
             data_time_all += time.time() - data_time_start
             
