@@ -764,8 +764,9 @@ def train_controlnet(models_dict):
             timesteps = torch.randint(
                 0, config.train_sampling_steps, (bs,), device=clean_images.device
             ).long()
+            vae_mask = vae_mask #control_input
             vae_mask = (vae_mask-vae_shift)*vae_scale
-            vae_mask = control_input #vae_mask #controlnet_input_latent
+            
             grad_norm = None
             data_time_all += time.time() - data_time_start
             
@@ -788,15 +789,24 @@ def train_controlnet(models_dict):
                     print(f"clean_images.shape: {clean_images.shape}")
                     print(f"clean_images.mean(): {clean_images.mean()}")
                     print(f"clean_images.std(): {clean_images.std()}")
+                    print(f"clean_images.min(): {clean_images.min()}")
+                    print(f"clean_images.max(): {clean_images.max()}")
+                    print(f"clean_images.norm(): {torch.norm(clean_images, p=2).item()}")
                     print('--------------------------------')
                     print(f"timesteps.shape: {timesteps.shape}")
                     print(f"y.shape: {y.shape}")
                     print(f"y.mean(): {y.mean()}")
                     print(f"y.std(): {y.std()}")
+                    print(f"y.min(): {y.min()}")
+                    print(f"y.max(): {y.max()}")
+                    print(f"y.norm(): {torch.norm(y, p=2).item()}")
                     print('--------------------------------')
                     print(f"vae_mask.shape: {vae_mask.shape}")
                     print(f"vae_mask.mean(): {vae_mask.mean()}")
                     print(f"vae_mask.std(): {vae_mask.std()}")
+                    print(f"vae_mask.min(): {vae_mask.min()}")
+                    print(f"vae_mask.max(): {vae_mask.max()}")
+                    print(f"vae_mask.norm(): {torch.norm(vae_mask, p=2).item()}")
                     print('--------------------------------')
                     asd()
                 loss_term = training_losses_controlnet(
@@ -1003,6 +1013,8 @@ def training_losses_controlnet(
     # Add noise to clean images
     noise = torch.randn_like(x_start).float()
     x_t = diffusion.q_sample(x_start, timesteps, noise=noise)
+    map_tensor = torch.tensor(diffusion.timestep_map, device=timesteps.device, dtype=timesteps.dtype)
+    model_timesteps = map_tensor[timesteps]
     # Extract control input
     control_input = model_kwargs.pop('control_input', None)
     
@@ -1022,7 +1034,7 @@ def training_losses_controlnet(
         hidden_states=x_t,
         conditioning=control_input,
         encoder_hidden_states=model_kwargs['y'],
-        timestep=timesteps,
+        timestep=model_timesteps,
         conditioning_scale=conditioning_scale,
         mask=model_kwargs.get('mask', None),
         data_info=model_kwargs.get('data_info', None),
@@ -1041,7 +1053,7 @@ def training_losses_controlnet(
     model_output = base_model(
         x=x_t,
         y=model_kwargs['y'],
-        timestep=timesteps,
+        timestep=model_timesteps,
         controlnet_outputs=controlnet_residuals,  # Add ControlNet residuals
         attention_mask=model_kwargs.get('mask', None),
         return_dict=True,

@@ -95,6 +95,9 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
         pred_sigma=False,
         **controlnet_model_kwargs
     )
+    return controlnet
+    #from safetensors.torch import load_file
+    #sd = load_file(state_file_path)  # returns a plain dict[str, Tensor]
     checkpoint = torch.load(state_file_path, map_location='cpu')
     sd = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
     missing, unexpected = controlnet.load_state_dict(sd, strict=True)
@@ -102,6 +105,53 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
     print(f"Missing examples: {missing[:3]}")
     print(f"Unexpected examples: {unexpected[:3]}")
     #_ = load_checkpoint(state_file_path, controlnet=controlnet)
+    controlnet.to(device)
+    controlnet.eval();
+    return controlnet
+def save_keys_comparison_controlnet(controlnet, state_file_path, device='cuda'):
+    from safetensors.torch import load_file
+    import pandas as pd
+    sd = load_file(state_file_path)
+    controlnet_sd = controlnet.state_dict()
+    sd_keys = list(sd.keys())
+    controlnet_keys = list(controlnet_sd.keys())
+
+    # Check counts first
+    print(f"Pretrained keys: {len(sd_keys)}")
+    print(f"ControlNet keys: {len(controlnet_keys)}")
+
+    # Build comparison df by position
+    max_len = max(len(sd_keys), len(controlnet_keys))
+    df = pd.DataFrame({
+        "sd_key": sd_keys + [None] * (max_len - len(sd_keys)),
+        "controlnet_key": controlnet_keys + [None] * (max_len - len(controlnet_keys)),
+        "sd_shape": [str(sd[k].shape) if k else None for k in sd_keys + [None] * (max_len - len(sd_keys))],
+        "controlnet_shape": [str(controlnet_sd[k].shape) if k else None for k in controlnet_keys + [None] * (max_len - len(controlnet_keys))],
+        "shape_match": [
+            str(sd[sd_keys[i]].shape) == str(controlnet_sd[controlnet_keys[i]].shape) 
+            if i < len(sd_keys) and i < len(controlnet_keys) else False
+            for i in range(max_len)
+        ]
+    })
+
+    df.to_csv("keys.csv", index=False)
+
+    # Quick summary
+    print(f"Shape mismatches: {(~df['shape_match']).sum()}")
+    print(f"Missing in sd: {df['sd_key'].isna().sum()}")
+    print(f"Missing in controlnet: {df['controlnet_key'].isna().sum()}")
+
+def test_load_controlnet(controlnet, state_file_path, device='cuda'):
+    mapped = torch.load(state_file_path)
+    controlnet_sd = controlnet.state_dict()
+    not_loaded = [k for k in controlnet_sd.keys() if k not in mapped]
+    print(f"Not loaded ({len(not_loaded)} keys):")
+    for k in not_loaded:
+        print(f"  {k:60s} {tuple(controlnet_sd[k].shape)}")
+    missing, unexpected = controlnet.load_state_dict(mapped, strict=False)
+
+    print(f"MISSING (random init): {len(missing)}")
+    print(f"UNEXPECTED (dropped): {len(unexpected)}")
     controlnet.to(device)
     controlnet.eval();
     return controlnet
@@ -264,15 +314,20 @@ def prepare_controlnet_input(idx):
     latents = latents * scheduler.init_noise_sigma
     
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
+    #uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
-    #mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    mask_path = f"../consep_masks/sample_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
+    #controlnet_input = Image.open(mask_path).convert('L')
+    #controlnet_input = np.array(controlnet_input)
+    #controlnet_input = torch.from_numpy(controlnet_input > 0).float()
     # resize to 256x256
    # import torchvision.transforms as T
     #controlnet_input = T.Resize((256, 256))(controlnet_input)
     #controlnet_input = np.array(Image.open(f"../masks/sample_{idx}_mask.png"))
     #controlnet_input = np.repeat(controlnet_input[..., None], 3, axis=-1)
+    
     controlnet_input_torch = torch.from_numpy(controlnet_input.copy()/255.).float().to(device)
     controlnet_input_torch = controlnet_input_torch.permute(2, 0, 1).unsqueeze(0)
     controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
@@ -280,11 +335,14 @@ def prepare_controlnet_input(idx):
     vae_shift = getattr(vae.config, "shift_factor", 0)
     controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-    controlnet_input_latent, _ = torch.from_numpy(np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")).chunk(2)
-    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    #controlnet_input_latent, _ = torch.from_numpy(np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")).chunk(2)
+    #controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    
     return latents, uni_embeds, controlnet_input_latent, controlnet_input
 
-def decode_latents(latents, vae, hist_image, mask_image, save_path):
+def decode_latents(vae, latents, hist_image, mask_image, save_path):
+    import cv2
+    import matplotlib.pyplot as plt
     vae_scale = vae.config.scaling_factor
     vae_shift = getattr(vae.config, "shift_factor", 0)
     latents_for_decode = latents.float()
@@ -297,17 +355,39 @@ def decode_latents(latents, vae, hist_image, mask_image, save_path):
     generated_image = (generated_image / 2 + 0.5).clamp(0, 1)
     generated_image = generated_image.cpu().permute(0, 2, 3, 1).numpy()
     generated_image = (generated_image * 255).round().astype(np.uint8)
+    
+    # Apply mask to generated image
+    gen_img = generated_image[0].copy()  # (H, W, 3), uint8
+
+    # --- Get contours of each cell in the mask ---
+    # mask_image expected shape: (H, W, 3) or (H, W), values 0 or 1
+    if mask_image.ndim == 3:
+        mask_gray = mask_image[..., 0].astype(np.uint8)  # (H, W), 0 or 1
+    else:
+        mask_gray = mask_image.astype(np.uint8)
+    
+    # Label connected components so each cell gets its own contour
+    num_labels, labeled = cv2.connectedComponents(mask_gray)
+    
+    contour_overlay = gen_img.copy()
+    for label_id in range(1, num_labels):  # skip background (0)
+        cell_mask = (labeled == label_id).astype(np.uint8)
+        contours, _ = cv2.findContours(cell_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(contour_overlay, contours, -1, color=(255, 0, 0), thickness=1)
+    #contour_overlay = gen_img
+    # --- Plot ---
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
     ax[0].imshow(hist_image)
     ax[0].set_title("Original Image")
     ax[1].imshow(mask_image)
     ax[1].set_title("Mask Image")
-    ax[2].imshow(generated_image[0])
-    ax[2].set_title("Generated Image")
+    ax[2].imshow(contour_overlay)
+    ax[2].set_title("Generated Image + Cell Contours")
 
+    plt.tight_layout()
     plt.savefig(save_path)
     plt.show()
-    return generated_image[0]
+    return gen_img
 # %%
 if __name__ == "__main__":
     # %%
@@ -350,7 +430,7 @@ if __name__ == "__main__":
 
     # %%
     if only_init_models:
-        pixcell_controlnet_model = initialize_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
+        #pixcell_controlnet_model = initialize_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
         controlnet_model = initialize_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
     else:
         #pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
@@ -364,6 +444,10 @@ if __name__ == "__main__":
         else:
             print("Loading ControlNet from pretrained model")
             controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
+    # %%
+    state_file_path = f'./controlnet_mapped_weights.pt' # from pretrained 
+    controlnet_model = test_load_controlnet(controlnet_model, state_file_path, device)
+
     # %%
     print(f"controlnet_blocks[0].weight max: {controlnet_model.controlnet_blocks[0].weight.abs().max():.6f}")
     # If this is 0.0, the model was re-initialized after loading
@@ -445,13 +529,29 @@ if __name__ == "__main__":
     ax[1].set_title("Decoded Image")
     plt.show()
     # %%
-    idx = 1
+    idx = 0
     latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx)
-    print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
     print("UNI shape: ", uni_embeds.shape)
-    print(f"Controlnet Input L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+    print(f"UNI mean: {uni_embeds.mean():.6f}")
+    print(f"UNI std: {uni_embeds.std():.6f}")
+    print(f"UNI min: {uni_embeds.min():.6f}")
+    print(f"UNI max: {uni_embeds.max():.6f}")
+    print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+    print("="*50)
+    print(f"controlnet_input.shape: {controlnet_input.shape}")
+    print(f"controlnet_input mean: {controlnet_input.mean():.6f}")
+    print(f"controlnet_input std: {controlnet_input.std():.6f}")
+    print(f"controlnet_input min: {controlnet_input.min():.6f}")
+    print(f"controlnet_input max: {controlnet_input.max():.6f}")
+    print(f"controlnet_input L2 Norm: {torch.norm(torch.from_numpy(controlnet_input).transpose(2, 0, 1), p=2).item()}")
+    print("="*50)
     print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
-    
+    print(f"controlnet_input_latent mean: {controlnet_input_latent.mean():.6f}")
+    print(f"controlnet_input_latent std: {controlnet_input_latent.std():.6f}")
+    print(f"controlnet_input_latent min: {controlnet_input_latent.min():.6f}")
+    print(f"controlnet_input_latent max: {controlnet_input_latent.max():.6f}")
+    print(f"controlnet_input_latent L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+    print("="*50)
     # %%
     denoised_latents = denoise(latents,
             uni_embeds,
@@ -459,14 +559,17 @@ if __name__ == "__main__":
             scheduler,
             controlnet_model,
             pixcell_controlnet_model=pixcell_controlnet_model,
-            guidance_scale=1.5,
+            guidance_scale=5.5,
             num_inference_steps=50,
             conditioning_scale=1.0,
             device='cuda')
     # %%
     hist_image = Image.open(f"../consep/sample_{idx}.png")
+    #hist_image = Image.open(f"../test_control_image.png")
+    #mask_image = controlnet_input.cpu().numpy()
+    #mask_image = mask_image[0, 0, :, :]
     mask_image = controlnet_input
-    generated_image = decode_latents(denoised_latents, vae, hist_image, mask_image, "generated_image.png")
+    generated_image = decode_latents(vae, denoised_latents, hist_image, mask_image, "generated_image.png")
     # if generated_image = hist_image
     if np.array_equal(generated_image, hist_image):
         print("Generated image is the same as the original image")
