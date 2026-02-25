@@ -282,7 +282,7 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
             controlnet_block = nn.Linear(hidden_size, hidden_size)
             controlnet_block = zero_module(controlnet_block)  # Reusing zero_module
             self.controlnet_blocks.append(controlnet_block)
-        
+        """
         self.mask_encoder = nn.Sequential(
             nn.Conv2d(1, 4, kernel_size=3, padding=1),
             nn.SiLU(),
@@ -290,6 +290,7 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
             nn.SiLU(),
             nn.Conv2d(8, 16, kernel_size=1),
         )
+        """
         self.initialize_weights()
         
         if config:
@@ -384,6 +385,7 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
             encoder_hidden_states = encoder_hidden_states.unsqueeze(1).unsqueeze(1)
         if len(encoder_hidden_states.shape) == 3:
             encoder_hidden_states = encoder_hidden_states.unsqueeze(1)
+        """
         # Encode at full resolution first
         conditioning = self.mask_encoder(conditioning)  # (B, 16, 256, 256)
         
@@ -394,7 +396,7 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
             mode='bilinear',
             align_corners=False
         )  # (B, 16, 32, 32)
-
+        """
         
         pos_embed = self.pos_embed.to(self.dtype)
         
@@ -552,7 +554,7 @@ def PixCell_ControlNet_XL_2_UNI(**kwargs):
     """PixCell ControlNet XL with UNI conditioning"""
     depth = kwargs.get('controlnet_depth', 28)
     return PixCellControlNet(
-        controlnet_depth=28, 
+        controlnet_depth=27, 
         hidden_size=1152, 
         patch_size=2, 
         num_heads=16,

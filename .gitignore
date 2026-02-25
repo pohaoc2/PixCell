@@ -6,6 +6,9 @@
 *.tiff
 *.tif
 *.pth
+*.pt
+*.csv
+*.txt
 *.json
 *.zip
 *.npy
