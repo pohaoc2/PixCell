@@ -23,33 +23,32 @@ def create_metadata_file(image_dir, output_file, resolution=256, mask_dir=None,
         mask_prefix: Prefix for mask files
     """
     image_dir = Path(image_dir)
+    mask_dir = Path(mask_dir)
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    
+    parent_dir = image_dir.parent
     # Get root directory
-    root = image_dir.parent if image_dir.name == 'patches' else image_dir.parent.parent
-    features_dir = root / 'features_consep'
-    features_mask_dir = root / 'features_consep_masks'
-    mask_dir = Path(mask_dir) if mask_dir else root / 'masks'
-    
+    features_dir = parent_dir / f'features_{image_dir.name}'
+    features_mask_dir = parent_dir / f'features_{mask_dir.name}'
+
+
     print(f"Looking for images in: {image_dir}")
     print(f"Looking for features in: {features_dir}")
     print(f"Looking for features_mask in: {features_mask_dir}")
     print(f"Looking for masks in: {mask_dir}")
-    
     # Find all images
     image_extensions = ['.png', '.jpg', '.jpeg']
     images = []
     for ext in image_extensions:
         images.extend(image_dir.glob(f'*{ext}'))
     images = sorted(images, key=lambda x: int(x.name.split('.')[0].split('_')[-1]))
-    images = images[:49]
+    #images = images[:49]
     print(f"\nFound {len(images)} image files")
     # sort image by index
     
     # Filter images that have all required files
     valid_images = []
-    missing_files = {'vae': 0, 'uni': 0, 'mask': 0}
+    missing_files = {'vae': 0, 'uni': 0, 'mask': 0, 'vae_mask': 0}
     
     for img_path in images:
         img_name = img_path.name
