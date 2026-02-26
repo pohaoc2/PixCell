@@ -17,6 +17,8 @@ from timm.data.transforms_factory import create_transform
 from timm.data import resolve_data_config
 import os
 from huggingface_hub import login
+import cv2
+
 
 class UNI2hExtractor:
     """
@@ -320,7 +322,7 @@ def extract_features_from_images(
     # Initialize extractors
     print("\nInitializing feature extractors...")
     uni_extractor = UNI2hExtractor(uni_model_path, device=device)
-    #vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
+    vae_extractor = SD3VAEExtractor(vae_model_path, device=device)
     
     # Process images
     print(f"\nExtracting features (batch_size={batch_size})...")
@@ -332,7 +334,9 @@ def extract_features_from_images(
         # Load images
         for img_path in batch_images_paths:
             try:
-                img = Image.open(img_path).convert('RGB')
+                #img = Image.open(img_path).convert('RGB')
+                img = cv2.imread(str(img_path))
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 batch_images.append(img)
             except Exception as e:
                 print(f"⚠ Error loading {img_path.name}: {e}")
@@ -346,15 +350,15 @@ def extract_features_from_images(
             # UNI-2h embeddings
         uni_features = uni_extractor.extract_batch(batch_images)
         # VAE features (mean + std)
-        #vae_features = vae_extractor.extract_batch(batch_images)
+        vae_features = vae_extractor.extract_batch(batch_images)
         
         # Save features
         for j, img_path in enumerate(batch_images_paths[:len(batch_images)]):
             base_name = img_path.stem
             
             # Save VAE features
-            #vae_output = output_dir / f"{base_name}_{vae_prefix}.npy"
-            #np.save(vae_output, vae_features[j])
+            vae_output = output_dir / f"{base_name}_{vae_prefix}.npy"
+            np.save(vae_output, vae_features[j])
             
             # Save UNI embeddings
             uni_output = output_dir / f"{base_name}_{uni_prefix}.npy"
