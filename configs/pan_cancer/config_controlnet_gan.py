@@ -13,7 +13,7 @@ _base_ = ['../PixArt_xl2_internal.py']
 image_size = 256
 root = "/home/pohaoc2/UW/bagherilab/PixCell"
 root = "/home/ec2-user/PixCell"
-root = "./"
+#root = "./"
 
 # Dataset configuration
 data = dict(
@@ -23,11 +23,20 @@ data = dict(
     vae_prefix="sd3_vae",
     ssl_prefix="uni",
     mask_prefix="mask",
-    #patch_names_file="patch_names_controlnet.hdf5",
-    patch_names_file="controlnet_consep.hdf5",
-    #patch_names_file="controlnet_consep_small.hdf5",
     load_vae_feat=True,
     return_img=True,
+    #image_list_h5="patches/metadata/controlnet_consep.hdf5",
+    image_list_h5="patches/metadata/controlnet_consep_small.hdf5",
+    image_dir="consep",
+    masks_dir="consep_masks",
+    features_dir="features_consep",
+    vae_mask_dir="features_consep_masks",
+
+    #image_dir="data/tcga_3660",
+    #masks_dir="data/tcga_3660_masks",
+    #features_dir="data/features_tcga_3660",
+    #vae_mask_dir="data/features_tcga_3660_masks",
+    #image_list_h5="patches/metadata/controlnet_tcga_3660.hdf5",
 )
 
 # Model setting
@@ -61,7 +70,7 @@ pe_interpolation = 0.5
 # Training setting
 num_workers = 2
 train_batch_size = 4
-num_epochs = 20
+num_epochs = 1
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0

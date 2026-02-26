@@ -554,7 +554,7 @@ def PixCell_ControlNet_XL_2_UNI(**kwargs):
     """PixCell ControlNet XL with UNI conditioning"""
     depth = kwargs.get('controlnet_depth', 28)
     return PixCellControlNet(
-        controlnet_depth=27, 
+        controlnet_depth=4, 
         hidden_size=1152, 
         patch_size=2, 
         num_heads=16,
