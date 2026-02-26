@@ -1070,7 +1070,7 @@ def main():
     # %%
     # Initialize config and accelerator
     init_data = initialize_config_and_accelerator([
-        './configs/pan_cancer/config_controlnet_gan.py',
+        '../configs/pan_cancer/config_controlnet_gan.py',
     ])
     config = init_data['config']
     accelerator = init_data['accelerator']

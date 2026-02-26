@@ -8,6 +8,8 @@ from diffusers.utils.torch_utils import randn_tensor
 from diffusion.data.builder import DATASETS
 from einops import rearrange
 import torch.nn.functional as F
+import cv2
+
 
 @DATASETS.register_module()
 class PanCancerControlNetData(Dataset):
@@ -39,12 +41,11 @@ class PanCancerControlNetData(Dataset):
         self.return_img = kwargs.get("return_img", False)
         self.train_subset_keys = kwargs.get("train_subset_keys", None)
 
-        patch_names_file = kwargs.get("patch_names_file", "patch_names_controlnet.hdf5")
-        self.image_list_h5 = self.root / f"patches/metadata/{patch_names_file}"
-        self.features_dir = self.root / "features_consep"
-        self.masks_dir = self.root / "consep_masks"
-        self.vae_mask_dir = self.root / "features_consep_masks"
-
+        self.image_list_h5 = self.root / kwargs.get("image_list_h5", "patches/metadata/patch_names_controlnet.hdf5")
+        self.masks_dir = self.root / kwargs.get("masks_dir", "consep_masks")
+        self.features_dir = self.root / kwargs.get("features_dir", "features_consep")
+        self.vae_mask_dir = self.root / kwargs.get("vae_mask_dir", "features_consep_masks")
+        self.image_dir = self.root / kwargs.get("image_dir", "consep")
         # Load metadata from the HDF5 file
         self._load_metadata()
 
@@ -54,7 +55,7 @@ class PanCancerControlNetData(Dataset):
         """Load dataset keys and lengths from the HDF5 file."""
         self.h5 = None
         lengths = {}
-        with h5py.File(self.root / self.image_list_h5, "r") as h5:
+        with h5py.File(self.root / f"{self.image_list_h5}", "r") as h5:
             # Filter keys based on the resolution
             keys_all = list(h5.keys())
             if self.train_subset_keys is not None:
@@ -160,7 +161,8 @@ class PanCancerControlNetData(Dataset):
             #"img_name": img_name  # Keep it as a raw string here
         }
         if self.return_img:
-            img = Image.open(self.root / f"consep/{img_name}")
+            img = cv2.imread(self.root / f"{self.image_dir}/{img_name}")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = np.array(img)
             img = torch.from_numpy(img).permute(2, 0, 1).float()
             img = img.unsqueeze(0)
@@ -185,7 +187,7 @@ class PanCancerControlNetData(Dataset):
             tuple: VAE features, SSL features, cell_mask, and additional data info.
         """
         if self.h5 is None:
-            self.h5 = h5py.File(self.root / self.image_list_h5, "r")
+            self.h5 = h5py.File(self.root / f"{self.image_list_h5}", "r")
         key_idx = (
             np.searchsorted(self.cumulative_lengths, idx, side="right") - 1
         )
