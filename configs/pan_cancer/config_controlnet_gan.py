@@ -61,7 +61,7 @@ pe_interpolation = 0.5
 # Training setting
 num_workers = 2
 train_batch_size = 4
-num_epochs = 40
+num_epochs = 20
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0
