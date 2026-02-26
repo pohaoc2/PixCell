@@ -13,6 +13,7 @@ from diffusion.utils.checkpoint import load_checkpoint
 from diffusion.utils.misc import read_config
 from diffusion.model.builder import build_model
 
+import cv2
 
 def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
@@ -95,7 +96,7 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
         pred_sigma=False,
         **controlnet_model_kwargs
     )
-    return controlnet
+    #return controlnet
     #from safetensors.torch import load_file
     #sd = load_file(state_file_path)  # returns a plain dict[str, Tensor]
     checkpoint = torch.load(state_file_path, map_location='cpu')
@@ -234,7 +235,7 @@ def denoise(latents,
     latents = latents.to(device, dtype=dtype)
     uni_embeds = uni_embeds.to(device, dtype=dtype)
     controlnet_input_latent = controlnet_input_latent.to(device, dtype=dtype)
-    
+    controlnet_model = controlnet_model.to(device, dtype=dtype)
     # 2. Create Unconditional Embeddings
     # Using zeros or random is standard, but must match dtype/device
     uncond_uni_embeds = torch.randn(1, 1, 1, 1536).to(device, dtype=dtype)
@@ -303,7 +304,6 @@ def denoise(latents,
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                 #print(f"  after step: mean={latents.mean():.3f} std={latents.std():.3f}")
                 #if t == timesteps[2]: break  # just first 3 steps
-    print(f"Final latents: mean={latents.mean():.3f}, std={latents.std():.3f}")
     return latents
 
 
@@ -315,9 +315,11 @@ def prepare_controlnet_input(idx):
     
     uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
     #uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
+    uni_embeds = torch.from_numpy(np.load(f"../data/features_tcga_3660/0_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
     mask_path = "../test_mask.png"
     mask_path = f"../consep_masks/sample_{idx}_mask.png"
+    #mask_path = f"../data/tcga_3660_masks/0_{idx}_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     #controlnet_input = Image.open(mask_path).convert('L')
     #controlnet_input = np.array(controlnet_input)
@@ -374,7 +376,7 @@ def decode_latents(vae, latents, hist_image, mask_image, save_path):
         cell_mask = (labeled == label_id).astype(np.uint8)
         contours, _ = cv2.findContours(cell_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(contour_overlay, contours, -1, color=(255, 0, 0), thickness=1)
-    #contour_overlay = gen_img
+    contour_overlay = gen_img
     # --- Plot ---
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
     ax[0].imshow(hist_image)
@@ -437,7 +439,7 @@ if __name__ == "__main__":
         if from_checkpoint:
             print("Loading ControlNet from checkpoint")
             config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_1000_step_13000.pth'
+            state_name = 'controlnet_epoch_20_step_17940_tcga.pth'
             state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
             controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
             print(f"Loaded {state_name}!")
@@ -529,29 +531,30 @@ if __name__ == "__main__":
     ax[1].set_title("Decoded Image")
     plt.show()
     # %%
-    idx = 0
+    idx = 300
     latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx)
-    print("UNI shape: ", uni_embeds.shape)
-    print(f"UNI mean: {uni_embeds.mean():.6f}")
-    print(f"UNI std: {uni_embeds.std():.6f}")
-    print(f"UNI min: {uni_embeds.min():.6f}")
-    print(f"UNI max: {uni_embeds.max():.6f}")
-    print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
-    print("="*50)
-    print(f"controlnet_input.shape: {controlnet_input.shape}")
-    print(f"controlnet_input mean: {controlnet_input.mean():.6f}")
-    print(f"controlnet_input std: {controlnet_input.std():.6f}")
-    print(f"controlnet_input min: {controlnet_input.min():.6f}")
-    print(f"controlnet_input max: {controlnet_input.max():.6f}")
-    print(f"controlnet_input L2 Norm: {torch.norm(torch.from_numpy(controlnet_input).transpose(2, 0, 1), p=2).item()}")
-    print("="*50)
-    print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
-    print(f"controlnet_input_latent mean: {controlnet_input_latent.mean():.6f}")
-    print(f"controlnet_input_latent std: {controlnet_input_latent.std():.6f}")
-    print(f"controlnet_input_latent min: {controlnet_input_latent.min():.6f}")
-    print(f"controlnet_input_latent max: {controlnet_input_latent.max():.6f}")
-    print(f"controlnet_input_latent L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
-    print("="*50)
+    if 0:
+        print("UNI shape: ", uni_embeds.shape)
+        print(f"UNI mean: {uni_embeds.mean():.6f}")
+        print(f"UNI std: {uni_embeds.std():.6f}")
+        print(f"UNI min: {uni_embeds.min():.6f}")
+        print(f"UNI max: {uni_embeds.max():.6f}")
+        print(f"UNI L2 Norm: {torch.norm(uni_embeds, p=2).item()}")
+        print("="*50)
+        print(f"controlnet_input.shape: {controlnet_input.shape}")
+        print(f"controlnet_input mean: {controlnet_input.mean():.6f}")
+        print(f"controlnet_input std: {controlnet_input.std():.6f}")
+        print(f"controlnet_input min: {controlnet_input.min():.6f}")
+        print(f"controlnet_input max: {controlnet_input.max():.6f}")
+        print(f"controlnet_input L2 Norm: {torch.norm(torch.from_numpy(controlnet_input).float(), p=2).item()}")
+        print("="*50)
+        print(f"controlnet_input_latent.shape: {controlnet_input_latent.shape}")
+        print(f"controlnet_input_latent mean: {controlnet_input_latent.mean():.6f}")
+        print(f"controlnet_input_latent std: {controlnet_input_latent.std():.6f}")
+        print(f"controlnet_input_latent min: {controlnet_input_latent.min():.6f}")
+        print(f"controlnet_input_latent max: {controlnet_input_latent.max():.6f}")
+        print(f"controlnet_input_latent L2 Norm: {torch.norm(controlnet_input_latent, p=2).item()}")
+        print("="*50)
     # %%
     denoised_latents = denoise(latents,
             uni_embeds,
@@ -559,13 +562,16 @@ if __name__ == "__main__":
             scheduler,
             controlnet_model,
             pixcell_controlnet_model=pixcell_controlnet_model,
-            guidance_scale=5.5,
+            guidance_scale=2.5,
             num_inference_steps=50,
             conditioning_scale=1.0,
             device='cuda')
     # %%
     hist_image = Image.open(f"../consep/sample_{idx}.png")
     #hist_image = Image.open(f"../test_control_image.png")
+    hist_image = cv2.imread(f"../data/tcga_3660/0_{idx}.png")
+    hist_image = cv2.cvtColor(hist_image, cv2.COLOR_BGR2RGB)
+    hist_image = Image.fromarray(hist_image)
     #mask_image = controlnet_input.cpu().numpy()
     #mask_image = mask_image[0, 0, :, :]
     mask_image = controlnet_input
