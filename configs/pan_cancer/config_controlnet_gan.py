@@ -24,8 +24,8 @@ data = dict(
     ssl_prefix="uni",
     mask_prefix="mask",
     #patch_names_file="patch_names_controlnet.hdf5",
-    #patch_names_file="controlnet_consep.hdf5",
-    patch_names_file="controlnet_consep_small.hdf5",
+    patch_names_file="controlnet_consep.hdf5",
+    #patch_names_file="controlnet_consep_small.hdf5",
     load_vae_feat=True,
     return_img=True,
 )
@@ -61,7 +61,7 @@ pe_interpolation = 0.5
 # Training setting
 num_workers = 2
 train_batch_size = 4
-num_epochs = 500
+num_epochs = 40
 gradient_accumulation_steps = 1
 grad_checkpointing = True
 gradient_clip = 1.0
@@ -80,7 +80,7 @@ optimizer = dict(
     )
 )
 
-lr_schedule_args = dict(num_warmup_steps=500)
+lr_schedule_args = dict(num_warmup_steps=1000)
 auto_lr = None
 
 log_interval = 100

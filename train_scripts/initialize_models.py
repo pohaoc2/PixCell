@@ -914,17 +914,6 @@ def train_controlnet(models_dict):
                         keep_last=False,
                         model_type='controlnet',
                     )
-                    # Save unfrozen base blocks
-                    save_checkpoint(
-                        work_dir=os.path.join(config.work_dir, 'checkpoints'),
-                        epoch=epoch,
-                        model=accelerator.unwrap_model(base_model),  # saves full base_model state_dict
-                        optimizer=None,   # optimizer already saved above
-                        lr_scheduler=None,
-                        step=global_step,
-                        keep_last=False,
-                        model_type='base_model_unfrozen',
-                    )
             data_time_start = time.time()
             #if step == 10: break
             # Check if we've reached max steps
@@ -957,17 +946,6 @@ def train_controlnet(models_dict):
                 step=global_step,
                 keep_last=False,
                 model_type='controlnet',
-            )
-            # Save unfrozen base blocks
-            save_checkpoint(
-                work_dir=os.path.join(config.work_dir, 'checkpoints'),
-                epoch=epoch,
-                model=accelerator.unwrap_model(base_model),  # saves full base_model state_dict
-                optimizer=None,   # optimizer already saved above
-                lr_scheduler=None,
-                step=global_step,
-                keep_last=False,
-                model_type='base_model_unfrozen',
             )
         # End of epoch
         if global_step >= total_steps:
@@ -1092,7 +1070,7 @@ def main():
     # %%
     # Initialize config and accelerator
     init_data = initialize_config_and_accelerator([
-        '../configs/pan_cancer/config_controlnet_gan.py',
+        './configs/pan_cancer/config_controlnet_gan.py',
     ])
     config = init_data['config']
     accelerator = init_data['accelerator']

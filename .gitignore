@@ -16,6 +16,7 @@
 *.pyc
 *.hdf5
 *.log
+*.geojson
 pretrained_models/
 checkpoints/
 __pycache__/
