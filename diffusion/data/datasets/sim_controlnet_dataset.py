@@ -187,7 +187,7 @@ class SimControlNetData(Dataset):
 
     where:
         vae_feat    : [16, lt_sz, lt_sz]              real H&E VAE latent (unpaired)
-        ssl_feat    : [1152]                           real H&E UNI-2h embedding (unpaired)
+        ssl_feat    : [1, 1, 1152]                     real H&E UNI-2h embedding (unpaired)
         ctrl_tensor : [C, resolution, resolution]     sim control signal
         vae_mask    : [16, lt_sz, lt_sz]               VAE-encoded mask (zeros if absent)
         data_info   : dict
@@ -338,9 +338,13 @@ class SimControlNetData(Dataset):
         return mean
 
     def _load_ssl_feat(self, tile_id: str) -> torch.Tensor:
-        """Load UNI-2h embedding → [1152]."""
+        """Load UNI-2h embedding → [1, 1, 1152] (required by CaptionEmbedder)."""
         path = self.features_dir / f"{tile_id}_{self.ssl_prefix}.npy"
-        return torch.from_numpy(np.load(path))
+        feat = torch.from_numpy(np.load(path))   # [1152] or [1,1152]
+        # CaptionEmbedder asserts caption.shape[2:] == (token_num, in_channels)
+        # so per-sample shape must be [1, 1, 1152] → batched: [B, 1, 1, 1152]
+        feat = feat.view(1, 1, -1)   # [1, 1, 1152]
+        return feat
 
     # ── Dataset interface ──────────────────────────────────────────────────────
 
@@ -351,7 +355,7 @@ class SimControlNetData(Dataset):
         """
         Returns:
             vae_feat    : Tensor [16, lt_sz, lt_sz]           unpaired real H&E latent
-            ssl_feat    : Tensor [1152]                        unpaired UNI embedding
+            ssl_feat    : Tensor [1, 1, 1152]                  unpaired UNI embedding
             ctrl_tensor : Tensor [C, resolution, resolution]  sim control signal
             vae_mask    : Tensor [16, lt_sz, lt_sz]            VAE mask / zeros
             data_info   : dict

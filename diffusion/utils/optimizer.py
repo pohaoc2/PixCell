@@ -1,9 +1,9 @@
 import math
 
-from mmcv import Config
+from diffusion.utils.mmcv_compat import Config
 from mmcv.runner import build_optimizer as mm_build_optimizer, OPTIMIZER_BUILDERS, DefaultOptimizerConstructor, \
     OPTIMIZERS
-from mmcv.utils import _BatchNorm, _InstanceNorm
+from diffusion.utils.mmcv_compat import _BatchNorm, _InstanceNorm
 from torch.nn import GroupNorm, LayerNorm
 
 from .logger import get_root_logger

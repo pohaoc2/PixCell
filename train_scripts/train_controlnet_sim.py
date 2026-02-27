@@ -246,6 +246,30 @@ def train_controlnet_sim(models_dict):
                 model_kwargs = dict(
                     y=y, mask=None, data_info=data_info, control_input=vae_mask,
                 )
+                if 0:
+                    print(f"clean_images.shape: {clean_images.shape}")
+                    print(f"clean_images.mean(): {clean_images.mean()}")
+                    print(f"clean_images.std(): {clean_images.std()}")
+                    print(f"clean_images.min(): {clean_images.min()}")
+                    print(f"clean_images.max(): {clean_images.max()}")
+                    print(f"clean_images.norm(): {torch.norm(clean_images, p=2).item()}")
+                    print('--------------------------------')
+                    print(f"timesteps.shape: {timesteps.shape}")
+                    print(f"y.shape: {y.shape}")
+                    print(f"y.mean(): {y.mean()}")
+                    print(f"y.std(): {y.std()}")
+                    print(f"y.min(): {y.min()}")
+                    print(f"y.max(): {y.max()}")
+                    print(f"y.norm(): {torch.norm(y, p=2).item()}")
+                    print('--------------------------------')
+                    print(f"vae_mask.shape: {vae_mask.shape}")
+                    print(f"vae_mask.mean(): {vae_mask.mean()}")
+                    print(f"vae_mask.std(): {vae_mask.std()}")
+                    print(f"vae_mask.min(): {vae_mask.min()}")
+                    print(f"vae_mask.max(): {vae_mask.max()}")
+                    print(f"vae_mask.norm(): {torch.norm(vae_mask, p=2).item()}")
+                    print('--------------------------------')
+                    #asd()
                 loss_term = training_losses_controlnet(
                     diffusion=train_diffusion,
                     controlnet=controlnet,
@@ -382,8 +406,10 @@ def training_losses_controlnet(diffusion, controlnet, base_model, x_start,
     learn_sigma        = getattr(config, 'learn_sigma', True) and pred_sigma
 
     controlnet_outputs = controlnet(
-        hidden_states=x_t, conditioning=control_input,
-        encoder_hidden_states=model_kwargs['y'], timestep=model_timesteps,
+        hidden_states=x_t,
+        conditioning=control_input,
+        encoder_hidden_states=model_kwargs['y'],
+        timestep=model_timesteps,
         conditioning_scale=conditioning_scale,
         mask=model_kwargs.get('mask', None),
         data_info=model_kwargs.get('data_info', None),
@@ -419,7 +445,8 @@ def training_losses_controlnet(diffusion, controlnet, base_model, x_start,
 def main():
     # parse_args() in initialize_models expects a positional 'config' argument:
     #   python train_controlnet_sim.py <config_path> [optional flags]
-    init_data   = initialize_config_and_accelerator()
+    config_path = "../configs/config_controlnet_sim.py"
+    init_data   = initialize_config_and_accelerator()#[config_path])
     config      = init_data['config']
     accelerator = init_data['accelerator']
     logger      = init_data['logger']
@@ -489,6 +516,7 @@ def main():
         'lr_scheduler_tme':  lr_scheduler_tme,
         **state_data,
     }
+
     train_controlnet_sim(models)
 
 

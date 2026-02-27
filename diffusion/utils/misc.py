@@ -9,8 +9,8 @@ from multiprocessing import JoinableQueue, Process
 import numpy as np
 import torch
 import torch.distributed as dist
-from mmcv import Config
-from mmcv.runner import get_dist_info
+from diffusion.utils.mmcv_compat import Config
+from diffusion.utils.mmcv_compat import get_dist_info
 
 from diffusion.utils.dist_utils import get_rank
 from diffusion.utils.logger import get_root_logger

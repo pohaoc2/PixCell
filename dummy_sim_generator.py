@@ -45,7 +45,7 @@ RESOLUTION  = 256
 VAE_CH      = 16     # VAE latent channels (mean only)
 VAE_FULL_CH = 32     # mean + std concatenated
 VAE_LT_SZ   = 32     # spatial latent size (256 // 8)
-SSL_DIM     = 1152   # UNI-2h embedding dimension
+SSL_DIM     = 1536   # UNI-2h embedding dimension
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -310,15 +310,15 @@ def test_dataset(
               f"range=[{ctrl_tensor.min():.3f}, {ctrl_tensor.max():.3f}]")
         print(f"    vae_mask    : {tuple(vae_mask.shape)}  "
               f"range=[{vae_mask.min():.3f}, {vae_mask.max():.3f}]")
-        print(f"    sim_ids     : {data_info['sim_id']}")
-        print(f"    tile_ids    : {data_info['tile_id']}")
+        #print(f"    sim_ids     : {data_info['sim_id']}")
+        #print(f"    tile_ids    : {data_info['tile_id']}")
 
         # Check expected shapes
         B  = batch_size
         lt = resolution // 8
         C  = len(active_channels)
         assert vae_feat.shape    == (B, 16, lt, lt),                    "vae_feat shape wrong"
-        assert ssl_feat.shape    == (B, SSL_DIM),                       "ssl_feat shape wrong"
+        assert ssl_feat.shape    == (B, 1, 1, SSL_DIM),                       "ssl_feat shape wrong"
         assert ctrl_tensor.shape == (B, C, resolution, resolution),     "ctrl_tensor shape wrong"
         assert vae_mask.shape    == (B, 16, lt, lt),                    "vae_mask shape wrong"
 

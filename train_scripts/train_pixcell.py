@@ -20,7 +20,7 @@ import torch.nn as nn
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import DistributedType
 from diffusers.models import AutoencoderKL
-from mmcv.runner import LogBuffer
+from diffusion.utils.mmcv_compat import LogBuffer
 from torch.utils.data import RandomSampler
 
 from diffusion import IDDPM
