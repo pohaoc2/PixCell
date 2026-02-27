@@ -1,2 +1,3 @@
 from .PixArt import PixArt_ControlNet, PixArt_XL_2_UNI
 from .PixArtControlNet import PixCell_ControlNet_XL_2_UNI
+from .tme_encoder import TMEConditioningModule
