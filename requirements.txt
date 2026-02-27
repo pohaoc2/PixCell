@@ -1,43 +1,53 @@
-# ===== Core Dependencies - Install First =====
-numpy>=1.23.5,<2.0
+# PixCell Requirements
+# Environment: Python 3.12, CUDA 12.8, PyTorch 2.10
+#
+# Setup order:
+#   conda create -n pixcell python=3.12 -y
+#   conda activate pixcell
+#   conda install -c nvidia cuda-nvcc=12.8 cuda-toolkit=12.8 -y
+#   pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+#   pip install setuptools==75.2.0 wheel
+#   pip install mmcv==1.7.0 --no-build-isolation
+#   pip install -r requirements.txt
+
+# ===== Core =====
+numpy==2.0.2
 scipy>=1.11.2
 
-# Core Vision & Modeling
-mmcv==1.7.0
+# ===== Vision =====
+# mmcv==1.7.0 is installed separately (requires --no-build-isolation)
+mmengine
 timm>=0.9.0
 einops
-opencv-python-headless==4.8.0.74
+opencv-python-headless>=4.9.0
 yapf==0.40.1
 h5py
 
-
-
-# Generative AI & Transformers
-diffusers @ git+https://github.com/huggingface/diffusers.git
-transformers>=4.38.0
+# ===== Generative AI =====
+diffusers==0.36.0
+transformers==5.0.0
 accelerate>=0.28.0
 peft>=0.9.0
 optimum
-xformers>=0.0.20
+xformers
 came-pytorch
-huggingface-hub>=0.23.0,<1.0.0
+huggingface-hub>=1.3.0,<2.0.0
 
-# NLP & Processing
-sentencepiece~=0.1.99
+# ===== NLP =====
+sentencepiece>=0.1.99
 ftfy
 beautifulsoup4
-protobuf==3.20.2
+protobuf>=3.20.2
 
-# Logging & UI
+# ===== Logging & UI =====
 tensorboard
 tensorboardX
-gradio==4.1.1
+gradio>=4.1.1
 
-# Cell Segmentation
+# ===== Cell Segmentation =====
 cellpose @ git+https://github.com/mouseland/cellpose.git
 
-# Misc
+# ===== Misc =====
 ipykernel
 nvitop
-huggingface_hub[cli]
 gdown

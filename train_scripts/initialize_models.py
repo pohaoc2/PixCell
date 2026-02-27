@@ -14,7 +14,7 @@ import torch.nn as nn
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import DistributedType
 from diffusers.models import AutoencoderKL
-from mmcv.runner import LogBuffer
+from diffusion.utils.mmcv_compat import LogBuffer
 
 from diffusion import IDDPM
 from diffusion.data.builder import build_dataset, build_dataloader, set_data_root

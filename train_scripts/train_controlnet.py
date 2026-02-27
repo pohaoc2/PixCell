@@ -4,7 +4,7 @@ import time
 import datetime
 import torch
 import torch.nn as nn
-from mmcv.runner import LogBuffer
+from diffusion.utils.mmcv_compat import LogBuffer
 import numpy as np
 from diffusion.utils.misc import DebugUnderflowOverflow
 from diffusion.utils.checkpoint import save_checkpoint

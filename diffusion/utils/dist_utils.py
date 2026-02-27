@@ -7,10 +7,10 @@ import pickle
 import shutil
 
 import gc
-import mmcv
+
 import torch
 import torch.distributed as dist
-from mmcv.runner import get_dist_info
+from diffusion.utils.mmcv_compat import get_dist_info
 
 
 def is_distributed():

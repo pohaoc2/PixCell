@@ -380,11 +380,11 @@ def decode_latents(vae, latents, hist_image, mask_image, save_path):
     # --- Plot ---
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
     ax[0].imshow(hist_image)
-    ax[0].set_title("Original Image")
+    ax[0].set_title("Original Image (TCGA)")
     ax[1].imshow(mask_image)
     ax[1].set_title("Mask Image")
     ax[2].imshow(contour_overlay)
-    ax[2].set_title("Generated Image + Cell Contours")
+    ax[2].set_title("Generated Image")
 
     plt.tight_layout()
     plt.savefig(save_path)

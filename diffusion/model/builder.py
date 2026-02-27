@@ -1,4 +1,4 @@
-from mmcv import Registry
+from diffusion.utils.mmcv_compat import Registry
 
 from diffusion.model.utils import set_grad_checkpoint
 

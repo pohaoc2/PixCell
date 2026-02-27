@@ -1,7 +1,7 @@
 import os
 import time
 
-from mmcv import Registry, build_from_cfg
+from diffusion.utils.mmcv_compat import Registry, build_from_cfg
 from torch.utils.data import DataLoader, DistributedSampler
 
 from diffusion.data.transforms import get_transform

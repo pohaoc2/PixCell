@@ -379,7 +379,6 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
         conditioning = conditioning.to(self.dtype)
         timestep = timestep.to(self.dtype)
         encoder_hidden_states = encoder_hidden_states.to(self.dtype)
-        
         # Ensure encoder_hidden_states has correct shape
         if len(encoder_hidden_states.shape) == 2:
             encoder_hidden_states = encoder_hidden_states.unsqueeze(1).unsqueeze(1)
@@ -554,7 +553,7 @@ def PixCell_ControlNet_XL_2_UNI(**kwargs):
     """PixCell ControlNet XL with UNI conditioning"""
     depth = kwargs.get('controlnet_depth', 28)
     return PixCellControlNet(
-        controlnet_depth=27, 
+        controlnet_depth=2, 
         hidden_size=1152, 
         patch_size=2, 
         num_heads=16,
