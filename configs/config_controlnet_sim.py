@@ -6,7 +6,7 @@ Uses SimControlNetData with dummy dataset for testing.
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
 root = "/home/ec2-user/PixCell"
-root = "./"
+#root = "./"
 # =====================================================================
 # Dataset — SimControlNetData
 # =====================================================================
