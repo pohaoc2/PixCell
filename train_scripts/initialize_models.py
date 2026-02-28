@@ -385,14 +385,9 @@ def initialize_models(config, accelerator, logger):
     # Optional: Load ControlNet checkpoint if resuming training
     if config.get('controlnet_load_from', None) is not None:
         logger.info(f"Loading ControlNet checkpoint from {config.controlnet_load_from}")
-        load_file = _find_model_file(config.controlnet_load_from)
-        missing, unexpected = load_checkpoint(
-            load_file,
-            controlnet=controlnet,
-            load_ema=False,
-            max_length=max_length,
-            ignore_keys=config.get('controlnet_ignore_keys', [])
-        )
+        checkpoint = torch.load(config.controlnet_load_from, map_location='cpu')
+        sd = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+        missing, unexpected = controlnet.load_state_dict(sd, strict=False)
         logger.warning(f'ControlNet - Missing keys: {missing}')
         logger.warning(f'ControlNet - Unexpected keys: {unexpected}')
     

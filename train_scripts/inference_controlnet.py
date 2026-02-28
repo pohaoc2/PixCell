@@ -70,7 +70,7 @@ def load_base_model_checkpoint(base_model, checkpoint_path):
         print(f"Unexpected examples: {unexpected[:3]}")
     return base_model
 
-def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device='cuda'):
+def load_controlnet_model_from_checkpoint(config_file_path, state_file_path=None, device='cuda'):
     config = read_config(config_file_path)
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
     max_length = config.model_max_length
@@ -97,18 +97,21 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
         **controlnet_model_kwargs
     )
     #return controlnet
-    #from safetensors.torch import load_file
-    #sd = load_file(state_file_path)  # returns a plain dict[str, Tensor]
-    checkpoint = torch.load(state_file_path, map_location='cpu')
-    sd = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
-    missing, unexpected = controlnet.load_state_dict(sd, strict=True)
-    print(f"\nMissing: {len(missing)}, Unexpected: {len(unexpected)}")
-    print(f"Missing examples: {missing[:3]}")
-    print(f"Unexpected examples: {unexpected[:3]}")
-    #_ = load_checkpoint(state_file_path, controlnet=controlnet)
+    if state_file_path is not None:
+        checkpoint = torch.load(state_file_path, map_location='cpu')
+        sd = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+        missing, unexpected = controlnet.load_state_dict(sd, strict=True)
+        print(f"\nMissing: {len(missing)}, Unexpected: {len(unexpected)}")
+        print(f"Missing examples: {missing[:3]}")
+        print(f"Unexpected examples: {unexpected[:3]}")
+        print(f"Loaded {state_file_path}!")
+    else:
+        print("No state file path provided, initializing controlnet with random weights")
+        pass
     controlnet.to(device)
     controlnet.eval();
     return controlnet
+
 def save_keys_comparison_controlnet(controlnet, state_file_path, device='cuda'):
     from safetensors.torch import load_file
     import pandas as pd
@@ -431,28 +434,26 @@ if __name__ == "__main__":
         print(f"blocks[{block_idx}]: controlnet_max={cn_weight.abs().max():.6f}, base_max={base_weight.abs().max():.6f}, diff={diff:.6f}")
 
     # %%
-    if only_init_models:
-        #pixcell_controlnet_model = initialize_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
-        controlnet_model = initialize_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
+    #pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
+    if from_checkpoint:
+        print("Loading ControlNet from checkpoint")
+        config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
+        state_name = 'controlnet_epoch_20_step_17940_tcga.pth'
+        state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
+        controlnet_model = load_controlnet_model_from_checkpoint(config_file_path,
+                                                                #state_file_path=state_file_path,
+                                                                device=device)
     else:
-        #pixcell_controlnet_model = load_pixcell_controlnet_model(pixcell_controlnet_module_name, pixcell_controlnet_file_path, pixcell_controlnet_checkpoints_folder, device)
-        if from_checkpoint:
-            print("Loading ControlNet from checkpoint")
-            config_file_path = '../configs/pan_cancer/config_controlnet_gan.py'
-            state_name = 'controlnet_epoch_20_step_17940_tcga.pth'
-            state_file_path = f'../checkpoints/pixcell_controlnet_full/checkpoints/{state_name}'
-            controlnet_model = load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device)
-            print(f"Loaded {state_name}!")
-        else:
-            print("Loading ControlNet from pretrained model")
-            controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
+        print("Loading ControlNet from pretrained model")
+        controlnet_model = load_controlnet_model(controlnet_module_name, controlnet_file_path, controlnet_checkpoints_folder, device)
     # %%
-    state_file_path = f'./controlnet_mapped_weights.pt' # from pretrained 
-    controlnet_model = test_load_controlnet(controlnet_model, state_file_path, device)
-    # %%
-    from mapping_weights_helper import load_into_controlnet
-    state_safetensors_path = f'../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors'
-    load_into_controlnet(controlnet_model, state_safetensors_path)
+    if 0: # test load from mapping checkpoint
+        state_file_path = f'./controlnet_mapped_weights.pt' # from pretrained 
+        controlnet_model = test_load_controlnet(controlnet_model, state_file_path, device)
+    elif 0: # test load from safetensors checkpoint
+        from mapping_weights_helper import load_into_controlnet
+        state_safetensors_path = f'../pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors'
+        controlnet_model = load_into_controlnet(controlnet_model, state_safetensors_path)
     # %%
     print(f"controlnet_blocks[0].weight max: {controlnet_model.controlnet_blocks[0].weight.abs().max():.6f}")
     # If this is 0.0, the model was re-initialized after loading
@@ -460,7 +461,6 @@ if __name__ == "__main__":
         weight_0 = controlnet_model.controlnet_blocks[0].weight
         has_changed = (weight_0 != 0).any().item()
         max_val = weight_0.abs().max().item()
-        
         print(f"Did weights move from zero? {has_changed}")
         print(f"Absolute max weight value: {max_val:.20f}")
     #asd()

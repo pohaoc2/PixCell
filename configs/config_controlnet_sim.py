@@ -54,7 +54,7 @@ pixcell_controlnet_checkpoints_folder = f"{root}/pretrained_models/pixcell-256-c
 controlnet_module_name              = "pixcell_controlnet"
 controlnet_file_path                = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/pixcell_controlnet.py"
 controlnet_checkpoints_folder       = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/"
-controlnet_load_from                = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors"
+controlnet_load_from                = f"{root}/train_scripts/controlnet_mapped_weights.pt"
 load_from   = f"{root}/pretrained_models/pixcell-256/transformer"
 resume_from = None
 # To resume TME module from a checkpoint:
