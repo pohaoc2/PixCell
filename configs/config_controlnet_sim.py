@@ -6,7 +6,7 @@ Uses SimControlNetData with dummy dataset for testing.
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
 root = "/home/ec2-user/PixCell"
-root = "./"
+#root = "./"
 # =====================================================================
 # Dataset — SimControlNetData
 # =====================================================================
@@ -27,12 +27,13 @@ data = dict(
 )
 
 # Root of the dummy dataset (created by dummy_sim_generator.py)
-sim_data_root = "./dummy_sim_data"
+sim_data_root = f"{root}/dummy_sim_data"
 
 # =====================================================================
 # TME Encoder
 # =====================================================================
 # n_tme_channels is derived automatically as len(active_channels) - 1
+tme_model = "TMEConditioningModule"
 tme_base_ch = 32       # CNN base channel width; increase to 64 if GPU allows
 tme_lr      = 1e-4     # LR for TME module; can match controlnet LR
 

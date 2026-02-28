@@ -16,14 +16,16 @@ Usage:
     python  train_controlnet_sim.py <config_path> [--work-dir ...] [--debug ...]
     accelerate launch train_controlnet_sim.py <config_path>
 """
-
+# %%
 import os
 import time
 from copy import deepcopy
-
+import glob
+from PIL import Image
 import torch
 import torch.nn as nn
-
+from matplotlib import pyplot as plt
+import numpy as np
 # ── All shared infrastructure — imported, not duplicated ─────────────────────
 from train_scripts.initialize_models import (
     # config / accelerator / logging
@@ -441,17 +443,16 @@ def training_losses_controlnet(diffusion, controlnet, base_model, x_start,
 # ─────────────────────────────────────────────────────────────────────────────
 # 5.  Entrypoint
 # ─────────────────────────────────────────────────────────────────────────────
-
+# %%
 def main():
-    # parse_args() in initialize_models expects a positional 'config' argument:
-    #   python train_controlnet_sim.py <config_path> [optional flags]
+    # %%
     config_path = "../configs/config_controlnet_sim.py"
-    init_data   = initialize_config_and_accelerator()#[config_path])
+    init_data   = initialize_config_and_accelerator([config_path])
     config      = init_data['config']
     accelerator = init_data['accelerator']
     logger      = init_data['logger']
     args        = init_data['args']
-
+    # %%
     # Build frozen base model, trainable controlnet, EMA, VAE, diffusion
     model_data      = initialize_models(config, accelerator, logger)
     base_model      = model_data['base_model']
@@ -459,7 +460,7 @@ def main():
     model_ema       = model_data['model_ema']
     vae             = model_data['vae']
     train_diffusion = model_data['train_diffusion']
-
+    # %%
     # Build sim dataset + TME module + all optimizers in one call.
     # controlnet is passed in so its optimizer is built here — no second
     # initialize_dataset_and_optimizer call needed.
@@ -470,7 +471,7 @@ def main():
     optimizer_tme    = sim_data['optimizer_tme']
     lr_scheduler     = sim_data['lr_scheduler']
     lr_scheduler_tme = sim_data['lr_scheduler_tme']
-
+    # %%
     # Prepare everything with accelerator
     (
         base_model, controlnet, model_ema,
@@ -516,9 +517,58 @@ def main():
         'lr_scheduler_tme':  lr_scheduler_tme,
         **state_data,
     }
-
+    # %%
+    _plot_control_input(config, train_dataloader)
+    # %%
     train_controlnet_sim(models)
+# %%
 
+def _plot_control_input(config, train_dataloader):
+    for step, batch in enumerate(train_dataloader):
+        clean_images = batch[0]
+        y = batch[1]
+        control_input = batch[2].to('cpu')
+        vae_mask = batch[3]
+        data_info = batch[4]
+        print(f"clean_images.shape: {clean_images.shape}")
+        print(f"y.shape: {y.shape}")
+        print(f"control_input.shape: {control_input.shape}")
+        print(f"vae_mask.shape: {vae_mask.shape}")
+        print(f"sim_idx = {data_info['sim_idx'].to('cpu')}")
+        print('--------------------------------')
+        
+        fig, ax = plt.subplots(2, control_input.shape[1], figsize=(10, 5))
+        channel_names = config.data.active_channels
+        
+        for i in range(control_input.shape[1]):
+            print(f"{channel_names[i]}: range = {control_input[0, i, :, :].min()}, {control_input[0, i, :, :].max()}")
+            ax[0, i].imshow(control_input[0, i, :, :], vmin=0, vmax=1)
+            ax[0, i].set_title(channel_names[i])
+            if i == 0:
+                ax[0, i].set_ylabel("from dataloader", fontsize=12)
+            image_file_name = f"sim_{data_info['sim_idx'].to('cpu')[0]:04d}_*.png"
+            file = glob.glob(f"{config.sim_data_root}/sim_channels/{channel_names[i]}/{image_file_name}")
+            image = f"{file[0]}"
+            image = Image.open(image)
+            image = image.resize((256, 256))
+            image = np.array(image)
+            # if range is not [0, 1], normalize image to [0, 1]
+            if image.min() != 0 or image.max() != 1:
+                image = image / 255.0
+            print(f"{channel_names[i]}: range = {image.min()}, {image.max()}")
+            ax[1, i].imshow(image, cmap='gray')
+            if i == 0:
+                ax[1, i].set_ylabel("direct load", fontsize=12)
+            ax[0, i].set_xticks([])
+            ax[0, i].set_yticks([])
+
+            ax[1, i].set_xticks([])
+            ax[1, i].set_yticks([])
+        plt.tight_layout()
+        plt.show()
+        break
+# %%
 
 if __name__ == "__main__":
     main()
+# %%
