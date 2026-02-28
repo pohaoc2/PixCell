@@ -38,7 +38,7 @@ from train_scripts.initialize_models import (
     ema_update,
     _resume_from_checkpoint,
 )
-
+import train_scripts.inference_controlnet as inference_controlnet
 # ── Diffusion utils (same ones initialize_models uses) ───────────────────────
 from diffusion.data.builder import build_dataloader
 from diffusion.model.builder import build_model          # ← used for tme_module
@@ -439,14 +439,10 @@ def training_losses_controlnet(diffusion, controlnet, base_model, x_start,
         'var_values': model_var_values if learn_sigma else None,
     }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5.  Entrypoint
-# ─────────────────────────────────────────────────────────────────────────────
 # %%
 def main():
     # %%
-    config_path = "../configs/config_controlnet_sim.py"
+    config_path = "./configs/config_controlnet_sim.py"
     init_data   = initialize_config_and_accelerator([config_path])
     config      = init_data['config']
     accelerator = init_data['accelerator']
@@ -520,8 +516,62 @@ def main():
     # %%
     _plot_control_input(config, train_dataloader)
     # %%
+    idx = 1
+    scheduler_folder = "./pretrained_models/pixcell-256/scheduler/"
+    from diffusers import DPMSolverMultistepScheduler
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(
+        scheduler_folder,
+    )
+    from diffusers import DDPMScheduler
+
+    scheduler = DDPMScheduler(
+        num_train_timesteps=1000,
+        beta_start=0.0001,
+        beta_end=0.02,
+        beta_schedule="linear",
+        prediction_type="epsilon",
+        clip_sample=False,
+    )
+    scheduler.set_timesteps(20, device='cpu')
+    print(type(scheduler))
+    print(scheduler.config)
+    latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx, vae, scheduler)
+    # %%
+    denoised_latents = inference_controlnet.denoise(latents,
+            uni_embeds,
+            controlnet_input_latent,
+            scheduler,
+            controlnet,
+            pixcell_controlnet_model=base_model,
+            guidance_scale=2.5,
+            num_inference_steps=50,
+            conditioning_scale=1.0,
+            device='cpu')
+    # %%
     train_controlnet_sim(models)
 # %%
+
+def prepare_controlnet_input(idx, vae=None, scheduler=None, device='cpu'):
+    
+    latent_shape = (1, 16, 32, 32)
+    latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
+    latents = latents * scheduler.init_noise_sigma
+    
+    uni_embeds = torch.from_numpy(np.load(f"./dummy_sim_data/features/TCGA_dummy_{idx:04d}_uni.npy"))
+    uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
+    mask_path = "./test_mask.png"
+    controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
+    
+    controlnet_input_torch = torch.from_numpy(controlnet_input.copy()/255.).float().to(device)
+    controlnet_input_torch = controlnet_input_torch.permute(2, 0, 1).unsqueeze(0)
+    controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
+    vae_scale = vae.config.scaling_factor
+    vae_shift = getattr(vae.config, "shift_factor", 0)
+    controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
+    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    
+    return latents, uni_embeds, controlnet_input_latent, controlnet_input
+
 
 def _plot_control_input(config, train_dataloader):
     for step, batch in enumerate(train_dataloader):
@@ -542,7 +592,7 @@ def _plot_control_input(config, train_dataloader):
         
         for i in range(control_input.shape[1]):
             print(f"{channel_names[i]}: range = {control_input[0, i, :, :].min()}, {control_input[0, i, :, :].max()}")
-            ax[0, i].imshow(control_input[0, i, :, :], vmin=0, vmax=1)
+            ax[0, i].imshow(control_input[0, i, :, :], cmap='gray')
             ax[0, i].set_title(channel_names[i])
             if i == 0:
                 ax[0, i].set_ylabel("from dataloader", fontsize=12)
