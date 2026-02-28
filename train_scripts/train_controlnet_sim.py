@@ -26,6 +26,7 @@ import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
 import numpy as np
+import cv2
 # ── All shared infrastructure — imported, not duplicated ─────────────────────
 from train_scripts.initialize_models import (
     # config / accelerator / logging
@@ -442,7 +443,7 @@ def training_losses_controlnet(diffusion, controlnet, base_model, x_start,
 # %%
 def main():
     # %%
-    config_path = "./configs/config_controlnet_sim.py"
+    config_path = "../configs/config_controlnet_sim.py"
     init_data   = initialize_config_and_accelerator([config_path])
     config      = init_data['config']
     accelerator = init_data['accelerator']
@@ -514,10 +515,20 @@ def main():
         **state_data,
     }
     # %%
+    print(f"controlnet_blocks[0].weight max: {controlnet.controlnet_blocks[0].weight.abs().max():.6f}")
+    # If this is 0.0, the model was re-initialized after loading
+    with torch.no_grad():
+        weight_0 = controlnet.controlnet_blocks[0].weight
+        has_changed = (weight_0 != 0).any().item()
+        max_val = weight_0.abs().max().item()
+        
+        print(f"Did weights move from zero? {has_changed}")
+        print(f"Absolute max weight value: {max_val:.20f}")
+    # %%
     _plot_control_input(config, train_dataloader)
     # %%
-    idx = 1
-    scheduler_folder = "./pretrained_models/pixcell-256/scheduler/"
+    idx = 300
+    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
     from diffusers import DPMSolverMultistepScheduler
     scheduler = DPMSolverMultistepScheduler.from_pretrained(
         scheduler_folder,
@@ -532,11 +543,14 @@ def main():
         prediction_type="epsilon",
         clip_sample=False,
     )
-    scheduler.set_timesteps(20, device='cpu')
+    scheduler.set_timesteps(20, device=accelerator.device)
     print(type(scheduler))
     print(scheduler.config)
-    latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx, vae, scheduler)
+
+    latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx, vae, scheduler, device=accelerator.device)
     # %%
+    controlnet.eval()
+    base_model.eval()
     denoised_latents = inference_controlnet.denoise(latents,
             uni_embeds,
             controlnet_input_latent,
@@ -546,7 +560,15 @@ def main():
             guidance_scale=2.5,
             num_inference_steps=50,
             conditioning_scale=1.0,
-            device='cpu')
+            device=accelerator.device)
+    # %%
+    hist_image = cv2.imread(f"../data/tcga_3660/0_{idx}.png")
+    hist_image = cv2.cvtColor(hist_image, cv2.COLOR_BGR2RGB)
+    hist_image = Image.fromarray(hist_image)
+    #hist_image = np.zeros_like(hist_image)
+    mask_image = controlnet_input.cpu().numpy()
+    generated_image = inference_controlnet.decode_latents(vae, denoised_latents, hist_image, mask_image, "generated_image.png")
+
     # %%
     train_controlnet_sim(models)
 # %%
@@ -557,9 +579,10 @@ def prepare_controlnet_input(idx, vae=None, scheduler=None, device='cpu'):
     latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
     latents = latents * scheduler.init_noise_sigma
     
-    uni_embeds = torch.from_numpy(np.load(f"./dummy_sim_data/features/TCGA_dummy_{idx:04d}_uni.npy"))
+    #uni_embeds = torch.from_numpy(np.load(f"../dummy_sim_data/features/TCGA_dummy_{idx:04d}_uni.npy"))
+    uni_embeds = torch.from_numpy(np.load(f"../data/features_tcga_3660/0_{idx}_uni.npy"))
     uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    mask_path = "./test_mask.png"
+    mask_path = "../test_mask.png"
     controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
     
     controlnet_input_torch = torch.from_numpy(controlnet_input.copy()/255.).float().to(device)
@@ -567,9 +590,10 @@ def prepare_controlnet_input(idx, vae=None, scheduler=None, device='cpu'):
     controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
     vae_scale = vae.config.scaling_factor
     vae_shift = getattr(vae.config, "shift_factor", 0)
-    controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
+    vae.to(device, dtype=controlnet_input_torch.dtype)
+    controlnet_input_latent = vae.encode(controlnet_input_torch.float()).latent_dist.mean
     controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-    
+    controlnet_input = torch.from_numpy(controlnet_input).float().to(device)
     return latents, uni_embeds, controlnet_input_latent, controlnet_input
 
 

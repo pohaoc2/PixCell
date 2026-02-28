@@ -149,7 +149,7 @@ def test_load_controlnet(controlnet, state_file_path, device='cuda'):
     print(f"Not loaded ({len(not_loaded)} keys):")
     for k in not_loaded:
         print(f"  {k:60s} {tuple(controlnet_sd[k].shape)}")
-    missing, unexpected = controlnet.load_state_dict(mapped, strict=False)
+    missing, unexpected = controlnet.load_state_dict(mapped, strict=True)#False)
 
     print(f"MISSING (random init): {len(missing)}")
     print(f"UNEXPECTED (dropped): {len(unexpected)}")
@@ -394,7 +394,7 @@ def decode_latents(vae, latents, hist_image, mask_image, save_path):
 if __name__ == "__main__":
     # %%
     device = 'cuda'
-    only_init_models = False
+    only_init_models = True
     from_checkpoint = True
     pixcell_controlnet_module_name = "pixcell_controlnet_transformer"
     pixcell_controlnet_file_path = "../pretrained_models/pixcell-256-controlnet/transformer/pixcell_controlnet_transformer.py"
@@ -449,7 +449,10 @@ if __name__ == "__main__":
     # %%
     state_file_path = f'./controlnet_mapped_weights.pt' # from pretrained 
     controlnet_model = test_load_controlnet(controlnet_model, state_file_path, device)
-
+    # %%
+    from mapping_weights_helper import load_into_controlnet
+    state_safetensors_path = f'../pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors'
+    load_into_controlnet(controlnet_model, state_safetensors_path)
     # %%
     print(f"controlnet_blocks[0].weight max: {controlnet_model.controlnet_blocks[0].weight.abs().max():.6f}")
     # If this is 0.0, the model was re-initialized after loading
