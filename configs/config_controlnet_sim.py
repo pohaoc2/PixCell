@@ -78,10 +78,14 @@ gradient_clip               = 1.0
 
 optimizer = dict(
     type='AdamW',
-    lr=1e-5,
+    lr=1e-5,          # default / fallback lr
     weight_decay=0.0,
     betas=(0.9, 0.999),
     eps=1e-8,
+    param_groups=[
+        {"name": "controlnet", "lr": 1e-5},
+        {"name": "tme_module",  "lr": 1e-4},
+    ],
 )
 
 lr_schedule_args = dict(num_warmup_steps=1000)

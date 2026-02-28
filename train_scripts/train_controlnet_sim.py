@@ -11,10 +11,6 @@ Only sim-specific code lives here:
     train_controlnet_sim()      — training loop (4 lines added vs train_controlnet)
     _save_sim_checkpoint()      — saves controlnet + tme_module together
     load_sim_checkpoint()       — restores tme_module from checkpoint
-
-Usage:
-    python  train_controlnet_sim.py <config_path> [--work-dir ...] [--debug ...]
-    accelerate launch train_controlnet_sim.py <config_path>
 """
 # %%
 import os
@@ -51,6 +47,121 @@ from diffusion.utils.dist_utils import get_world_size
 # ── Sim-specific dataset ──────────────────────────────────────────────────────
 from diffusion.data.datasets.sim_controlnet_dataset import SimControlNetData
 
+# ── Helper functions ───────────────────────────────────────────────────────────
+def prepare_controlnet_input(idx, vae=None, scheduler=None, device='cpu'):
+    
+    latent_shape = (1, 16, 32, 32)
+    latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
+    latents = latents * scheduler.init_noise_sigma
+    
+    uni_embeds = torch.from_numpy(np.load(f"../dummy_sim_data/features/TCGA_dummy_{idx:04d}_uni.npy"))
+    #uni_embeds = torch.from_numpy(np.load(f"../data/features_tcga_3660/0_{idx}_uni.npy"))
+    uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
+    mask_path = "../test_mask.png"
+    controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
+    
+    controlnet_input_torch = torch.from_numpy(controlnet_input.copy()/255.).float().to(device)
+    controlnet_input_torch = controlnet_input_torch.permute(2, 0, 1).unsqueeze(0)
+    controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
+    vae_scale = vae.config.scaling_factor
+    vae_shift = getattr(vae.config, "shift_factor", 0)
+    vae.to(device, dtype=controlnet_input_torch.dtype)
+    controlnet_input_latent = vae.encode(controlnet_input_torch.float()).latent_dist.mean
+    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
+    controlnet_input = torch.from_numpy(controlnet_input).float().to(device)
+    return latents, uni_embeds, controlnet_input_latent, controlnet_input
+
+def inference_pretrained_controlnet(controlnet,
+                                    base_model,
+                                    accelerator,
+                                    vae,
+                                    device='cpu'):
+    idx = 3
+    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
+    from diffusers import DPMSolverMultistepScheduler
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(
+        scheduler_folder,
+    )
+    from diffusers import DDPMScheduler
+
+    scheduler = DDPMScheduler(
+        num_train_timesteps=1000,
+        beta_start=0.0001,
+        beta_end=0.02,
+        beta_schedule="linear",
+        prediction_type="epsilon",
+        clip_sample=False,
+    )
+    scheduler.set_timesteps(20, device=device)
+    print(type(scheduler))
+    print(scheduler.config)
+
+    latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx, vae, scheduler, device=accelerator.device)
+    controlnet.eval()
+    base_model.eval()
+    denoised_latents = inference_controlnet.denoise(latents,
+            uni_embeds,
+            controlnet_input_latent,
+            scheduler,
+            controlnet,
+            pixcell_controlnet_model=base_model,
+            guidance_scale=2.5,
+            num_inference_steps=50,
+            conditioning_scale=1.0,
+            device=accelerator.device)
+    hist_image = cv2.imread(f"../data/tcga_3660/0_{idx}.png")
+    hist_image = cv2.cvtColor(hist_image, cv2.COLOR_BGR2RGB)
+    hist_image = Image.fromarray(hist_image)
+    #hist_image = np.zeros_like(hist_image)
+    mask_image = controlnet_input.cpu().numpy()
+    generated_image = inference_controlnet.decode_latents(vae, denoised_latents, hist_image, mask_image, "generated_image.png")
+    return generated_image
+
+def _plot_control_input(config, train_dataloader):
+    for step, batch in enumerate(train_dataloader):
+        clean_images = batch[0]
+        y = batch[1]
+        control_input = batch[2].to('cpu')
+        vae_mask = batch[3]
+        data_info = batch[4]
+        print(f"clean_images.shape: {clean_images.shape}")
+        print(f"y.shape: {y.shape}")
+        print(f"control_input.shape: {control_input.shape}")
+        print(f"vae_mask.shape: {vae_mask.shape}")
+        print(f"sim_idx = {data_info['sim_idx'].to('cpu')}")
+        print('--------------------------------')
+        
+        fig, ax = plt.subplots(2, control_input.shape[1], figsize=(10, 5))
+        channel_names = config.data.active_channels
+        
+        for i in range(control_input.shape[1]):
+            print(f"{channel_names[i]}: range = {control_input[0, i, :, :].min()}, {control_input[0, i, :, :].max()}")
+            ax[0, i].imshow(control_input[0, i, :, :], cmap='gray')
+            ax[0, i].set_title(channel_names[i])
+            if i == 0:
+                ax[0, i].set_ylabel("from dataloader", fontsize=12)
+            image_file_name = f"sim_{data_info['sim_idx'].to('cpu')[0]:04d}_*.png"
+            file = glob.glob(f"{config.sim_data_root}/sim_channels/{channel_names[i]}/{image_file_name}")
+            image = f"{file[0]}"
+            image = Image.open(image)
+            image = image.resize((256, 256))
+            image = np.array(image)
+            # if range is not [0, 1], normalize image to [0, 1]
+            if image.min() != 0 or image.max() != 1:
+                image = image / 255.0
+            print(f"{channel_names[i]}: range = {image.min()}, {image.max()}")
+            ax[1, i].imshow(image, cmap='gray')
+            if i == 0:
+                ax[1, i].set_ylabel("direct load", fontsize=12)
+            ax[0, i].set_xticks([])
+            ax[0, i].set_yticks([])
+
+            ax[1, i].set_xticks([])
+            ax[1, i].set_yticks([])
+        plt.tight_layout()
+        plt.show()
+        break
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1.  Sim-specific initialization
@@ -83,10 +194,8 @@ def initialize_sim_training(config, accelerator, logger, controlnet):
     Returns dict with:
         train_dataloader,
         tme_module,
-        optimizer,         ← controlnet optimizer
-        optimizer_tme,
-        lr_scheduler,      ← controlnet scheduler
-        lr_scheduler_tme,
+        optimizer,         ← combined optimizer (2 param groups: controlnet + tme_module)
+        lr_scheduler,
     """
     active_channels = getattr(config, "active_channels",
                               ["cell_mask", "oxygen", "glucose", "tgf"])
@@ -117,31 +226,61 @@ def initialize_sim_training(config, accelerator, logger, controlnet):
         n_tme_channels=n_tme_channels,
         base_ch=getattr(config, "tme_base_ch", 32),
     )
+    tme_module.to(accelerator.device)
     logger.info(
         f"[TMEConditioningModule] n_tme_channels={n_tme_channels}  "
         f"trainable params="
         f"{sum(p.numel() for p in tme_module.parameters() if p.requires_grad):,}"
     )
+    # ── Combined optimizer: two param groups, one optimizer, one scheduler ──────
+    # param_groups in config lets each model have its own lr (and any other
+    # per-group overrides). Falls back to a single default lr if not specified.
+    #
+    # Config example:
+    #   optimizer = dict(
+    #       type='AdamW', lr=1e-5, weight_decay=0.0, betas=(0.9,0.999), eps=1e-8,
+    #       param_groups=[
+    #           {"name": "controlnet", "lr": 1e-5},
+    #           {"name": "tme_module",  "lr": 1e-4},
+    #       ],
+    #   )
+    opt_cfg   = config.optimizer
+    default_lr = opt_cfg.get('lr', 1e-5)
+    models_by_name = {"controlnet": controlnet, "tme_module": tme_module}
 
-    # ── ControlNet optimizer (same logic as initialize_dataset_and_optimizer) ─
-    optimizer    = build_optimizer(controlnet, config.optimizer)
+    raw_groups = opt_cfg.get('param_groups', None)
+    if raw_groups:
+        # Config-driven: one entry per named model, inherits base lr if not overridden
+        param_groups = [
+            {
+                "params": list(models_by_name[g['name']].parameters()),
+                **{k: v for k, v in g.items() if k != 'name'},   # lr + any overrides
+                "name": g['name'],
+            }
+            for g in raw_groups
+        ]
+    else:
+        # Fallback: both groups use the same lr (old behaviour)
+        tme_lr = getattr(config, "tme_lr", default_lr)
+        param_groups = [
+            {"params": list(controlnet.parameters()), "lr": default_lr, "name": "controlnet"},
+            {"params": list(tme_module.parameters()),  "lr": tme_lr,    "name": "tme_module"},
+        ]
+
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        weight_decay=opt_cfg.get("weight_decay", 0.0),
+        betas=opt_cfg.get("betas", (0.9, 0.999)),
+        eps=opt_cfg.get("eps", 1e-8),
+    )
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio=1)
-
-    # ── TME optimizer — same type as controlnet, optionally different lr ──────
-    tme_optimizer_cfg        = deepcopy(config.optimizer)
-    tme_optimizer_cfg['lr']  = getattr(config, "tme_lr", config.optimizer.get('lr', 1e-4))
-    optimizer_tme    = build_optimizer(tme_module, tme_optimizer_cfg)
-    lr_scheduler_tme = build_lr_scheduler(config, optimizer_tme, train_dataloader, lr_scale_ratio=1)
 
     return {
         "train_dataloader": train_dataloader,
         "tme_module":        tme_module,
         "optimizer":         optimizer,
-        "optimizer_tme":     optimizer_tme,
         "lr_scheduler":      lr_scheduler,
-        "lr_scheduler_tme":  lr_scheduler_tme,
     }
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2.  Training loop
@@ -172,10 +311,7 @@ def train_controlnet_sim(models_dict):
     skip_step         = models_dict['skip_step']
     total_steps       = models_dict['total_steps']
 
-    # <- NEW
-    tme_module        = models_dict['tme_module']
-    optimizer_tme     = models_dict['optimizer_tme']
-    lr_scheduler_tme  = models_dict['lr_scheduler_tme']
+    tme_module        = models_dict['tme_module']   # param group 1 of optimizer
 
     controlnet.train()
     for param in controlnet.parameters():
@@ -239,12 +375,11 @@ def train_controlnet_sim(models_dict):
             tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
             vae_mask     = tme_module(vae_mask.to(dtype=tme_dtype), tme_channels)
             vae_mask     = vae_mask.float()                      # back to fp32 for loss
-            # <- END NEW
+            
 
             # 3. Training step
             with accelerator.accumulate(controlnet, tme_module):   # <- CHANGED
                 optimizer.zero_grad()
-                optimizer_tme.zero_grad()   # <- NEW
 
                 model_kwargs = dict(
                     y=y, mask=None, data_info=data_info, control_input=vae_mask,
@@ -272,7 +407,7 @@ def train_controlnet_sim(models_dict):
                     print(f"vae_mask.max(): {vae_mask.max()}")
                     print(f"vae_mask.norm(): {torch.norm(vae_mask, p=2).item()}")
                     print('--------------------------------')
-                    #asd()
+                    asd()
                 loss_term = training_losses_controlnet(
                     diffusion=train_diffusion,
                     controlnet=controlnet,
@@ -286,13 +421,12 @@ def train_controlnet_sim(models_dict):
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
+                    accelerator.clip_grad_norm_(
+                        list(controlnet.parameters()) + list(tme_module.parameters()),
+                        config.gradient_clip,
+                    )
                     optimizer.step()
                     lr_scheduler.step()
-                    # <- NEW
-                    accelerator.clip_grad_norm_(tme_module.parameters(), config.gradient_clip)
-                    optimizer_tme.step()
-                    lr_scheduler_tme.step()
 
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
@@ -310,7 +444,7 @@ def train_controlnet_sim(models_dict):
                         f"Step [{global_step}/{total_steps}] "
                         f"Loss: {loss.item():.4f} "
                         f"LR_ctrl: {optimizer.param_groups[0]['lr']:.2e} "
-                        f"LR_tme:  {optimizer_tme.param_groups[0]['lr']:.2e} "  # <- NEW
+                        f"LR_tme:  {optimizer.param_groups[1]['lr']:.2e} "
                         f"Samples/s: {samples_per_sec:.2f}"
                     )
                     last_tic = time.time()
@@ -318,7 +452,7 @@ def train_controlnet_sim(models_dict):
                 if global_step % config.save_model_steps == 0:
                     _save_sim_checkpoint(
                         accelerator, controlnet, tme_module, model_ema,
-                        optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,
+                        optimizer, lr_scheduler,
                         global_step, epoch, config, logger,
                     )
 
@@ -329,7 +463,7 @@ def train_controlnet_sim(models_dict):
         if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
             _save_sim_checkpoint(
                 accelerator, controlnet, tme_module, model_ema,
-                optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,
+                optimizer, lr_scheduler,
                 global_step, epoch, config, logger,
             )
 
@@ -347,7 +481,7 @@ def train_controlnet_sim(models_dict):
 
 def _save_sim_checkpoint(
     accelerator, controlnet, tme_module, model_ema,
-    optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,
+    optimizer, lr_scheduler,
     step, epoch, config, logger,
 ):
     """Save controlnet (existing format) + tme_module side-by-side."""
@@ -368,23 +502,22 @@ def _save_sim_checkpoint(
                 "step":        step,
                 "epoch":       epoch,
                 "model_state": accelerator.unwrap_model(tme_module).state_dict(),
-                "optim_state": optimizer_tme.state_dict(),
-                "sched_state": lr_scheduler_tme.state_dict(),
+                "optim_state": optimizer.state_dict(),      # shared optimizer
+                "sched_state": lr_scheduler.state_dict(),   # shared scheduler
             },
             os.path.join(ckpt_dir, "tme_module.pth"),
         )
         logger.info(f"Saved checkpoint step={step} → {ckpt_dir}")
 
-
-def load_sim_checkpoint(ckpt_dir, tme_module, optimizer_tme=None,
-                        lr_scheduler_tme=None, device="cpu"):
-    """Load TME module weights (+ optionally optimizer/scheduler) from checkpoint."""
+def load_sim_checkpoint(ckpt_dir, tme_module, optimizer=None,
+                        lr_scheduler=None, device="cpu"):
+    """Load TME module weights (+ optionally shared optimizer/scheduler) from checkpoint."""
     ckpt = torch.load(os.path.join(ckpt_dir, "tme_module.pth"), map_location=device)
     tme_module.load_state_dict(ckpt["model_state"])
-    if optimizer_tme is not None:
-        optimizer_tme.load_state_dict(ckpt["optim_state"])
-    if lr_scheduler_tme is not None:
-        lr_scheduler_tme.load_state_dict(ckpt["sched_state"])
+    if optimizer is not None:
+        optimizer.load_state_dict(ckpt["optim_state"])
+    if lr_scheduler is not None:
+        lr_scheduler.load_state_dict(ckpt["sched_state"])
     return ckpt["step"]
 
 
@@ -464,20 +597,16 @@ def main():
     sim_data         = initialize_sim_training(config, accelerator, logger, controlnet)
     train_dataloader = sim_data['train_dataloader']
     tme_module       = sim_data['tme_module']
-    optimizer        = sim_data['optimizer']
-    optimizer_tme    = sim_data['optimizer_tme']
+    optimizer        = sim_data['optimizer']        # combined: controlnet + tme param groups
     lr_scheduler     = sim_data['lr_scheduler']
-    lr_scheduler_tme = sim_data['lr_scheduler_tme']
     # %%
     # Prepare everything with accelerator
     (
         base_model, controlnet, model_ema,
         optimizer, train_dataloader, lr_scheduler,
-        tme_module, optimizer_tme,
     ) = accelerator.prepare(
         base_model, controlnet, model_ema,
         optimizer, train_dataloader, lr_scheduler,
-        tme_module, optimizer_tme,
     )
 
     # Setup epoch/step counters; optionally resume controlnet checkpoint
@@ -490,7 +619,7 @@ def main():
     tme_ckpt = getattr(config, "resume_tme_checkpoint", None)
     if tme_ckpt:
         step = load_sim_checkpoint(
-            tme_ckpt, tme_module, optimizer_tme, lr_scheduler_tme,
+            tme_ckpt, tme_module, optimizer, lr_scheduler,
             device=accelerator.device,
         )
         logger.info(f"Resumed TME module from step {step} ({tme_ckpt})")
@@ -510,8 +639,6 @@ def main():
         'logger':            logger,
         'args':              args,
         'tme_module':        tme_module,
-        'optimizer_tme':     optimizer_tme,
-        'lr_scheduler_tme':  lr_scheduler_tme,
         **state_data,
     }
     # %%
@@ -526,121 +653,10 @@ def main():
         print(f"Absolute max weight value: {max_val:.20f}")
     # %%
     _plot_control_input(config, train_dataloader)
-    # %%
-    idx = 300
-    scheduler_folder = "../pretrained_models/pixcell-256/scheduler/"
-    from diffusers import DPMSolverMultistepScheduler
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(
-        scheduler_folder,
-    )
-    from diffusers import DDPMScheduler
-
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(20, device=accelerator.device)
-    print(type(scheduler))
-    print(scheduler.config)
-
-    latents, uni_embeds, controlnet_input_latent, controlnet_input = prepare_controlnet_input(idx, vae, scheduler, device=accelerator.device)
-    # %%
-    controlnet.eval()
-    base_model.eval()
-    denoised_latents = inference_controlnet.denoise(latents,
-            uni_embeds,
-            controlnet_input_latent,
-            scheduler,
-            controlnet,
-            pixcell_controlnet_model=base_model,
-            guidance_scale=2.5,
-            num_inference_steps=50,
-            conditioning_scale=1.0,
-            device=accelerator.device)
-    # %%
-    hist_image = cv2.imread(f"../data/tcga_3660/0_{idx}.png")
-    hist_image = cv2.cvtColor(hist_image, cv2.COLOR_BGR2RGB)
-    hist_image = Image.fromarray(hist_image)
-    #hist_image = np.zeros_like(hist_image)
-    mask_image = controlnet_input.cpu().numpy()
-    generated_image = inference_controlnet.decode_latents(vae, denoised_latents, hist_image, mask_image, "generated_image.png")
-
+    generated_image = inference_pretrained_controlnet(controlnet, base_model, accelerator, vae)
     # %%
     train_controlnet_sim(models)
-# %%
 
-def prepare_controlnet_input(idx, vae=None, scheduler=None, device='cpu'):
-    
-    latent_shape = (1, 16, 32, 32)
-    latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
-    latents = latents * scheduler.init_noise_sigma
-    
-    #uni_embeds = torch.from_numpy(np.load(f"../dummy_sim_data/features/TCGA_dummy_{idx:04d}_uni.npy"))
-    uni_embeds = torch.from_numpy(np.load(f"../data/features_tcga_3660/0_{idx}_uni.npy"))
-    uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    mask_path = "../test_mask.png"
-    controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
-    
-    controlnet_input_torch = torch.from_numpy(controlnet_input.copy()/255.).float().to(device)
-    controlnet_input_torch = controlnet_input_torch.permute(2, 0, 1).unsqueeze(0)
-    controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
-    vae_scale = vae.config.scaling_factor
-    vae_shift = getattr(vae.config, "shift_factor", 0)
-    vae.to(device, dtype=controlnet_input_torch.dtype)
-    controlnet_input_latent = vae.encode(controlnet_input_torch.float()).latent_dist.mean
-    controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-    controlnet_input = torch.from_numpy(controlnet_input).float().to(device)
-    return latents, uni_embeds, controlnet_input_latent, controlnet_input
-
-
-def _plot_control_input(config, train_dataloader):
-    for step, batch in enumerate(train_dataloader):
-        clean_images = batch[0]
-        y = batch[1]
-        control_input = batch[2].to('cpu')
-        vae_mask = batch[3]
-        data_info = batch[4]
-        print(f"clean_images.shape: {clean_images.shape}")
-        print(f"y.shape: {y.shape}")
-        print(f"control_input.shape: {control_input.shape}")
-        print(f"vae_mask.shape: {vae_mask.shape}")
-        print(f"sim_idx = {data_info['sim_idx'].to('cpu')}")
-        print('--------------------------------')
-        
-        fig, ax = plt.subplots(2, control_input.shape[1], figsize=(10, 5))
-        channel_names = config.data.active_channels
-        
-        for i in range(control_input.shape[1]):
-            print(f"{channel_names[i]}: range = {control_input[0, i, :, :].min()}, {control_input[0, i, :, :].max()}")
-            ax[0, i].imshow(control_input[0, i, :, :], cmap='gray')
-            ax[0, i].set_title(channel_names[i])
-            if i == 0:
-                ax[0, i].set_ylabel("from dataloader", fontsize=12)
-            image_file_name = f"sim_{data_info['sim_idx'].to('cpu')[0]:04d}_*.png"
-            file = glob.glob(f"{config.sim_data_root}/sim_channels/{channel_names[i]}/{image_file_name}")
-            image = f"{file[0]}"
-            image = Image.open(image)
-            image = image.resize((256, 256))
-            image = np.array(image)
-            # if range is not [0, 1], normalize image to [0, 1]
-            if image.min() != 0 or image.max() != 1:
-                image = image / 255.0
-            print(f"{channel_names[i]}: range = {image.min()}, {image.max()}")
-            ax[1, i].imshow(image, cmap='gray')
-            if i == 0:
-                ax[1, i].set_ylabel("direct load", fontsize=12)
-            ax[0, i].set_xticks([])
-            ax[0, i].set_yticks([])
-
-            ax[1, i].set_xticks([])
-            ax[1, i].set_yticks([])
-        plt.tight_layout()
-        plt.show()
-        break
 # %%
 
 if __name__ == "__main__":
