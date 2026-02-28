@@ -378,10 +378,17 @@ class SimControlNetData(Dataset):
         data_info = {
             "img_hw":       torch.tensor([self.resolution] * 2, dtype=torch.float32),
             "aspect_ratio": torch.tensor(1.0),
+            "sim_idx": torch.tensor(idx, dtype=torch.int64),
         }
 
         return vae_feat, ssl_feat, ctrl_tensor, vae_mask, data_info
-
+    
+    def get_ids(self, idx: int) -> dict[str, str]:
+        """Debug helper: return IDs for a given dataset index (no tensors)."""
+        sim_id = self.sim_ids[idx]
+        # reproduce the same real_idx draw as __getitem__ would do (deterministic if you want)
+        # simplest: just return sim_id and let caller sample a real_id if needed
+        return {"sim_id": sim_id}
 
 # ── Index builders (run once before training) ──────────────────────────────────
 
