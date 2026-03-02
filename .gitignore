@@ -17,8 +17,11 @@
 *.hdf5
 *.log
 *.geojson
+prpm.lock
 pretrained_models/
 checkpoints/
+.claude/
+
 __pycache__/
 # Editors
 .vscode/
