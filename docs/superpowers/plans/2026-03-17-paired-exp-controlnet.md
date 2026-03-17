@@ -1165,7 +1165,7 @@ git commit -m "feat: add paired-exp training loop with CFG dropout and channel r
 | Action | Path |
 |---|---|
 | Modify | `train_scripts/inference_controlnet.py` |
-| Create | `tools/validate_sim_to_exp.py` |
+| Create | `validate_sim_to_exp.py` |
 | Create | `tests/test_validate_sim_to_exp.py` |
 
 ---
@@ -1245,9 +1245,9 @@ Append to `tests/test_validate_sim_to_exp.py`:
 ```python
 def test_cosine_similarity_range():
     """cosine_similarity values must be in [-1, 1]."""
-    from tools.validate_sim_to_exp import cosine_similarity_matrix
-    a = torch.randn(10, 1152)
-    b = torch.randn(10, 1152)
+    from validate_sim_to_exp import cosine_similarity_matrix
+    a = torch.randn(10, 1536)
+    b = torch.randn(10, 1536)
     sims = cosine_similarity_matrix(a, b)
     assert sims.shape == (10,), f"Got {sims.shape}"
     assert torch.all(sims >= -1.0) and torch.all(sims <= 1.0)
@@ -1255,8 +1255,8 @@ def test_cosine_similarity_range():
 
 def test_cosine_similarity_identical():
     """Identical vectors should give similarity 1.0."""
-    from tools.validate_sim_to_exp import cosine_similarity_matrix
-    a = torch.randn(5, 1152)
+    from validate_sim_to_exp import cosine_similarity_matrix
+    a = torch.randn(5, 1536)
     sims = cosine_similarity_matrix(a, a)
     assert torch.allclose(sims, torch.ones(5), atol=1e-5)
 ```
@@ -1271,30 +1271,32 @@ Expected: `ImportError`
 
 - [ ] **Step 8.3 — Implement `validate_sim_to_exp.py`**
 
+`UNI2hExtractor` from `extract_features.py` (root) outputs `[1536]` vectors — used here to extract features from generated H&E images on-the-fly. Precomputed exp target features (also `[1536]`) live in `exp_feat_dir/`.
+
 ```python
-# tools/validate_sim_to_exp.py
+# validate_sim_to_exp.py
 """
 validate_sim_to_exp.py — Simulation-to-experiment validation pipeline.
 
 For each simulation snapshot, generates an H&E tile in the experimental domain
-using the trained PixCellControlNet. Compares generated tiles to experimental
-targets in UNI feature space.
+using the trained PixCellControlNet, extracts UNI-2h features from the generated
+image, and compares to precomputed experimental target UNI features.
 
 Usage:
-    python tools/validate_sim_to_exp.py \\
-        --config    configs/config_controlnet_exp.py \\
-        --sim-root  /path/to/sim_data_root \\
-        --exp-feat  /path/to/exp_features_dir \\
+    python validate_sim_to_exp.py \\
+        --config          configs/config_controlnet_exp.py \\
+        --sim-root        /path/to/sim_data_root \\
+        --exp-feat        /path/to/exp_features_dir \\
         --controlnet-ckpt /path/to/controlnet.pth \\
         --tme-ckpt        /path/to/tme_module.pth \\
-        [--reference-uni  /path/to/reference_uni.npy]  # optional style ref
+        --uni-model       ./pretrained_models/uni-2h \\
+        [--reference-uni  /path/to/reference_uni.npy]
         [--output-dir     ./validation_output]
         [--n-tiles        50]
         [--guidance-scale 2.5]
         [--device         cuda]
 """
 import argparse
-import os
 from pathlib import Path
 
 import numpy as np
@@ -1308,14 +1310,12 @@ from train_scripts.inference_controlnet import (
     load_vae,
     null_uni_embed,
     denoise,
-    decode_latents,
     load_controlnet_model_from_checkpoint,
 )
 from diffusion.model.builder import build_model
 from train_scripts.train_controlnet_sim import load_sim_checkpoint
-from diffusion.data.datasets.sim_controlnet_dataset import (
-    SimControlNetData, _load_spatial_file, _find_file
-)
+from diffusion.data.datasets.sim_controlnet_dataset import _load_spatial_file, _find_file
+from extract_features import UNI2hExtractor
 
 
 # ── Core metric ───────────────────────────────────────────────────────────────
@@ -1332,7 +1332,7 @@ def cosine_similarity_matrix(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return (a_norm * b_norm).sum(dim=1)
 
 
-# ── Channel loader (reuses sim dataset helpers) ───────────────────────────────
+# ── Channel loader ────────────────────────────────────────────────────────────
 
 def load_sim_ctrl_tensor(
     sim_root: Path,
@@ -1341,19 +1341,14 @@ def load_sim_ctrl_tensor(
     resolution: int = 256,
 ) -> torch.Tensor:
     """Load a single sim snapshot's TME channels → [C, H, W]."""
-    from diffusion.data.datasets.sim_controlnet_dataset import (
-        _BINARY_CHANNELS as SIM_BINARY,
-    )
-    from diffusion.data.datasets.paired_exp_controlnet_dataset import (
-        _BINARY_CHANNELS as EXP_BINARY,
-    )
-    binary_set = SIM_BINARY | EXP_BINARY   # union covers both formats
+    from diffusion.data.datasets.sim_controlnet_dataset import _BINARY_CHANNELS as SIM_BINARY
+    from diffusion.data.datasets.paired_exp_controlnet_dataset import _BINARY_CHANNELS as EXP_BINARY
+    binary_set = SIM_BINARY | EXP_BINARY
     planes = []
     for ch in active_channels:
         ch_dir = sim_root / "sim_channels" / ch
         fpath  = _find_file(ch_dir, sim_id)
-        arr    = _load_spatial_file(fpath, resolution=resolution,
-                                    binary=(ch in binary_set))
+        arr    = _load_spatial_file(fpath, resolution=resolution, binary=(ch in binary_set))
         planes.append(arr)
     return torch.from_numpy(np.stack(planes, axis=0))
 
@@ -1370,18 +1365,19 @@ def run_validation(
     tme_module,
     vae,
     scheduler,
-    uni_embeds: torch.Tensor,   # [1,1,1,1536] — null or reference
+    uni_extractor: UNI2hExtractor,
+    uni_embeds: torch.Tensor,      # [1,1,1,1536] — null or reference style
     guidance_scale: float,
     device: str,
     output_dir: Path | None,
 ) -> dict:
     """
-    Generate H&E from sim TME channels and compare to exp target features.
+    Generate H&E from sim TME, extract UNI features, compare to exp targets.
 
     Returns dict with keys:
-        cosine_similarities  : list[float]   per-tile
-        mean_cosine_sim      : float
-        std_cosine_sim       : float
+        cosine_similarities : list[float]  per-tile cosine sim in UNI space
+        mean_cosine_sim     : float
+        std_cosine_sim      : float
     """
     active_channels = config.data.active_channels
     vae_scale = config.scale_factor
@@ -1393,12 +1389,12 @@ def run_validation(
         output_dir.mkdir(parents=True, exist_ok=True)
 
     for sim_id in sim_ids:
-        # Load sim TME channels
+        # 1. Load sim TME channels
         ctrl_full = load_sim_ctrl_tensor(
             sim_root, sim_id, active_channels, resolution=config.image_size
         )
 
-        # VAE-encode cell_mask (channel 0)
+        # 2. VAE-encode cell_mask (channel 0) for ControlNet conditioning
         cell_mask_img = ctrl_full[0:1].unsqueeze(0).repeat(1, 3, 1, 1)  # [1,3,H,W]
         cell_mask_img = 2 * (cell_mask_img - 0.5)
         with torch.no_grad():
@@ -1407,16 +1403,15 @@ def run_validation(
             ).latent_dist.mean
             vae_mask = (vae_mask - vae_shift) * vae_scale
 
-        # TME channels [B, C-1, H, W] — no weighting at inference
+        # 3. Fuse TME channels via TMEConditioningModule (no weight attenuation at inference)
         tme_channels = ctrl_full[1:].unsqueeze(0).to(device, dtype=dtype)
         with torch.no_grad():
             fused_cond = tme_module(vae_mask.to(dtype), tme_channels)
 
-        # Denoising
+        # 4. Denoise
         latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
         latents = torch.randn(latent_shape, device=device, dtype=dtype)
         latents = latents * scheduler.init_noise_sigma
-
         denoised = denoise(
             latents=latents,
             uni_embeds=uni_embeds.to(device, dtype=dtype),
@@ -1428,7 +1423,7 @@ def run_validation(
             device=device,
         )
 
-        # Decode to image
+        # 5. Decode to RGB image
         with torch.no_grad():
             gen_img = vae.decode(
                 (denoised.float() / vae_scale) + vae_shift, return_dict=False
@@ -1439,19 +1434,21 @@ def run_validation(
         if output_dir:
             Image.fromarray(gen_np).save(output_dir / f"{sim_id}_generated.png")
 
-        # Extract UNI features from generated image (if UNI model available)
-        # For now, load precomputed exp target features and compare
+        # 6. Extract UNI features from generated H&E
+        gen_feat_np = uni_extractor.extract(gen_np)          # [1536] float32 ndarray
+        gen_feat    = torch.from_numpy(gen_feat_np).unsqueeze(0)  # [1, 1536]
+
+        # 7. Load precomputed exp target UNI features
         exp_feat_path = exp_feat_dir / f"{sim_id}_uni.npy"
         if not exp_feat_path.exists():
             print(f"[WARN] No exp feat for {sim_id}, skipping.")
             continue
-        exp_feat = torch.from_numpy(np.load(exp_feat_path)).unsqueeze(0)  # [1, 1152]
+        exp_feat = torch.from_numpy(np.load(exp_feat_path)).unsqueeze(0)  # [1, 1536]
 
-        # Placeholder: if you run UNI extractor on gen_np, replace this line
-        # gen_feat = extract_uni_features(gen_np)
-        # For now, report that exp_feat was loaded
-        print(f"  {sim_id}: exp_feat loaded, shape={exp_feat.shape}")
-        # cosine_sims.append(cosine_similarity_matrix(gen_feat, exp_feat).item())
+        # 8. Cosine similarity in UNI feature space
+        sim_val = cosine_similarity_matrix(gen_feat, exp_feat).item()
+        cosine_sims.append(sim_val)
+        print(f"  {sim_id}: cosine_sim={sim_val:.4f}")
 
     return {
         "cosine_similarities": cosine_sims,
@@ -1469,9 +1466,11 @@ def main():
     parser.add_argument("--exp-feat",         required=True, help="Dir of *_uni.npy exp targets")
     parser.add_argument("--controlnet-ckpt",  required=True)
     parser.add_argument("--tme-ckpt",         required=True)
+    parser.add_argument("--uni-model",        default="./pretrained_models/uni-2h",
+                        help="Path to UNI-2h model dir (default: ./pretrained_models/uni-2h)")
     parser.add_argument("--reference-uni",    default=None,  help="Optional reference H&E UNI .npy")
     parser.add_argument("--output-dir",       default=None)
-    parser.add_argument("--n-tiles",          type=int, default=50)
+    parser.add_argument("--n-tiles",          type=int,   default=50)
     parser.add_argument("--guidance-scale",   type=float, default=2.5)
     parser.add_argument("--device",           default="cuda")
     args = parser.parse_args()
@@ -1479,12 +1478,12 @@ def main():
     config = read_config(args.config)
     device = args.device
 
-    # Load models
-    vae = load_vae(config.vae_pretrained, device)
-    controlnet = load_controlnet_model_from_checkpoint(
-        args.config, args.controlnet_ckpt, device
-    )
-    base_model = ...   # load via initialize_models or load_pixcell_controlnet_model_from_checkpoint
+    vae        = load_vae(config.vae_pretrained, device)
+    controlnet = load_controlnet_model_from_checkpoint(args.config, args.controlnet_ckpt, device)
+
+    from train_scripts.inference_controlnet import load_pixcell_controlnet_model_from_checkpoint
+    base_model = load_pixcell_controlnet_model_from_checkpoint(args.config, args.controlnet_ckpt)
+    base_model.to(device).eval()
 
     n_tme_channels = len(config.data.active_channels) - 1
     tme_module = build_model(
@@ -1495,25 +1494,23 @@ def main():
     load_sim_checkpoint(args.tme_ckpt, tme_module, device=device)
     tme_module.to(device).eval()
 
+    uni_extractor = UNI2hExtractor(model_path=args.uni_model, device=device)
+
     scheduler = DDPMScheduler(
         num_train_timesteps=1000, beta_start=0.0001, beta_end=0.02,
         beta_schedule="linear", prediction_type="epsilon", clip_sample=False,
     )
     scheduler.set_timesteps(50, device=device)
 
-    # UNI embed: null (TME-only) or from reference
     if args.reference_uni:
         ref = np.load(args.reference_uni)
         uni_embeds = torch.from_numpy(ref).view(1, 1, 1, 1536)
     else:
         uni_embeds = null_uni_embed(device=device, dtype=torch.float16)
 
-    # Get sim IDs from dataset index
     from diffusion.data.datasets.sim_controlnet_dataset import SimControlNetData
-    ds = SimControlNetData(
-        root=args.sim_root, resolution=config.image_size,
-        active_channels=config.data.active_channels,
-    )
+    ds      = SimControlNetData(root=args.sim_root, resolution=config.image_size,
+                                active_channels=config.data.active_channels)
     sim_ids = ds.sim_ids[: args.n_tiles]
 
     results = run_validation(
@@ -1526,6 +1523,7 @@ def main():
         tme_module=tme_module,
         vae=vae,
         scheduler=scheduler,
+        uni_extractor=uni_extractor,
         uni_embeds=uni_embeds,
         guidance_scale=args.guidance_scale,
         device=device,
@@ -1554,7 +1552,7 @@ Expected: all 5 tests `PASSED`
 
 ```bash
 git add train_scripts/inference_controlnet.py \
-        tools/validate_sim_to_exp.py \
+        validate_sim_to_exp.py \
         tests/test_validate_sim_to_exp.py
 git commit -m "feat: add null_uni_embed helper and sim-to-exp validation pipeline"
 ```
@@ -1568,3 +1566,4 @@ git commit -m "feat: add null_uni_embed helper and sim-to-exp validation pipelin
 - [ ] Training script imports cleanly: `python -c "from train_scripts.train_controlnet_exp import train_controlnet_exp; print('OK')"`
 - [ ] `build_exp_index` documented in dataset file for data prep
 - [ ] `channel_reliability_weights` in config matches `active_channels` order (9 weights for 9 tme channels)
+- [ ] `validate_sim_to_exp.py` is at repo root (not `tools/`) to match `extract_features.py` placement
