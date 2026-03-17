@@ -15,6 +15,19 @@ from diffusion.model.builder import build_model
 
 import cv2
 
+def null_uni_embed(device='cuda', dtype=torch.float16):
+    """
+    Zero UNI embedding for TME-only (no style reference) inference.
+
+    Pass as `uni_embeds` to `denoise()` to run purely TME-conditioned generation.
+    CFG guidance_scale still applies — higher values increase TME adherence.
+
+    Returns:
+        Tensor shape [1, 1, 1, 1536], all zeros.
+    """
+    return torch.zeros(1, 1, 1, 1536, device=device, dtype=dtype)
+
+
 def load_controlnet_model(module_name, file_path, checkpoints_folder, device='cuda'):
     import importlib.util
     import sys
