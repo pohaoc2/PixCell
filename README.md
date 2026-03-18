@@ -31,6 +31,7 @@ We present PixCell, the first generative foundation model for digital histopatho
 - [🔧 Dependencies and Installation](#-dependencies-and-installation)
 - [📂 Dataset Preparation](#-dataset-preparation)
 - [🚀 Training](#-training)
+- [🧫 TME-Conditioned ControlNet](#-tme-conditioned-controlnet)
 - [🔬 Sampling](#-sampling)
 - [🎨 Virtual Staining](#-virtual-staining)
 - [📦 Model Zoo](#-model-zoo)
@@ -102,7 +103,7 @@ These are stored in the same directory as the images:
 
 Extract features with:
 
-    python tools/extract_features.py --dataset_name tcga_diagnostic --size 256
+    python extract_features.py --dataset_name tcga_diagnostic --size 256
 
 ---
 
@@ -145,13 +146,199 @@ Each stage reuses the weights of the previous resolution, allowing faster conver
 See the config files in `configs/pan_cancer/` for details.
 
 
+## 🧫 TME-Conditioned ControlNet
+
+PixCell-ControlNet extends the base model with multi-channel TME (tumor microenvironment) spatial conditioning. Two training stages are supported:
+
+| Stage | Script | Dataset | Purpose |
+|-------|--------|---------|---------|
+| 1 — Sim pre-training | `train_controlnet_sim.py` | Unpaired sim snapshots + real H&E | Learn spatial layout from simulation |
+| 2 — Exp fine-tuning  | `train_controlnet_exp.py` | Paired CODEX + H&E tiles          | Adapt to real experimental domain |
+
+### Data Structure
+
+#### Stage 1 — Simulation data (unpaired)
+
+```
+sim_data_root/
+├── metadata/
+│   ├── sim_index.hdf5          # HDF5: keys like "sim_256" → list of sim_ids
+│   └── real_index.hdf5         # HDF5: keys like "real_256" → list of tile_ids
+├── sim_channels/               # one sub-folder per TME channel
+│   ├── cell_mask/              # binary PNG  (required)
+│   ├── oxygen/                 # float PNG or NPY  (required)
+│   ├── glucose/                # float PNG or NPY  (optional)
+│   └── tgf/                    # float PNG or NPY  (optional)
+├── features/
+│   └── {tile_id}_uni.npy       # UNI-2h embedding, shape [1536]
+└── vae_features/
+    ├── {tile_id}_sd3_vae.npy           # H&E VAE latent, shape [32, H/8, W/8]
+    └── {tile_id}_mask_sd3_vae.npy      # cell_mask VAE latent (optional)
+```
+
+Build the HDF5 index once before training:
+
+```python
+from diffusion.data.datasets.sim_controlnet_dataset import build_sim_index, build_real_index
+build_sim_index("sim_data_root/sim_channels", "sim_data_root/metadata/sim_index.hdf5")
+build_real_index("sim_data_root/features",    "sim_data_root/metadata/real_index.hdf5")
+```
+
+#### Stage 2 — Paired experimental data
+
+```
+exp_data_root/
+├── metadata/
+│   └── exp_index.hdf5          # HDF5: keys like "exp_256" → list of tile_ids
+├── exp_channels/               # one sub-folder per TME channel (same format as sim_channels)
+│   ├── cell_mask/              # binary PNG  (required)
+│   ├── cell_type_healthy/      # binary PNG, one-hot  (required)
+│   ├── cell_type_cancer/       # binary PNG, one-hot  (required)
+│   ├── cell_type_immune/       # binary PNG, one-hot  (required)
+│   ├── cell_state_prolif/      # binary PNG, one-hot  (required)
+│   ├── cell_state_nonprolif/   # binary PNG, one-hot  (required)
+│   ├── cell_state_dead/        # binary PNG, one-hot  (required)
+│   ├── vasculature/            # float PNG  (CODEX-derived, optional)
+│   ├── oxygen/                 # float PNG  (CODEX-derived, optional)
+│   └── glucose/                # float PNG  (CODEX-derived, optional)
+├── features/
+│   └── {tile_id}_uni.npy       # paired UNI-2h embedding, shape [1536]
+└── vae_features/
+    ├── {tile_id}_sd3_vae.npy           # paired H&E VAE latent
+    └── {tile_id}_mask_sd3_vae.npy      # paired cell_mask VAE latent
+```
+
+Build the exp index once:
+
+```python
+from diffusion.data.datasets.paired_exp_controlnet_dataset import build_exp_index
+build_exp_index("exp_data_root/exp_channels", "exp_data_root/metadata/exp_index.hdf5")
+```
+
+### Feature Extraction
+
+Extract UNI-2h embeddings and SD3-VAE latents for all tiles:
+
+```bash
+python extract_features.py --data-root /path/to/data --output-dir /path/to/data/features
+```
+
+### Training
+
+#### Stage 1 — Sim pre-training
+
+```bash
+accelerate launch train_scripts/train_controlnet_sim.py configs/config_controlnet_sim.py \
+    --work-dir checkpoints/pixcell_controlnet_sim
+```
+
+#### Stage 2 — Exp fine-tuning
+
+```bash
+accelerate launch train_scripts/train_controlnet_exp.py configs/config_controlnet_exp.py \
+    --work-dir checkpoints/pixcell_controlnet_exp
+```
+
+**Common CLI options** (both scripts):
+
+| Flag | Description |
+|------|-------------|
+| `--work-dir PATH` | Output directory for logs and checkpoints |
+| `--resume-from PATH` | Resume ControlNet from a checkpoint directory |
+| `--load-from PATH` | Load weights from a specific checkpoint file |
+| `--batch-size N` | Override `train_batch_size` from config |
+| `--report-to tensorboard` | Logging backend (default: `tensorboard`) |
+| `--tracker-project-name NAME` | Project name in the tracker (default: `pixcell_controlnet`) |
+| `--debug` | Enable debug mode (reduced steps) |
+
+To resume from a sim checkpoint when starting exp fine-tuning, set in `configs/config_controlnet_exp.py`:
+
+```python
+resume_from           = "./checkpoints/pixcell_controlnet_sim/checkpoints/step_0050000"
+resume_tme_checkpoint = "./checkpoints/pixcell_controlnet_sim/checkpoints/step_0050000"
+```
+
+**Channel reliability weights** (exp only): approximate CODEX-derived channels (vasculature, oxygen, glucose) are automatically attenuated by 0.5× during training, configured via:
+
+```python
+channel_reliability_weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5]  # in config
+```
+
+### TensorBoard Monitoring
+
+Training logs loss, learning rates, and throughput to TensorBoard. Launch the viewer with:
+
+```bash
+tensorboard --logdir checkpoints/pixcell_controlnet_sim/logs
+# or for exp:
+tensorboard --logdir checkpoints/pixcell_controlnet_exp/logs
+```
+
+Key metrics to watch:
+- `loss` — diffusion MSE loss (should decrease steadily)
+- `lr_ctrl` — ControlNet learning rate
+- `lr_tme` — TME module learning rate
+- `samples_per_sec` — training throughput
+
+### Inference
+
+Two inference modes are supported after training:
+
+**A — Style-conditioned** (reference H&E + TME channels):
+
+```bash
+python train_scripts/inference_controlnet.py \
+    --config configs/config_controlnet_exp.py \
+    --controlnet-ckpt checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000 \
+    --tme-ckpt        checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000 \
+    --reference-uni   path/to/reference_tile_uni.npy \
+    --sim-channels    path/to/sim_channels/
+```
+
+**B — TME-only** (no style reference; uses null UNI embedding):
+
+```python
+from train_scripts.inference_controlnet import null_uni_embed
+uni_embeds = null_uni_embed(device='cuda', dtype=torch.float16)  # shape [1, 1, 1, 1536]
+```
+
+### Validation
+
+Evaluate sim→exp domain alignment using cosine similarity in UNI feature space:
+
+```bash
+python validate_sim_to_exp.py \
+    --config          configs/config_controlnet_exp.py \
+    --sim-root        /path/to/sim_data_root \
+    --exp-feat        /path/to/exp_features_dir \
+    --controlnet-ckpt /path/to/checkpoint_dir \
+    --tme-ckpt        /path/to/checkpoint_dir \
+    --uni-model       ./pretrained_models/uni-2h \
+    --n-tiles         50 \
+    --guidance-scale  2.5 \
+    --output-dir      ./validation_output
+```
+
+Output:
+```
+  snap_0001: cosine_sim=0.7821
+  snap_0002: cosine_sim=0.7543
+  ...
+=== Validation Results ===
+N tiles:          50
+Mean cosine sim:  0.771
+Std cosine sim:   0.032
+```
+
+---
+
 ## 🔬 Sampling
 
 We provide sampling scripts for generating 256×256 (PixCell-256) and 1024×1024 (PixCell-1024) patches.
 
 Example for 256×256 generation:
 
-    python tools/sample_256.py \
+    python sample_256.py \
         --workdir /path/to/workdir \
         --checkpoint checkpoints/last_ema.ckpt \
         --out_dir samples_256 \
@@ -169,7 +356,7 @@ Outputs:
 
 Using our [CVPR24 Large image generation](https://histodiffusion.github.io/docs/projects/large_image/) algorithm, we can generate 4K×4K images:
 
-    python tools/sample_4k.py \
+    python sample_4k.py \
         --output_dir samples_4k \
         --num_samples 100 \
         --num_timesteps 20 \
