@@ -23,11 +23,14 @@ This project fine-tunes [PixCell-256](https://huggingface.co/StonyBrook-CVLab/Pi
 ## Contents
 
 - [🔧 Installation](#-installation)
-- [📂 Data Preparation](#-data-preparation)
-- [🚀 Training](#-training)
+- [🗺️ Pipeline Overview](#️-pipeline-overview)
+- [Stage 0 — Model Setup](#stage-0--model-setup)
+- [Stage 1 — Feature Extraction](#stage-1--feature-extraction)
+- [Stage 2 — Training](#stage-2--training)
+- [Stage 3 — Inference](#stage-3--inference)
 - [📊 Monitoring](#-monitoring)
-- [🔬 Inference](#-inference)
 - [✅ Validation](#-validation)
+- [📂 Data Reference](#-data-reference)
 - [📦 Pretrained Weights](#-pretrained-weights)
 
 ---
@@ -42,126 +45,137 @@ bash setup.sh
 
 ---
 
-## 📂 Data Preparation
+## 🗺️ Pipeline Overview
 
-### ORION-CRC data
-
-Download the ORION-CRC dataset from [labsyspharm/orion-crc](https://github.com/labsyspharm/orion-crc/tree/main). The pipeline expects each tile to have:
-- An H&E image (or pre-extracted VAE latent)
-- Registered CODEX-derived TME channels at the same spatial coordinates
-
-### Channel layout
-
-| Channel | Source | Type | Weight |
-|---------|--------|------|--------|
-| `cell_mask` | Cell segmentation | Binary | — |
-| `cell_type_healthy` | CODEX cell typing | Binary one-hot | 1.0 |
-| `cell_type_cancer` | CODEX cell typing | Binary one-hot | 1.0 |
-| `cell_type_immune` | CODEX cell typing | Binary one-hot | 1.0 |
-| `cell_state_prolif` | CODEX cell state | Binary one-hot | 1.0 |
-| `cell_state_nonprolif` | CODEX cell state | Binary one-hot | 1.0 |
-| `cell_state_dead` | CODEX cell state | Binary one-hot | 1.0 |
-| `vasculature` | CD31 (CODEX) | Float [0,1] | 0.5 |
-| `oxygen` | Metabolic model | Float [0,1] | 0.5 |
-| `glucose` | Metabolic model | Float [0,1] | 0.5 |
-
-Approximate channels (vasculature, oxygen, glucose) are attenuated by 0.5× during training to account for registration uncertainty.
-
-### Directory layout
+The pipeline is divided into four sequential stages:
 
 ```
-exp_data_root/
-├── metadata/
-│   └── exp_index.hdf5              # HDF5: "exp_256" → list of tile_ids
-├── exp_channels/                   # one sub-folder per channel
-│   ├── cell_mask/
-│   │   └── {tile_id}.png           # binary PNG {0, 255}
-│   ├── cell_type_healthy/
-│   │   └── {tile_id}.png           # binary PNG {0, 255}
-│   ├── cell_type_cancer/
-│   ├── cell_type_immune/
-│   ├── cell_state_prolif/
-│   ├── cell_state_nonprolif/
-│   ├── cell_state_dead/
-│   ├── vasculature/
-│   │   └── {tile_id}.png           # grayscale float PNG
-│   ├── oxygen/
-│   └── glucose/
-├── features/
-│   └── {tile_id}_uni.npy           # UNI-2h embedding, shape [1536]
-└── vae_features/
-    ├── {tile_id}_sd3_vae.npy       # SD3-VAE latent, shape [32, 32, 32] (mean+std)
-    └── {tile_id}_mask_sd3_vae.npy  # cell_mask VAE latent
+Stage 0: Model Setup       stage0_setup.py
+         ↓ pretrained weights ready
+Stage 1: Feature Extraction  stage1_extract_features.py
+         ↓ UNI embeddings + VAE latents cached
+Stage 2: Training            stage2_train.py
+         ↓ ControlNet + TME module checkpoint
+Stage 3: Inference           stage3_inference.py
+         → experimental-like H&E from simulation channels
 ```
+
+**Training** uses paired experimental data (ORION-CRC H&E + CODEX multichannel).
+**Inference** accepts unpaired simulation channels and generates realistic H&E.
+
+---
+
+## Stage 0 — Model Setup
+
+Download all pretrained models:
+
+```bash
+python stage0_setup.py
+```
+
+This downloads and organizes under `pretrained_models/`:
+
+```
+pretrained_models/
+├── pixcell-256/transformer/          # frozen base diffusion transformer
+├── pixcell-256-controlnet/controlnet/ # ControlNet initialization
+├── sd-3.5-vae/vae/                   # image encoder / decoder
+└── uni-2h/                           # histopathology feature extractor
+```
+
+Selective download:
+
+```bash
+python stage0_setup.py --model pixcell          # base transformer only
+python stage0_setup.py --model pixcell-controlnet
+python stage0_setup.py --model uni2h
+python stage0_setup.py --model sd3_vae
+```
+
+Requires a HuggingFace token with access to gated models:
+
+```bash
+export HF_TOKEN=hf_...
+```
+
+---
+
+## Stage 1 — Feature Extraction
+
+Extract UNI-2h embeddings and SD3.5 VAE latents from your paired experimental H&E tiles. These are cached once and loaded at every training step.
+
+**Pass 1 — H&E images** (produces UNI embeddings + VAE latents):
+
+```bash
+python stage1_extract_features.py \
+    --image-dir  ./data/exp_paired/he_images \
+    --output-dir ./data/exp_paired/features
+```
+
+**Pass 2 — cell_mask images** (produces VAE latents used for conditioning):
+
+```bash
+python stage1_extract_features.py \
+    --image-dir   ./data/exp_paired/exp_channels/cell_mask \
+    --output-dir  ./data/exp_paired/vae_features \
+    --vae-prefix  mask_sd3_vae
+```
+
+Output per image:
+
+| File | Shape | Contents |
+|------|-------|----------|
+| `{stem}_uni.npy` | `[1536]` | UNI-2h embedding |
+| `{stem}_sd3_vae.npy` | `[2, 16, H/8, W/8]` | VAE latent mean + std |
+| `{stem}_mask_sd3_vae.npy` | `[2, 16, H/8, W/8]` | cell_mask VAE latent |
 
 ### Build HDF5 index
 
 ```python
 from diffusion.data.datasets.paired_exp_controlnet_dataset import build_exp_index
 build_exp_index(
-    exp_channels_dir="exp_data_root/exp_channels",
-    output_path="exp_data_root/metadata/exp_index.hdf5",
+    exp_channels_dir="data/exp_paired/exp_channels",
+    output_path="data/exp_paired/metadata/exp_index.hdf5",
 )
-```
-
-### Feature extraction
-
-Extract UNI-2h embeddings and SD3-VAE latents:
-
-```bash
-python extract_features.py \
-    --data-root /path/to/exp_data_root \
-    --output-dir /path/to/exp_data_root
 ```
 
 ---
 
-## 🚀 Training
+## Stage 2 — Training
 
-### Stage 1 — Simulation pre-training (optional)
+Train ControlNet + TMEConditioningModule on paired experimental data.
 
-If you have agent-based simulation outputs (ABM/Physicell), pre-train on unpaired sim snapshots + real H&E:
-
-**Simulation data layout:**
-
-```
-sim_data_root/
-├── metadata/
-│   ├── sim_index.hdf5          # "sim_256" → sim snapshot IDs
-│   └── real_index.hdf5         # "real_256" → real tile IDs
-├── sim_channels/
-│   ├── cell_mask/              # binary PNG (required)
-│   ├── oxygen/                 # float PNG or NPY (required)
-│   ├── glucose/                # float PNG or NPY (optional)
-│   └── tgf/                    # float PNG or NPY (optional)
-├── features/
-│   └── {tile_id}_uni.npy
-└── vae_features/
-    └── {tile_id}_sd3_vae.npy
-```
+### Single GPU
 
 ```bash
-accelerate launch train_scripts/train_controlnet_sim.py \
-    configs/config_controlnet_sim.py \
-    --work-dir checkpoints/pixcell_controlnet_sim
+python stage2_train.py configs/config_controlnet_exp.py
 ```
 
-### Stage 2 — Experimental fine-tuning
-
-Fine-tune on paired ORION-CRC data (required for sim→exp mapping):
+### Multi-GPU (recommended)
 
 ```bash
-accelerate launch train_scripts/train_controlnet_exp.py \
-    configs/config_controlnet_exp.py \
-    --work-dir checkpoints/pixcell_controlnet_exp
+accelerate config   # configure once
+accelerate launch --num_processes 4 stage2_train.py \
+    configs/config_controlnet_exp.py
 ```
 
-To start from a sim checkpoint, set in `configs/config_controlnet_exp.py`:
+### Config: `configs/config_controlnet_exp.py`
+
+Key fields to set before training:
 
 ```python
-resume_from           = "./checkpoints/pixcell_controlnet_sim/checkpoints/step_0050000"
-resume_tme_checkpoint = "./checkpoints/pixcell_controlnet_sim/checkpoints/step_0050000"
+exp_data_root = "./data/exp_paired"   # path to your paired dataset
 ```
+
+Key training knobs:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `cfg_dropout_prob` | `0.15` | Fraction of steps where UNI embedding is zeroed (enables TME-only inference) |
+| `channel_reliability_weights` | `[1.0]*6 + [0.5]*3` | Per-channel attenuation; 0.5× for approximate CODEX channels |
+| `tme_lr` | `1e-5` | TME module learning rate |
+| `num_epochs` | `200` | Training epochs |
+| `save_model_steps` | `10000` | Checkpoint every N steps |
 
 ### CLI options
 
@@ -171,18 +185,92 @@ resume_tme_checkpoint = "./checkpoints/pixcell_controlnet_sim/checkpoints/step_0
 | `--resume-from PATH` | Resume ControlNet from checkpoint directory |
 | `--load-from PATH` | Load specific checkpoint file |
 | `--batch-size N` | Override `train_batch_size` in config |
-| `--report-to tensorboard` | Logging backend (default: `tensorboard`) |
-| `--tracker-project-name NAME` | Project name for the tracker |
-| `--debug` | Run with minimal steps for debugging |
+| `--debug` | Minimal steps for debugging |
 
-### Multi-GPU
+### Checkpoint layout
+
+```
+checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX/
+├── epoch_X_step_XXXXXXX.pth    # ControlNet weights
+└── tme_module.pth              # TME encoder weights
+```
+
+---
+
+## Stage 3 — Inference
+
+Generate experimental-like H&E from simulation channel images. The trained model maps CODEX-compatible multichannel layout → realistic H&E. At inference, CODEX channels are replaced with simulation outputs of the same spatial format.
+
+### Style-conditioned (recommended)
+
+Pass a reference H&E image to set the tissue appearance (staining, cell density):
 
 ```bash
-accelerate config   # configure once
-accelerate launch --num_processes 4 train_scripts/train_controlnet_exp.py \
-    configs/config_controlnet_exp.py \
-    --work-dir checkpoints/pixcell_controlnet_exp
+python stage3_inference.py \
+    --config           configs/config_controlnet_exp.py \
+    --checkpoint-dir   checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
+    --sim-channels-dir /path/to/sim_channels \
+    --sim-id           sim_0001 \
+    --reference-he     /path/to/reference.png \
+    --output           generated_he.png
 ```
+
+### TME-only (no reference H&E)
+
+Generate purely from TME layout. Requires `cfg_dropout_prob > 0` at training time:
+
+```bash
+python stage3_inference.py \
+    --config           configs/config_controlnet_exp.py \
+    --checkpoint-dir   checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
+    --sim-channels-dir /path/to/sim_channels \
+    --sim-id           sim_0001 \
+    --output           generated_he.png
+```
+
+### Batch generation
+
+```bash
+python stage3_inference.py \
+    --config           configs/config_controlnet_exp.py \
+    --checkpoint-dir   checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
+    --sim-channels-dir /path/to/sim_channels \
+    --output-dir       ./inference_output \
+    --n-tiles          50
+```
+
+### All inference flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sim-channels-dir` | required | Root dir with per-channel subdirectories |
+| `--sim-id` | — | Single snapshot ID (file stem) |
+| `--output` | — | Output PNG for single-tile mode |
+| `--output-dir` | — | Output directory for batch mode |
+| `--n-tiles` | all | Max tiles in batch mode |
+| `--reference-he` | — | Reference H&E image for style conditioning |
+| `--reference-uni` | — | Precomputed UNI `.npy` (skips extraction) |
+| `--guidance-scale` | `2.5` | CFG guidance scale |
+| `--num-steps` | `20` | Denoising steps |
+| `--device` | `cuda` | Device |
+
+### Simulation channel directory layout
+
+```
+sim_channels/
+├── cell_mask/              {sim_id}.png   binary (required)
+├── cell_type_healthy/      {sim_id}.png   (optional)
+├── cell_type_cancer/       {sim_id}.png   (optional)
+├── cell_type_immune/       {sim_id}.png   (optional)
+├── cell_state_prolif/      {sim_id}.png   (optional)
+├── cell_state_nonprolif/   {sim_id}.png   (optional)
+├── cell_state_dead/        {sim_id}.png   (optional)
+├── vasculature/            {sim_id}.png   (optional)
+├── oxygen/                 {sim_id}.png or .npy
+└── glucose/                {sim_id}.png or .npy
+```
+
+Only channels listed in `configs/config_controlnet_exp.py → data.active_channels` are loaded.
 
 ---
 
@@ -203,72 +291,6 @@ Key metrics:
 | `lr_tme` | TME encoder learning rate |
 | `samples_per_sec` | Training throughput |
 
-Checkpoints are saved every `save_model_steps` steps (default 10,000) under:
-
-```
-checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX/
-├── epoch_X_step_XXXXXXX.pth    # ControlNet weights
-└── tme_module.pth              # TME encoder weights
-```
-
----
-
-## 🔬 Inference
-
-### Style-conditioned (reference H&E + TME channels)
-
-Use a reference H&E tile's UNI embedding to set the staining style:
-
-```python
-import torch
-import numpy as np
-from diffusers import DDPMScheduler
-from train_scripts.inference_controlnet import (
-    load_vae, load_controlnet_model_from_checkpoint,
-    load_pixcell_controlnet_model_from_checkpoint, denoise,
-)
-from train_scripts.train_controlnet_sim import load_sim_checkpoint
-from diffusion.model.builder import build_model
-from diffusion.utils.misc import read_config
-
-config = read_config("configs/config_controlnet_exp.py")
-device = "cuda"
-
-vae        = load_vae(config.vae_pretrained, device)
-controlnet = load_controlnet_model_from_checkpoint(
-    "configs/config_controlnet_exp.py",
-    "checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000",
-    device,
-)
-base_model = load_pixcell_controlnet_model_from_checkpoint(
-    "configs/config_controlnet_exp.py",
-    "checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000",
-)
-base_model.to(device).eval()
-
-tme_module = build_model("TMEConditioningModule", False, False,
-                          n_tme_channels=9, base_ch=32)
-load_sim_checkpoint(
-    "checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000",
-    tme_module, device=device,
-)
-tme_module.to(device).eval()
-
-# Load reference UNI embedding (from a real H&E tile)
-ref_uni = np.load("path/to/reference_uni.npy")        # shape [1536]
-uni_embeds = torch.from_numpy(ref_uni).view(1, 1, 1, 1536).to(device, torch.float16)
-```
-
-### TME-only (no style reference)
-
-Generate purely from TME layout, without a reference H&E:
-
-```python
-from train_scripts.inference_controlnet import null_uni_embed
-
-uni_embeds = null_uni_embed(device='cuda', dtype=torch.float16)  # shape [1, 1, 1, 1536]
-```
-
 ---
 
 ## ✅ Validation
@@ -276,12 +298,12 @@ uni_embeds = null_uni_embed(device='cuda', dtype=torch.float16)  # shape [1, 1, 
 Evaluate sim→exp domain alignment: generate H&E from simulation TME channels and measure cosine similarity against precomputed experimental UNI features.
 
 ```bash
-python validate_sim_to_exp.py \
+python pipeline/validate_sim_to_exp.py \
     --config          configs/config_controlnet_exp.py \
     --sim-root        /path/to/sim_data_root \
     --exp-feat        /path/to/exp_data_root/features \
-    --controlnet-ckpt checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000 \
-    --tme-ckpt        checkpoints/pixcell_controlnet_exp/checkpoints/step_0010000 \
+    --controlnet-ckpt checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
+    --tme-ckpt        checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
     --uni-model       ./pretrained_models/uni-2h \
     --n-tiles         50 \
     --guidance-scale  2.5 \
@@ -313,6 +335,54 @@ Std cosine sim:   0.032
 
 ---
 
+## 📂 Data Reference
+
+### Experimental channel layout (ORION-CRC)
+
+| Channel | Source | Type | Train weight |
+|---------|--------|------|-------------|
+| `cell_mask` | Cell segmentation | Binary | — |
+| `cell_type_healthy` | CODEX cell typing | Binary one-hot | 1.0 |
+| `cell_type_cancer` | CODEX cell typing | Binary one-hot | 1.0 |
+| `cell_type_immune` | CODEX cell typing | Binary one-hot | 1.0 |
+| `cell_state_prolif` | CODEX cell state | Binary one-hot | 1.0 |
+| `cell_state_nonprolif` | CODEX cell state | Binary one-hot | 1.0 |
+| `cell_state_dead` | CODEX cell state | Binary one-hot | 1.0 |
+| `vasculature` | CD31 (CODEX) | Float [0,1] | 0.5 |
+| `oxygen` | Metabolic model | Float [0,1] | 0.5 |
+| `glucose` | Metabolic model | Float [0,1] | 0.5 |
+
+Approximate channels (vasculature, oxygen, glucose) are attenuated by 0.5× during training to account for registration uncertainty.
+
+### Experimental dataset directory layout
+
+```
+exp_data_root/
+├── metadata/
+│   └── exp_index.hdf5              # HDF5: "exp_256" → list of tile_ids
+├── exp_channels/                   # one sub-folder per channel
+│   ├── cell_mask/
+│   │   └── {tile_id}.png           # binary PNG {0, 255}
+│   ├── cell_type_healthy/
+│   │   └── {tile_id}.png
+│   ├── cell_type_cancer/
+│   ├── cell_type_immune/
+│   ├── cell_state_prolif/
+│   ├── cell_state_nonprolif/
+│   ├── cell_state_dead/
+│   ├── vasculature/
+│   │   └── {tile_id}.png           # grayscale float PNG
+│   ├── oxygen/
+│   └── glucose/
+├── features/
+│   └── {tile_id}_uni.npy           # UNI-2h embedding [1536]  ← Stage 1 output
+└── vae_features/
+    ├── {tile_id}_sd3_vae.npy       # VAE latent [2, 16, 32, 32]  ← Stage 1 output
+    └── {tile_id}_mask_sd3_vae.npy  # cell_mask VAE latent  ← Stage 1 output
+```
+
+---
+
 ## 📦 Pretrained Weights
 
 | Model | Purpose | Source |
@@ -322,17 +392,7 @@ Std cosine sim:   0.032
 | SD3.5 VAE | Image encoder/decoder | [HuggingFace](https://huggingface.co/stabilityai/stable-diffusion-3.5-large) |
 | UNI-2h | Feature extractor | [HuggingFace](https://huggingface.co/MahmoodLab/UNI2-h) |
 
-Download and organize under `pretrained_models/`:
-
-```
-pretrained_models/
-├── pixcell-256/transformer/
-├── pixcell-256-controlnet/controlnet/
-├── sd-3.5-vae/vae/
-└── uni-2h/
-```
-
-Run `python setup_pretrained_model.py` to download automatically.
+Download automatically with `python stage0_setup.py`.
 
 ---
 

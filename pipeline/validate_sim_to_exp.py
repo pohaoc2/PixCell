@@ -37,12 +37,12 @@ from train_scripts.inference_controlnet import (
     load_pixcell_controlnet_model_from_checkpoint,
 )
 from diffusion.model.builder import build_model
-from train_scripts.train_controlnet_sim import load_sim_checkpoint
+from train_scripts.training_utils import load_tme_checkpoint
 from diffusion.data.datasets.sim_controlnet_dataset import _load_spatial_file, _find_file
 from diffusion.data.datasets.paired_exp_controlnet_dataset import (
     _BINARY_CHANNELS as EXP_BINARY,
 )
-from extract_features import UNI2hExtractor
+from pipeline.extract_features import UNI2hExtractor
 
 
 # ── Core metric ───────────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ def main():
         n_tme_channels=n_tme_channels,
         base_ch=getattr(config, "tme_base_ch", 32),
     )
-    load_sim_checkpoint(args.tme_ckpt, tme_module, device=device)
+    load_tme_checkpoint(args.tme_ckpt, tme_module, device=device)
     tme_module.to(device).eval()
 
     uni_extractor = UNI2hExtractor(model_path=args.uni_model, device=device)
@@ -236,10 +236,10 @@ def main():
     else:
         uni_embeds = null_uni_embed(device=device, dtype=torch.float16)
 
-    from diffusion.data.datasets.sim_controlnet_dataset import SimControlNetData
-    ds      = SimControlNetData(root=args.sim_root, resolution=config.image_size,
-                                active_channels=config.data.active_channels)
-    sim_ids = ds.sim_ids[: args.n_tiles]
+    cell_mask_dir = Path(args.sim_root) / "sim_channels" / "cell_mask"
+    sim_ids = sorted(p.stem for p in cell_mask_dir.glob("*.png"))[: args.n_tiles]
+    if not sim_ids:
+        raise RuntimeError(f"No sim channel PNGs found in {cell_mask_dir}")
 
     results = run_validation(
         config=config,
