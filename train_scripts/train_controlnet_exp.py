@@ -14,7 +14,6 @@ Usage:
 """
 import os
 import time
-from copy import deepcopy
 
 import torch
 
@@ -25,15 +24,13 @@ from train_scripts.initialize_models import (
     ema_update,
 )
 from diffusion.data.builder import build_dataloader
-from diffusion.model.builder import build_model
-from diffusion.utils.optimizer import build_optimizer
-from diffusion.utils.lr_scheduler import build_lr_scheduler
 
 from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
 from train_scripts.train_controlnet_sim import (
     training_losses_controlnet,
     _save_sim_checkpoint,
     load_sim_checkpoint,
+    _build_tme_module_and_optimizers,
 )
 
 
@@ -74,36 +71,10 @@ def initialize_exp_training(config, accelerator, logger, controlnet):
         shuffle=True,
     )
 
-    # ── TME module ────────────────────────────────────────────────────────────
-    n_tme_channels = len(active_channels) - 1   # exclude cell_mask
-    tme_module = build_model(
-        getattr(config, "tme_model", "TMEConditioningModule"),
-        False, False,
-        n_tme_channels=n_tme_channels,
-        base_ch=getattr(config, "tme_base_ch", 32),
+    tme_and_opts = _build_tme_module_and_optimizers(
+        config, controlnet, train_dataloader, active_channels, logger
     )
-    logger.info(
-        f"[TMEConditioningModule] n_tme_channels={n_tme_channels}  "
-        f"trainable params={sum(p.numel() for p in tme_module.parameters() if p.requires_grad):,}"
-    )
-
-    # ── Optimizers + schedulers ───────────────────────────────────────────────
-    optimizer    = build_optimizer(controlnet, config.optimizer)
-    lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio=1)
-
-    tme_optimizer_cfg       = deepcopy(config.optimizer)
-    tme_optimizer_cfg['lr'] = getattr(config, "tme_lr", config.optimizer.get('lr', 1e-4))
-    optimizer_tme    = build_optimizer(tme_module, tme_optimizer_cfg)
-    lr_scheduler_tme = build_lr_scheduler(config, optimizer_tme, train_dataloader, lr_scale_ratio=1)
-
-    return {
-        "train_dataloader": train_dataloader,
-        "tme_module":       tme_module,
-        "optimizer":        optimizer,
-        "optimizer_tme":    optimizer_tme,
-        "lr_scheduler":     lr_scheduler,
-        "lr_scheduler_tme": lr_scheduler_tme,
-    }
+    return {"train_dataloader": train_dataloader, **tme_and_opts}
 
 
 # ── Training loop ─────────────────────────────────────────────────────────────

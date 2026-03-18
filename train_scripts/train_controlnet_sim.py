@@ -23,7 +23,6 @@ from copy import deepcopy
 import glob
 from PIL import Image
 import torch
-import torch.nn as nn
 from matplotlib import pyplot as plt
 import numpy as np
 # ── All shared infrastructure — imported, not duplicated ─────────────────────
@@ -105,9 +104,23 @@ def initialize_sim_training(config, accelerator, logger, controlnet):
         shuffle=True,
     )
 
-    # ── TME module via build_model ────────────────────────────────────────────
-    # TMEConditioningModule must be registered in diffusion/model/builder.py
-    # under the key config.tme_model (default "TMEConditioningModule").
+    tme_and_opts = _build_tme_module_and_optimizers(
+        config, controlnet, train_dataloader, active_channels, logger
+    )
+    return {"train_dataloader": train_dataloader, **tme_and_opts}
+
+
+def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
+                                     active_channels, logger):
+    """
+    Shared helper: build TMEConditioningModule + all four optimizers/schedulers.
+
+    Used by both initialize_sim_training() and initialize_exp_training() to
+    avoid duplicating this identical block in both training scripts.
+
+    Returns dict with:
+        tme_module, optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme
+    """
     n_tme_channels = len(active_channels) - 1   # all channels except cell_mask
     tme_module = build_model(
         getattr(config, "tme_model", "TMEConditioningModule"),
@@ -122,18 +135,15 @@ def initialize_sim_training(config, accelerator, logger, controlnet):
         f"{sum(p.numel() for p in tme_module.parameters() if p.requires_grad):,}"
     )
 
-    # ── ControlNet optimizer (same logic as initialize_dataset_and_optimizer) ─
     optimizer    = build_optimizer(controlnet, config.optimizer)
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio=1)
 
-    # ── TME optimizer — same type as controlnet, optionally different lr ──────
     tme_optimizer_cfg        = deepcopy(config.optimizer)
     tme_optimizer_cfg['lr']  = getattr(config, "tme_lr", config.optimizer.get('lr', 1e-4))
     optimizer_tme    = build_optimizer(tme_module, tme_optimizer_cfg)
     lr_scheduler_tme = build_lr_scheduler(config, optimizer_tme, train_dataloader, lr_scale_ratio=1)
 
     return {
-        "train_dataloader": train_dataloader,
         "tme_module":        tme_module,
         "optimizer":         optimizer,
         "optimizer_tme":     optimizer_tme,
