@@ -80,3 +80,19 @@ def test_channel_weights_count_must_match_channels():
     x = torch.ones(1, 9, 4, 4)
     with pytest.raises(Exception):
         _apply_channel_weights(x, [1.0] * 8)   # wrong count → broadcast error
+
+
+def test_cfg_dropout_batch_independence():
+    """Each sample in a batch must be dropped independently."""
+    B = 32
+    y   = torch.ones(B, 1, 1, 1536)
+    rng = torch.Generator().manual_seed(7)
+    dropped = [
+        torch.all(
+            _apply_cfg_dropout(y[b : b + 1], prob=0.5, rng=rng) == 0
+        ).item()
+        for b in range(B)
+    ]
+    # With prob=0.5 over 32 samples, all dropped or all kept is astronomically unlikely
+    assert any(dropped), "at least one sample should be dropped"
+    assert not all(dropped), "at least one sample should survive"

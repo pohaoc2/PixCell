@@ -142,3 +142,21 @@ def test_binary_channels_are_binary(exp_root):
             vals = ctrl_tensor[i].unique()
             assert set(vals.tolist()).issubset({0.0, 1.0}), \
                 f"Channel '{ch}' is not binary: unique values = {vals.tolist()}"
+
+
+def test_missing_vae_mask_returns_zeros(exp_root):
+    """When the VAE cell mask file is absent, _load_vae_mask must return a zero tensor."""
+    from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
+    # Remove the mask VAE file for tile_0001 only
+    mask_path = exp_root / "vae_features" / "tile_0001_mask_sd3_vae.npy"
+    mask_path.unlink()
+
+    ds = PairedExpControlNetData(
+        root=str(exp_root),
+        resolution=RESOLUTION,
+        active_channels=ACTIVE_CHANNELS,
+    )
+    _, _, _, vae_mask, info = ds[0]
+    assert info["tile_id"] == "tile_0001"
+    assert vae_mask.shape == (16, LT_SZ, LT_SZ)
+    assert torch.all(vae_mask == 0.0), "Expected zeros when mask file is missing"

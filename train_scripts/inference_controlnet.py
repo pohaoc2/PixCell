@@ -1,5 +1,4 @@
 # %%
-from re import T
 from diffusers import DPMSolverMultistepScheduler
 from diffusers import AutoencoderKL
 import torch
