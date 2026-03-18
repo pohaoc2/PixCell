@@ -1,16 +1,15 @@
 """
 train_controlnet_exp.py
 
-PixCell ControlNet fine-tuning on PAIRED experimental H&E + CODEX-derived TME channels.
+PixCell ControlNet training on PAIRED experimental H&E + CODEX-derived TME channels.
 
-Three additions vs train_controlnet_sim.py (all marked # <- EXP):
-    1. PairedExpControlNetData  — paired dataset (single index, no random cross-sampling)
+Design:
+    1. PairedExpControlNetData  — paired dataset (H&E + multichannel, same tile_id)
     2. CFG dropout              — zero UNI embedding with probability cfg_dropout_prob
-    3. Channel reliability weights — attenuate approximate channels before TMEEncoder
+                                  to enable TME-only inference via null_uni_embed()
+    3. Channel reliability weights — attenuate approximate CODEX channels before TMEEncoder
 
-Usage:
-    python  train_scripts/train_controlnet_exp.py <config_path> [--work-dir ...] [--debug ...]
-    accelerate launch train_scripts/train_controlnet_exp.py <config_path>
+Entry point: use stage2_train.py (calls main() here).
 """
 import os
 import time
@@ -26,10 +25,10 @@ from train_scripts.initialize_models import (
 from diffusion.data.builder import build_dataloader
 
 from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
-from train_scripts.train_controlnet_sim import (
+from train_scripts.training_utils import (
     training_losses_controlnet,
-    _save_sim_checkpoint,
-    load_sim_checkpoint,
+    save_checkpoint_with_tme,
+    load_tme_checkpoint,
     _build_tme_module_and_optimizers,
 )
 
@@ -83,7 +82,7 @@ def train_controlnet_exp(models_dict):
     """
     Paired-exp ControlNet training loop.
 
-    Identical to train_controlnet_sim() with 3 additions (marked # <- EXP).
+    Paired-exp training loop with CFG dropout and channel reliability weighting.
     """
     base_model        = models_dict['base_model']
     controlnet        = models_dict['controlnet']
@@ -229,7 +228,7 @@ def train_controlnet_exp(models_dict):
                     last_tic = time.time()
 
                 if global_step % config.save_model_steps == 0:
-                    _save_sim_checkpoint(
+                    save_checkpoint_with_tme(
                         accelerator, controlnet, tme_module, model_ema,
                         optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,
                         global_step, epoch, config, logger,
@@ -240,7 +239,7 @@ def train_controlnet_exp(models_dict):
                 break
 
         if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
-            _save_sim_checkpoint(
+            save_checkpoint_with_tme(
                 accelerator, controlnet, tme_module, model_ema,
                 optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,
                 global_step, epoch, config, logger,
@@ -295,7 +294,7 @@ def main():
 
     tme_ckpt = getattr(config, "resume_tme_checkpoint", None)
     if tme_ckpt:
-        step = load_sim_checkpoint(
+        step = load_tme_checkpoint(
             tme_ckpt, tme_module, optimizer_tme, lr_scheduler_tme,
             device=accelerator.device,
         )
