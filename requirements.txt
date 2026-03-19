@@ -51,3 +51,9 @@ cellpose @ git+https://github.com/mouseland/cellpose.git
 ipykernel
 nvitop
 gdown
+
+# ===== Dev / QA =====
+pytest
+pytest-cov
+black
+pylint

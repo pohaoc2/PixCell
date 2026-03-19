@@ -200,12 +200,11 @@ class PairedExpControlNetData(Dataset):
         vae_mask    = self._load_vae_mask(tile_id)
         ssl_feat    = self._load_ssl_feat(tile_id)
 
-        # Do NOT include raw strings in data_info — the default collate function
-        # cannot handle str/list types and will crash. Use a tensor index instead.
         data_info = {
             "img_hw":       torch.tensor([self.resolution] * 2, dtype=torch.float32),
             "aspect_ratio": torch.tensor(1.0),
             "tile_idx":     torch.tensor(idx, dtype=torch.int64),
+            "tile_id":      tile_id,
         }
 
         return vae_feat, ssl_feat, ctrl_tensor, vae_mask, data_info

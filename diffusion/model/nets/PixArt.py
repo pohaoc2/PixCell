@@ -13,12 +13,20 @@ import torch
 import torch.nn as nn
 import os
 import numpy as np
-from timm.models.layers import DropPath
+from timm.layers import DropPath
 from timm.models.vision_transformer import PatchEmbed, Mlp
 
 from diffusion.model.builder import MODELS
 from diffusion.model.utils import auto_grad_checkpoint, to_2tuple
-from diffusion.model.nets.PixArt_blocks import t2i_modulate, CaptionEmbedder, AttentionKVCompress, MultiHeadCrossAttention, T2IFinalLayer, TimestepEmbedder, CONCHEmbedder
+from diffusion.model.nets.PixArt_blocks import (
+    t2i_modulate,
+    CaptionEmbedder,
+    AttentionKVCompress,
+    MultiHeadCrossAttention,
+    T2IFinalLayer,
+    TimestepEmbedder,
+    CONCHEmbedder,
+)
 from diffusion.utils.logger import get_root_logger
 
 
@@ -27,31 +35,57 @@ class PixArtBlock(nn.Module):
     A PixArt block with adaptive layer norm (adaLN-single) conditioning.
     """
 
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, drop_path=0, input_size=None,
-                 sampling=None, sr_ratio=1, qk_norm=False, **block_kwargs):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        mlp_ratio=4.0,
+        drop_path=0,
+        input_size=None,
+        sampling=None,
+        sr_ratio=1,
+        qk_norm=False,
+        **block_kwargs,
+    ):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = AttentionKVCompress(
-            hidden_size, num_heads=num_heads, qkv_bias=True, sampling=sampling, sr_ratio=sr_ratio,
-            qk_norm=qk_norm, **block_kwargs
+            hidden_size,
+            num_heads=num_heads,
+            qkv_bias=True,
+            sampling=sampling,
+            sr_ratio=sr_ratio,
+            qk_norm=qk_norm,
+            **block_kwargs,
         )
         self.cross_attn = MultiHeadCrossAttention(hidden_size, num_heads, **block_kwargs)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         # to be compatible with lower version pytorch
         approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=int(hidden_size * mlp_ratio), act_layer=approx_gelu, drop=0)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.scale_shift_table = nn.Parameter(torch.randn(6, hidden_size) / hidden_size ** 0.5)
+        self.mlp = Mlp(
+            in_features=hidden_size,
+            hidden_features=int(hidden_size * mlp_ratio),
+            act_layer=approx_gelu,
+            drop=0,
+        )
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.scale_shift_table = nn.Parameter(torch.randn(6, hidden_size) / hidden_size**0.5)
         self.sampling = sampling
         self.sr_ratio = sr_ratio
 
     def forward(self, x, y, t, mask=None, **kwargs):
         B, N, C = x.shape
 
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (self.scale_shift_table[None] + t.reshape(B, 6, -1)).chunk(6, dim=1)
-        x = x + self.drop_path(gate_msa * self.attn(t2i_modulate(self.norm1(x), shift_msa, scale_msa)).reshape(B, N, C))
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.scale_shift_table[None] + t.reshape(B, 6, -1)
+        ).chunk(6, dim=1)
+        x = x + self.drop_path(
+            gate_msa * self.attn(t2i_modulate(self.norm1(x), shift_msa, scale_msa)).reshape(B, N, C)
+        )
         x = x + self.cross_attn(x, y, mask)
-        x = x + self.drop_path(gate_mlp * self.mlp(t2i_modulate(self.norm2(x), shift_mlp, scale_mlp)))
+        x = x + self.drop_path(
+            gate_mlp * self.mlp(t2i_modulate(self.norm2(x), shift_mlp, scale_mlp))
+        )
 
         return x
 
@@ -66,24 +100,24 @@ class PixArt_ControlNet(nn.Module):
     """
 
     def __init__(
-            self,
-            input_size=32,
-            patch_size=2,
-            in_channels=4,
-            hidden_size=1152,
-            depth=28,
-            num_heads=16,
-            mlp_ratio=4.0,
-            class_dropout_prob=0.1,
-            pred_sigma=True,
-            drop_path: float = 0.,
-            caption_channels=4096,
-            pe_interpolation=1.0,
-            config=None,
-            model_max_length=120,
-            qk_norm=False,
-            kv_compress_config=None,
-            **kwargs,
+        self,
+        input_size=32,
+        patch_size=2,
+        in_channels=4,
+        hidden_size=1152,
+        depth=28,
+        num_heads=16,
+        mlp_ratio=4.0,
+        class_dropout_prob=0.1,
+        pred_sigma=True,
+        drop_path: float = 0.0,
+        caption_channels=4096,
+        pe_interpolation=1.0,
+        config=None,
+        model_max_length=120,
+        qk_norm=False,
+        kv_compress_config=None,
+        **kwargs,
     ):
         super().__init__()
         self.pred_sigma = pred_sigma
@@ -102,16 +136,15 @@ class PixArt_ControlNet(nn.Module):
         self.register_buffer("pos_embed", torch.zeros(1, num_patches, hidden_size))
 
         approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.t_block = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        )
+        self.t_block = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True))
 
         y_embedder_kwargs = dict(
-            in_channels=caption_channels, hidden_size=hidden_size, uncond_prob=class_dropout_prob,
-            act_layer=approx_gelu, token_num=model_max_length
+            in_channels=caption_channels,
+            hidden_size=hidden_size,
+            uncond_prob=class_dropout_prob,
+            act_layer=approx_gelu,
+            token_num=model_max_length,
         )
-
 
         self.y_embedder = CaptionEmbedder(**y_embedder_kwargs)
 
@@ -120,39 +153,50 @@ class PixArt_ControlNet(nn.Module):
             # initialize with zeros
             self.register_buffer("y_pos_embed", torch.zeros(1, model_max_length, caption_channels))
 
-
-        drop_path = [x.item() for x in torch.linspace(0, drop_path, depth)]  # stochastic depth decay rule
+        drop_path = [
+            x.item() for x in torch.linspace(0, drop_path, depth)
+        ]  # stochastic depth decay rule
         self.kv_compress_config = kv_compress_config
         if kv_compress_config is None:
             self.kv_compress_config = {
-                'sampling': None,
-                'scale_factor': 1,
-                'kv_compress_layer': [],
+                "sampling": None,
+                "scale_factor": 1,
+                "kv_compress_layer": [],
             }
-        self.blocks = nn.ModuleList([
-            PixArtBlock(
-                hidden_size, num_heads, mlp_ratio=mlp_ratio, drop_path=drop_path[i],
-                input_size=(input_size // patch_size, input_size // patch_size),
-                sampling=self.kv_compress_config['sampling'],
-                sr_ratio=int(
-                    self.kv_compress_config['scale_factor']
-                ) if i in self.kv_compress_config['kv_compress_layer'] else 1,
-                qk_norm=qk_norm,
-            )
-            for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                PixArtBlock(
+                    hidden_size,
+                    num_heads,
+                    mlp_ratio=mlp_ratio,
+                    drop_path=drop_path[i],
+                    input_size=(input_size // patch_size, input_size // patch_size),
+                    sampling=self.kv_compress_config["sampling"],
+                    sr_ratio=(
+                        int(self.kv_compress_config["scale_factor"])
+                        if i in self.kv_compress_config["kv_compress_layer"]
+                        else 1
+                    ),
+                    qk_norm=qk_norm,
+                )
+                for i in range(depth)
+            ]
+        )
         self.final_layer = T2IFinalLayer(hidden_size, patch_size, self.out_channels)
 
         self.initialize_weights()
 
         if config:
-            logger = get_root_logger(os.path.join(config.work_dir, 'train_log.log'))
-            logger.warning(f"position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}")
+            logger = get_root_logger(os.path.join(config.work_dir, "train_log.log"))
+            logger.warning(
+                f"position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}"
+            )
             logger.warning(f"kv compress config: {self.kv_compress_config}")
         else:
-            print(f'Warning: position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}')
+            print(
+                f"Warning: position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}"
+            )
             print(f"kv compress config: {self.kv_compress_config}")
-
 
     def forward(self, x, timestep, y, mask=None, data_info=None, controlnet_outputs=None, **kwargs):
         """
@@ -170,13 +214,12 @@ class PixArt_ControlNet(nn.Module):
         if len(y.shape) == 3:
             y = y.unsqueeze(1)
 
-
-        if hasattr(self, 'y_pos_embed'):
+        if hasattr(self, "y_pos_embed"):
             y_pos_embed = self.y_pos_embed.to(self.dtype)
             y = y + y_pos_embed.unsqueeze(0)
 
         pos_embed = self.pos_embed.to(self.dtype)
-        self.h, self.w = x.shape[-2]//self.patch_size, x.shape[-1]//self.patch_size
+        self.h, self.w = x.shape[-2] // self.patch_size, x.shape[-1] // self.patch_size
         x = self.x_embedder(x) + pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(timestep.to(x.dtype))  # (N, D)
         t0 = self.t_block(t)
@@ -192,7 +235,7 @@ class PixArt_ControlNet(nn.Module):
             y_lens = [y.shape[2]] * y.shape[0]
             y = y.squeeze(1).view(1, -1, x.shape[-1])
         for i, block in enumerate(self.blocks):
-            x = auto_grad_checkpoint(block, x, y, t0, y_lens)  # (N, T, D) #support grad checkpoint 
+            x = auto_grad_checkpoint(block, x, y, t0, y_lens)  # (N, T, D) #support grad checkpoint
             if controlnet_outputs is not None:
                 if i < len(controlnet_outputs):
                     x = x + controlnet_outputs[i]
@@ -208,16 +251,20 @@ class PixArt_ControlNet(nn.Module):
         model_out = self.forward(x, timestep, y, mask)
         return model_out.chunk(2, dim=1)[0]
 
-    def forward_with_cfg(self, x, timestep, y, cfg_scale, mask=None, controlnet_outputs=None, **kwargs):
+    def forward_with_cfg(
+        self, x, timestep, y, cfg_scale, mask=None, controlnet_outputs=None, **kwargs
+    ):
         """
         Forward pass with classifier-free guidance.
-        
+
         Note: controlnet_outputs should already be batched [uncond, cond]
         """
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, timestep, y, mask, controlnet_outputs=controlnet_outputs, **kwargs)
-        model_out = model_out['x'] if isinstance(model_out, dict) else model_out
+        model_out = self.forward(
+            combined, timestep, y, mask, controlnet_outputs=controlnet_outputs, **kwargs
+        )
+        model_out = model_out["x"] if isinstance(model_out, dict) else model_out
         eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
@@ -235,7 +282,7 @@ class PixArt_ControlNet(nn.Module):
         assert h * w == x.shape[1]
 
         x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
+        x = torch.einsum("nhwpqc->nchpwq", x)
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
@@ -251,8 +298,10 @@ class PixArt_ControlNet(nn.Module):
 
         # Initialize (and freeze) pos_embed by sin-cos embedding:
         pos_embed = get_2d_sincos_pos_embed(
-            self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5),
-            pe_interpolation=self.pe_interpolation, base_size=self.base_size
+            self.pos_embed.shape[-1],
+            int(self.x_embedder.num_patches**0.5),
+            pe_interpolation=self.pe_interpolation,
+            base_size=self.base_size,
         )
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
@@ -278,19 +327,31 @@ class PixArt_ControlNet(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-        if hasattr(self, 'y_pos_embed'):
+        if hasattr(self, "y_pos_embed"):
             y_pos_embed = get_2d_sincos_pos_embed(
-                self.y_pos_embed.shape[-1], int(self.y_pos_embed.shape[1] ** 0.5),
-                pe_interpolation=self.pe_interpolation, base_size=self.base_size,
-                phase = self.base_size // self.y_pos_embed.shape[1])
-            
+                self.y_pos_embed.shape[-1],
+                int(self.y_pos_embed.shape[1] ** 0.5),
+                pe_interpolation=self.pe_interpolation,
+                base_size=self.base_size,
+                phase=self.base_size // self.y_pos_embed.shape[1],
+            )
+
             self.y_pos_embed.data.copy_(torch.from_numpy(y_pos_embed).float().unsqueeze(0))
 
     @property
     def dtype(self):
         return next(self.parameters()).dtype
 
-def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0, pe_interpolation=1.0, base_size=16, phase=0):
+
+def get_2d_sincos_pos_embed(
+    embed_dim,
+    grid_size,
+    cls_token=False,
+    extra_tokens=0,
+    pe_interpolation=1.0,
+    base_size=16,
+    phase=0,
+):
     """
     grid_size: int of the grid height and width
     return:
@@ -298,29 +359,33 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=
     """
     if isinstance(grid_size, int):
         grid_size = to_2tuple(grid_size)
-    grid_h = np.arange(grid_size[0], dtype=np.float32) / (grid_size[0]/base_size) / pe_interpolation
-    grid_w = np.arange(grid_size[1], dtype=np.float32) / (grid_size[1]/base_size) / pe_interpolation
+    grid_h = (
+        np.arange(grid_size[0], dtype=np.float32) / (grid_size[0] / base_size) / pe_interpolation
+    )
+    grid_w = (
+        np.arange(grid_size[1], dtype=np.float32) / (grid_size[1] / base_size) / pe_interpolation
+    )
     grid = np.meshgrid(grid_w, grid_h)  # here w goes first
     grid = np.stack(grid, axis=0)
     grid = grid.reshape([2, 1, grid_size[1], grid_size[0]])
- 
+
     pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid, phase)
     if cls_token and extra_tokens > 0:
         pos_embed = np.concatenate([np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0)
     return pos_embed
- 
- 
+
+
 def get_2d_sincos_pos_embed_from_grid(embed_dim, grid, phase=0):
     assert embed_dim % 2 == 0
- 
+
     # use half of dimensions to encode grid_h
     emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0], phase)  # (H*W, D/2)
     emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1], phase)  # (H*W, D/2)
- 
+
     emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
     return emb
- 
- 
+
+
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, phase=0):
     """
     embed_dim: output dimension for each position
@@ -329,15 +394,15 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, phase=0):
     """
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float64)
-    omega /= embed_dim / 2.
-    omega = 1. / 10000 ** omega  # (D/2,)
- 
+    omega /= embed_dim / 2.0
+    omega = 1.0 / 10000**omega  # (D/2,)
+
     pos = pos.reshape(-1) + phase  # (M,)
-    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
- 
+    out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+
     emb_sin = np.sin(out)  # (M, D/2)
     emb_cos = np.cos(out)  # (M, D/2)
- 
+
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
@@ -348,7 +413,6 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, phase=0):
 @MODELS.register_module()
 def PixArt_XL_2(**kwargs):
     return PixArt_ControlNet(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
-
 
 
 @MODELS.register_module()

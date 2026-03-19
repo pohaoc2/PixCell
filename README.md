@@ -3,6 +3,8 @@
 A multi-channel ControlNet for mapping tumor microenvironment (TME) simulation outputs to experimental H&E histology, using paired ORION-CRC multiplexed imaging data.
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pohaoc2/PixCell/blob/main/notebook/multichannel_controlnet.ipynb)
+[![CI](https://github.com/pohaoc2/PixCell/actions/workflows/ci.yml/badge.svg)](https://github.com/pohaoc2/PixCell/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pohaoc2/PixCell/branch/main/graph/badge.svg)](https://codecov.io/gh/pohaoc2/PixCell)
 
 ---
 
@@ -44,6 +46,13 @@ Python >= 3.9, PyTorch >= 2.0.1, CUDA 11.7+
 ```bash
 bash setup.sh
 ```
+
+Dependency note:
+
+- Primary dependency file is `requirements.txt`.
+- `requirements_nommcv.txt` is now a compatibility alias to `requirements.txt`.
+- `mmcv==1.7.0` is installed separately (not via requirements) because it needs:
+  `pip install mmcv==1.7.0 --no-build-isolation`
 
 ---
 

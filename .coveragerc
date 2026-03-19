@@ -1,0 +1,10 @@
+[run]
+source =
+    tools
+omit =
+    tests/*
+    tools/dummy_sim_generator.py
+
+[report]
+show_missing = True
+skip_covered = False
