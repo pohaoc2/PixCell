@@ -47,11 +47,19 @@ class MultiHeadCrossAttention(nn.Module):
         q = self.q_linear(x).view(1, -1, self.num_heads, self.head_dim)
         kv = self.kv_linear(cond).view(1, -1, 2, self.num_heads, self.head_dim)
         k, v = kv.unbind(2)
-        attn_bias = None
-        if mask is not None:
-            attn_bias = xformers.ops.fmha.BlockDiagonalMask.from_seqlens([N] * B, mask)
-        x = xformers.ops.memory_efficient_attention(q, k, v, p=self.attn_drop.p, attn_bias=attn_bias)
-        x = x.view(B, -1, C)
+        try:
+            attn_bias = None
+            if mask is not None:
+                attn_bias = xformers.ops.fmha.BlockDiagonalMask.from_seqlens([N] * B, mask)
+            x = xformers.ops.memory_efficient_attention(q, k, v, p=self.attn_drop.p, attn_bias=attn_bias)
+        except NotImplementedError:
+            # Fallback: PyTorch native SDPA (works on all GPUs)
+            q_ = q.transpose(1, 2)  # [B, heads, seq, head_dim]
+            k_ = k.transpose(1, 2)
+            v_ = v.transpose(1, 2)
+            x = F.scaled_dot_product_attention(q_, k_, v_, dropout_p=0.0)
+            x = x.transpose(1, 2)
+        x = x.reshape(B, -1, C)
         x = self.proj(x)
         x = self.proj_drop(x)
 
@@ -150,7 +158,18 @@ class AttentionKVCompress(Attention_):
         if mask is not None:
             attn_bias = torch.zeros([B * self.num_heads, q.shape[1], k.shape[1]], dtype=q.dtype, device=q.device)
             attn_bias.masked_fill_(mask.squeeze(1).repeat(self.num_heads, 1, 1) == 0, float('-inf'))
-        x = xformers.ops.memory_efficient_attention(q, k, v, p=self.attn_drop.p, attn_bias=attn_bias)
+        try:
+            x = xformers.ops.memory_efficient_attention(q, k, v, p=self.attn_drop.p, attn_bias=attn_bias)
+        except NotImplementedError:
+            # Fallback: PyTorch native SDPA (works on all GPUs)
+            q_ = q.transpose(1, 2)  # [B, heads, seq, head_dim]
+            k_ = k.transpose(1, 2)
+            v_ = v.transpose(1, 2)
+            attn_mask = None
+            if attn_bias is not None:
+                attn_mask = attn_bias.view(B, self.num_heads, q.shape[1], k.shape[1])
+            x = F.scaled_dot_product_attention(q_, k_, v_, attn_mask=attn_mask, dropout_p=0.0)
+            x = x.transpose(1, 2)
 
         x = x.view(B, N, C)
         x = self.proj(x)

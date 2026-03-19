@@ -173,7 +173,7 @@ class TMEConditioningModule(ModelMixin, ConfigMixin):
         attn_out = self.cross_attn(q_tokens, kv_tokens)   # [B, N, C]
 
         # Reshape back to spatial + residual connection
-        attn_out = attn_out.transpose(1, 2).view(B, C, H, W)
+        attn_out = attn_out.transpose(1, 2).reshape(B, C, H, W)
         return mask_latent + attn_out   # residual: TME is additive correction
 
     @property

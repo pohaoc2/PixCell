@@ -19,9 +19,9 @@ data = dict(
     type="PairedExpControlNetData",
     resolution=image_size,
     exp_channels_dir="exp_channels",
-    features_dir="features",
-    vae_features_dir="vae_features",
-    exp_index_h5="metadata/exp_index.hdf5",
+    features_dir="../../orion-crc/features",
+    vae_features_dir="../../orion-crc/vae_features",
+    exp_index_h5="../../orion-crc/metadata/exp_index.hdf5",
     vae_prefix="sd3_vae",
     ssl_prefix="uni",
     active_channels=[
@@ -36,7 +36,7 @@ data = dict(
 )
 
 # Root of the paired experimental dataset — set before training
-exp_data_root = f"{root}/data/exp_paired"
+exp_data_root = f"{root}/data/orion-crc"
 
 # =====================================================================
 # TME Encoder
@@ -89,7 +89,7 @@ fp32_attention   = True
 # =====================================================================
 num_workers                 = 4
 train_batch_size            = 4
-num_epochs                  = 200
+num_epochs                  = 1
 gradient_accumulation_steps = 1
 grad_checkpointing          = True
 gradient_clip               = 1.0

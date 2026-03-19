@@ -208,11 +208,11 @@ Pass a reference H&E image to set the tissue appearance (staining, cell density)
 ```bash
 python stage3_inference.py \
     --config           configs/config_controlnet_exp.py \
-    --checkpoint-dir   checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
-    --sim-channels-dir /path/to/sim_channels \
+    --checkpoint-dir   checkpoints/pixcell_controlnet_exp/checkpoints/step_0000004 \
+    --sim-channels-dir inference_data \
     --sim-id           sim_0001 \
-    --reference-he     /path/to/reference.png \
-    --output           generated_he.png
+    --reference-uni    data/orion-crc/features/0_256_uni.npy \
+    --output           inference_data/generated_he.png
 ```
 
 ### TME-only (no reference H&E)
