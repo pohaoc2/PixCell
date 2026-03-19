@@ -61,6 +61,7 @@ Channel availability is controlled by --active-channels (default: all 10 exp cha
 Missing optional channels are silently skipped.
 """
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
@@ -125,7 +126,9 @@ def load_models(config, checkpoint_dir: str, device: str):
     Returns:
         dict: vae, controlnet, base_model, tme_module
     """
+    import glob as _glob
     config_path = config._filename if hasattr(config, '_filename') else None
+    checkpoint_dir = str(checkpoint_dir)
 
     vae = load_vae(config.vae_pretrained, device)
 
@@ -136,13 +139,39 @@ def load_models(config, checkpoint_dir: str, device: str):
         base_ch=getattr(config, "tme_base_ch", 32),
     )
     load_tme_checkpoint(checkpoint_dir, tme_module, device=device)
-    tme_module.to(device).eval()
+    _dtype = torch.float16 if device == 'cuda' else torch.float32
+    tme_module.to(device=device, dtype=_dtype).eval()
 
+    # Find the controlnet .pth file inside the checkpoint directory
+    controlnet_pths = sorted(_glob.glob(
+        os.path.join(checkpoint_dir, "controlnet_*.pth")
+    ))
+    if not controlnet_pths:
+        raise FileNotFoundError(
+            f"No controlnet_*.pth found in {checkpoint_dir}"
+        )
+    controlnet_pth = controlnet_pths[-1]   # take latest if multiple
+    print(f"Loading controlnet from {controlnet_pth}")
     controlnet = load_controlnet_model_from_checkpoint(
-        config_path, checkpoint_dir, device
+        config_path, controlnet_pth, device
     )
+
+    # Base model is always the frozen pretrained transformer (never saved to checkpoint)
+    base_model_path = getattr(config, "load_from", config.base_model_path)
+    # load_from may point to a directory — resolve to the safetensors file inside it
+    if os.path.isdir(base_model_path):
+        candidates = (
+            _glob.glob(os.path.join(base_model_path, "*.safetensors")) +
+            _glob.glob(os.path.join(base_model_path, "*.pth"))
+        )
+        if not candidates:
+            raise FileNotFoundError(
+                f"No .safetensors or .pth found in base_model_path={base_model_path}"
+            )
+        base_model_path = sorted(candidates)[0]
+    print(f"Loading base model from {base_model_path}")
     base_model = load_pixcell_controlnet_model_from_checkpoint(
-        config_path, checkpoint_dir
+        config_path, base_model_path
     )
     base_model.to(device).eval()
 
@@ -187,7 +216,7 @@ def generate(
     vae_scale = config.scale_factor
     vae_shift = config.shift_factor
     dtype = torch.float16 if device == 'cuda' else torch.float32
-
+    vae.to(device=device, dtype=dtype).eval()
     # 1. Load sim TME channels [C, H, W]
     ctrl_full = load_sim_channels(
         sim_channels_dir, sim_id, active_channels, resolution=config.image_size
@@ -224,9 +253,8 @@ def generate(
 
     # 5. Decode latents → RGB image
     with torch.no_grad():
-        gen_img = vae.decode(
-            (denoised.float() / vae_scale) + vae_shift, return_dict=False
-        )[0]
+        scaled_latents = (denoised / vae_scale) + vae_shift
+        gen_img = vae.decode(scaled_latents, return_dict=False)[0]
     gen_img = (gen_img / 2 + 0.5).clamp(0, 1)
     return (gen_img.cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
 
