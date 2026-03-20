@@ -75,7 +75,7 @@ base_model_path  = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 
 controlnet_model                 = "PixCell_ControlNet_XL_2_UNI"
-controlnet_depth                 = 27
+controlnet_depth                 = 2
 controlnet_conditioning_channels = 16
 controlnet_conditioning_scale    = 1.0
 controlnet_load_from             = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors"

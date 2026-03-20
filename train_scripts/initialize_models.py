@@ -327,6 +327,7 @@ def initialize_models(config, accelerator, logger):
         "qk_norm": config.qk_norm,
         "kv_compress_config": kv_compress_config,
         "conditioning_channels": config.controlnet_conditioning_channels,  # e.g., 16 for cell masks
+        "controlnet_depth": getattr(config, "controlnet_depth", 27),
         "n_controlnet_blocks": getattr(config, "n_controlnet_blocks", None),
         **config.get("controlnet_model_kwargs", {}),
     }
