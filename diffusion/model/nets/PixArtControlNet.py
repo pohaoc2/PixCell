@@ -593,13 +593,10 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
 @MODELS.register_module()
 def PixCell_ControlNet_XL_2_UNI(**kwargs):
     """PixCell ControlNet XL with UNI conditioning"""
-    depth = kwargs.get("controlnet_depth", 27)
-    return PixCellControlNet(
-        controlnet_depth=depth,
-        hidden_size=1152,
-        patch_size=2,
-        num_heads=16,
-        in_channels=16,
-        caption_channels=1536,
-        **kwargs,
-    )
+    kwargs.setdefault("controlnet_depth", 27)
+    kwargs.setdefault("hidden_size", 1152)
+    kwargs.setdefault("patch_size", 2)
+    kwargs.setdefault("num_heads", 16)
+    kwargs.setdefault("in_channels", 16)
+    kwargs.setdefault("caption_channels", 1536)
+    return PixCellControlNet(**kwargs)

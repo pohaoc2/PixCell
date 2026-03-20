@@ -200,14 +200,19 @@ class PairedExpControlNetData(Dataset):
         vae_mask    = self._load_vae_mask(tile_id)
         ssl_feat    = self._load_ssl_feat(tile_id)
 
+        # Accelerate's dataloader concatenates all dict values across workers
+        # and will crash on str/list types — only tensors allowed here.
         data_info = {
             "img_hw":       torch.tensor([self.resolution] * 2, dtype=torch.float32),
             "aspect_ratio": torch.tensor(1.0),
             "tile_idx":     torch.tensor(idx, dtype=torch.int64),
-            "tile_id":      tile_id,
         }
 
         return vae_feat, ssl_feat, ctrl_tensor, vae_mask, data_info
+
+    def get_ids(self, idx: int) -> dict[str, str]:
+        """Debug helper: return IDs for a given dataset index (no tensors)."""
+        return {"tile_id": self.tile_ids[idx]}
 
 
 def build_exp_index(
