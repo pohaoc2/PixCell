@@ -31,6 +31,7 @@ from train_scripts.training_utils import (
     load_tme_checkpoint,
     _build_tme_module_and_optimizers,
 )
+from tools.channel_group_utils import split_channels_to_groups, apply_group_dropout
 
 
 # ── Initialization ────────────────────────────────────────────────────────────
@@ -106,7 +107,10 @@ def train_controlnet_exp(models_dict):
 
     # <- EXP: read training knobs from config
     cfg_dropout_prob = getattr(config, "cfg_dropout_prob", 0.15)
-    channel_weights  = getattr(config, "channel_reliability_weights", None)
+    channel_groups = getattr(config, "channel_groups", None)
+    group_dropout_probs = getattr(config, "group_dropout_probs", {})
+    use_multi_group = channel_groups is not None
+    channel_weights = getattr(config, "channel_reliability_weights", None)
 
     controlnet.train()
     for param in controlnet.parameters():
@@ -166,18 +170,32 @@ def train_controlnet_exp(models_dict):
                 if torch.rand(1).item() < cfg_dropout_prob:
                     y[b] = torch.zeros_like(y[b])
 
-            tme_dtype    = next(tme_module.parameters()).dtype
-            tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
+            tme_dtype = next(tme_module.parameters()).dtype
 
-            # <- EXP 2: Channel reliability weighting (training only — not applied at inference)
-            if channel_weights is not None:
-                w = torch.tensor(
-                    channel_weights, device=tme_channels.device, dtype=tme_channels.dtype
-                ).view(1, -1, 1, 1)
-                tme_channels = tme_channels * w
-
-            # <- EXP 3: Fuse TME into conditioning (same as sim, but with EXP additions above)
-            vae_mask = tme_module(vae_mask.to(dtype=tme_dtype), tme_channels)
+            if use_multi_group:
+                active_channels = config.data.active_channels
+                tme_channel_dict = split_channels_to_groups(
+                    control_input.to(dtype=tme_dtype), active_channels, channel_groups,
+                )
+                active_groups_per_sample = apply_group_dropout(
+                    [g["name"] for g in channel_groups], group_dropout_probs, batch_size=bs,
+                )
+                # Per-sample dropout: zero out channels for groups dropped in each sample
+                for b_idx in range(bs):
+                    for g in channel_groups:
+                        gname = g["name"]
+                        if gname not in active_groups_per_sample[b_idx] and gname in tme_channel_dict:
+                            tme_channel_dict[gname][b_idx] = 0.0
+                vae_mask = tme_module(vae_mask.to(dtype=tme_dtype), tme_channel_dict)
+            else:
+                tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
+                channel_weights = getattr(config, "channel_reliability_weights", None)
+                if channel_weights is not None:
+                    w = torch.tensor(
+                        channel_weights, device=tme_channels.device, dtype=tme_channels.dtype
+                    ).view(1, -1, 1, 1)
+                    tme_channels = tme_channels * w
+                vae_mask = tme_module(vae_mask.to(dtype=tme_dtype), tme_channels)
             vae_mask = vae_mask.float()
 
             # 3. Training step
