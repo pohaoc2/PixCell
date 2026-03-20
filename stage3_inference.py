@@ -132,12 +132,24 @@ def load_models(config, checkpoint_dir: str, device: str):
 
     vae = load_vae(config.vae_pretrained, device)
 
-    n_tme_channels = len(config.data.active_channels) - 1
-    tme_module = build_model(
-        "TMEConditioningModule", False, False,
-        n_tme_channels=n_tme_channels,
-        base_ch=getattr(config, "tme_base_ch", 32),
-    )
+    channel_groups_cfg = getattr(config, "channel_groups", None)
+    if channel_groups_cfg is not None:
+        group_specs = [
+            dict(name=g["name"], n_channels=len(g["channels"]))
+            for g in channel_groups_cfg
+        ]
+        tme_module = build_model(
+            "MultiGroupTMEModule", False, False,
+            channel_groups=group_specs,
+            base_ch=getattr(config, "tme_base_ch", 32),
+        )
+    else:
+        n_tme_channels = len(config.data.active_channels) - 1
+        tme_module = build_model(
+            "TMEConditioningModule", False, False,
+            n_tme_channels=n_tme_channels,
+            base_ch=getattr(config, "tme_base_ch", 32),
+        )
     load_tme_checkpoint(checkpoint_dir, tme_module, device=device)
     _dtype = torch.float16 if device == 'cuda' else torch.float32
     tme_module.to(device=device, dtype=_dtype).eval()
@@ -190,6 +202,7 @@ def generate(
     scheduler,
     guidance_scale: float,
     device: str,
+    active_groups: set | None = None,
 ) -> np.ndarray:
     """
     Generate a single experimental-like H&E image from simulation channels.
@@ -203,6 +216,8 @@ def generate(
         scheduler:        Configured DDPMScheduler.
         guidance_scale:   CFG guidance scale (higher = more TME adherence).
         device:           'cuda' or 'cpu'.
+        active_groups:    When using multi-group TME, subset of group names to
+                          apply; None means all groups.
 
     Returns:
         RGB image as uint8 numpy array [H, W, 3].
@@ -231,10 +246,24 @@ def generate(
         ).latent_dist.mean
         vae_mask = (vae_mask - vae_shift) * vae_scale
 
-    # 3. Fuse TME channels through TMEConditioningModule
-    tme_channels = ctrl_full[1:].unsqueeze(0).to(device, dtype=dtype)
-    with torch.no_grad():
-        fused_cond = tme_module(vae_mask.to(dtype), tme_channels)
+    # 3. Fuse TME channels through TME (flat or multi-group) module
+    channel_groups_cfg = getattr(config, "channel_groups", None)
+    if channel_groups_cfg is not None:
+        from tools.channel_group_utils import split_channels_to_groups
+
+        tme_channel_dict = split_channels_to_groups(
+            ctrl_full.unsqueeze(0).to(device, dtype=dtype),
+            active_channels,
+            channel_groups_cfg,
+        )
+        with torch.no_grad():
+            fused_cond = tme_module(
+                vae_mask.to(dtype), tme_channel_dict, active_groups=active_groups
+            )
+    else:
+        tme_channels = ctrl_full[1:].unsqueeze(0).to(device, dtype=dtype)
+        with torch.no_grad():
+            fused_cond = tme_module(vae_mask.to(dtype), tme_channels)
 
     # 4. Diffusion denoising
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
@@ -296,6 +325,19 @@ def main():
     parser.add_argument("--guidance-scale",   type=float, default=2.5)
     parser.add_argument("--num-steps",        type=int,   default=20)
     parser.add_argument("--device",           default="cuda")
+    parser.add_argument(
+        "--active-groups",
+        nargs="*",
+        default=None,
+        help="TME groups to include (default: all). "
+        "e.g., --active-groups cell_identity vasculature",
+    )
+    parser.add_argument(
+        "--drop-groups",
+        nargs="*",
+        default=None,
+        help="TME groups to exclude. e.g., --drop-groups microenv",
+    )
     args = parser.parse_args()
 
     # ── Validate args ─────────────────────────────────────────────────────────
@@ -312,6 +354,28 @@ def main():
     # ── Load models ───────────────────────────────────────────────────────────
     print("Loading models...")
     models = load_models(config, args.checkpoint_dir, device)
+
+    channel_groups_cfg = getattr(config, "channel_groups", None)
+    if channel_groups_cfg is not None:
+        all_group_names = {g["name"] for g in channel_groups_cfg}
+        if args.active_groups is not None:
+            unknown = set(args.active_groups) - all_group_names
+            if unknown:
+                parser.error(
+                    f"Unknown groups: {unknown}. Valid: {all_group_names}"
+                )
+            active_groups = set(args.active_groups)
+        elif args.drop_groups is not None:
+            unknown = set(args.drop_groups) - all_group_names
+            if unknown:
+                parser.error(
+                    f"Unknown groups: {unknown}. Valid: {all_group_names}"
+                )
+            active_groups = all_group_names - set(args.drop_groups)
+        else:
+            active_groups = None
+    else:
+        active_groups = None
 
     # ── UNI embedding ─────────────────────────────────────────────────────────
     if args.reference_uni:
@@ -353,6 +417,7 @@ def main():
             scheduler=scheduler,
             guidance_scale=args.guidance_scale,
             device=device,
+            active_groups=active_groups,
         )
         Image.fromarray(img).save(args.output)
         print(f"Saved → {args.output}")
@@ -381,6 +446,7 @@ def main():
             scheduler=scheduler,
             guidance_scale=args.guidance_scale,
             device=device,
+            active_groups=active_groups,
         )
         Image.fromarray(img).save(output_dir / f"{sim_id}_he.png")
         print(f"  {sim_id} → {output_dir / (sim_id + '_he.png')}")
