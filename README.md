@@ -35,6 +35,7 @@ This project fine-tunes [PixCell-256](https://huggingface.co/StonyBrook-CVLab/Pi
 - [📊 Monitoring](#-monitoring)
 - [✅ Validation](#-validation)
 - [📂 Data Reference](#-data-reference)
+- [🔍 Analysis Tools](#-analysis-tools)
 - [📦 Pretrained Weights](#-pretrained-weights)
 
 ---
@@ -154,7 +155,24 @@ build_exp_index(
 
 ## Stage 2 — Training
 
-Train ControlNet + TMEConditioningModule on paired experimental data.
+Train ControlNet + Multi-Group TME module on paired experimental data.
+
+### TME Architecture
+
+The TME conditioning uses a **Multi-Group architecture** where each channel group gets its own CNN encoder and cross-attention module. Groups produce additive, zero-initialized residuals to the VAE mask latent, enabling:
+
+- **Disentangled control** — independently include/exclude channel groups at inference
+- **Interpretability** — per-group attention heatmaps and residual magnitude maps
+- **Graceful degradation** — missing groups contribute zero (no special handling needed)
+
+| Group | Channels | Nature |
+|-------|----------|--------|
+| `cell_identity` | `cell_type_healthy`, `cell_type_cancer`, `cell_type_immune` | One-hot (CODEX) |
+| `cell_state` | `cell_state_prolif`, `cell_state_nonprolif`, `cell_state_dead` | One-hot (CODEX) |
+| `vasculature` | `vasculature` | Continuous (CD31) |
+| `microenv` | `oxygen`, `glucose` | Continuous (PDE-derived) |
+
+Each group is independently droppable during both training (per-group dropout) and inference (`--active-groups` / `--drop-groups`).
 
 ### Single GPU
 
@@ -183,7 +201,7 @@ Key training knobs:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `cfg_dropout_prob` | `0.15` | Fraction of steps where UNI embedding is zeroed (enables TME-only inference) |
-| `channel_reliability_weights` | `[1.0]*6 + [0.5]*3` | Per-channel attenuation; 0.5× for approximate CODEX channels |
+| `group_dropout_probs` | `{cell_identity: 0.10, cell_state: 0.10, vasculature: 0.15, microenv: 0.20}` | Per-group dropout rates during training |
 | `tme_lr` | `1e-5` | TME module learning rate |
 | `num_epochs` | `200` | Training epochs |
 | `save_model_steps` | `10000` | Checkpoint every N steps |
@@ -203,7 +221,18 @@ Key training knobs:
 ```
 checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX/
 ├── epoch_X_step_XXXXXXX.pth    # ControlNet weights
-└── tme_module.pth              # TME encoder weights
+└── tme_module.pth              # Multi-Group TME module weights
+```
+
+### Training-time visualizations
+
+At every `save_model_steps` checkpoint, the training loop generates validation visualizations:
+
+```
+checkpoints/pixcell_controlnet_exp/vis/step_XXXXXXX/
+├── attention_heatmaps.png     # per-group attention maps over cell mask
+├── residual_magnitudes.png    # per-group ‖Δ‖ spatial magnitude maps
+└── ablation_grid.png          # progressive composition showing group contributions
 ```
 
 ---
@@ -250,6 +279,27 @@ python stage3_inference.py \
     --n-tiles          50
 ```
 
+### Group control at inference
+
+Selectively include or exclude TME channel groups:
+
+```bash
+# Only use cell identity and vasculature (drop cell state and microenvironment)
+python stage3_inference.py \
+    --config configs/config_controlnet_exp.py \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
+    --sim-channels-dir /path/to/sim_channels \
+    --sim-id sim_0001 \
+    --active-groups cell_identity vasculature \
+    --output generated_he.png
+
+# Exclude microenvironment channels (O₂/glucose)
+python stage3_inference.py \
+    ... \
+    --drop-groups microenv \
+    --output generated_he.png
+```
+
 ### All inference flags
 
 | Flag | Default | Description |
@@ -261,6 +311,8 @@ python stage3_inference.py \
 | `--n-tiles` | all | Max tiles in batch mode |
 | `--reference-he` | — | Reference H&E image for style conditioning |
 | `--reference-uni` | — | Precomputed UNI `.npy` (skips extraction) |
+| `--active-groups` | all | TME groups to include (e.g., `cell_identity vasculature`) |
+| `--drop-groups` | none | TME groups to exclude (e.g., `microenv`) |
 | `--guidance-scale` | `2.5` | CFG guidance scale |
 | `--num-steps` | `20` | Denoising steps |
 | `--device` | `cuda` | Device |
@@ -350,20 +402,20 @@ Std cosine sim:   0.032
 
 ### Experimental channel layout (ORION-CRC)
 
-| Channel | Source | Type | Train weight |
-|---------|--------|------|-------------|
-| `cell_mask` | Cell segmentation | Binary | — |
-| `cell_type_healthy` | CODEX cell typing | Binary one-hot | 1.0 |
-| `cell_type_cancer` | CODEX cell typing | Binary one-hot | 1.0 |
-| `cell_type_immune` | CODEX cell typing | Binary one-hot | 1.0 |
-| `cell_state_prolif` | CODEX cell state | Binary one-hot | 1.0 |
-| `cell_state_nonprolif` | CODEX cell state | Binary one-hot | 1.0 |
-| `cell_state_dead` | CODEX cell state | Binary one-hot | 1.0 |
-| `vasculature` | CD31 (CODEX) | Float [0,1] | 0.5 |
-| `oxygen` | Metabolic model | Float [0,1] | 0.5 |
-| `glucose` | Metabolic model | Float [0,1] | 0.5 |
+| Channel | Group | Source | Type |
+|---------|-------|--------|------|
+| `cell_mask` | *(always present)* | Cell segmentation | Binary |
+| `cell_type_healthy` | `cell_identity` | CODEX multi-protein panel | Binary one-hot |
+| `cell_type_cancer` | `cell_identity` | CODEX multi-protein panel | Binary one-hot |
+| `cell_type_immune` | `cell_identity` | CODEX multi-protein panel | Binary one-hot |
+| `cell_state_prolif` | `cell_state` | CODEX multi-protein panel | Binary one-hot |
+| `cell_state_nonprolif` | `cell_state` | CODEX multi-protein panel | Binary one-hot |
+| `cell_state_dead` | `cell_state` | CODEX multi-protein panel | Binary one-hot |
+| `vasculature` | `vasculature` | CD31 marker (CODEX) | Float [0,1] |
+| `oxygen` | `microenv` | PDE model (distance to vasculature) | Float [0,1] |
+| `glucose` | `microenv` | PDE model (distance to vasculature) | Float [0,1] |
 
-Approximate channels (vasculature, oxygen, glucose) are attenuated by 0.5× during training to account for registration uncertainty.
+Each group has independent dropout during training (higher for PDE-derived `microenv`). Groups can be selectively included/excluded at inference for counterfactual analysis.
 
 ### Experimental dataset directory layout
 
@@ -390,6 +442,47 @@ exp_data_root/
 └── vae_features/
     ├── {tile_id}_sd3_vae.npy       # VAE latent [2, 16, 32, 32]  ← Stage 1 output
     └── {tile_id}_mask_sd3_vae.npy  # cell_mask VAE latent  ← Stage 1 output
+```
+
+---
+
+## 🔍 Analysis Tools
+
+Standalone tools for interpreting how each channel group influences H&E generation.
+
+### Per-group attention heatmaps
+
+Visualize where each group's encoder output attends on the cell mask:
+
+```python
+from tools.visualize_group_attention import save_attention_heatmap_figure
+
+# attn_maps from module(..., return_attn_weights=True)
+save_attention_heatmap_figure(mask_image, gen_image, attn_maps, "attention.png")
+```
+
+### Per-group residual magnitudes
+
+Spatial L2 norm of each group's additive residual — "how much does each group change the conditioning at each location?"
+
+```python
+from tools.visualize_group_residuals import save_residual_magnitude_figure
+
+# residuals from module(..., return_residuals=True)
+save_residual_magnitude_figure(mask_image, gen_image, residuals, "residuals.png")
+```
+
+### Ablation grid
+
+Progressive composition showing incremental group contributions:
+
+```python
+from tools.visualize_ablation_grid import save_ablation_grid
+
+save_ablation_grid(
+    [("Mask only", img0), ("+ Cell ID", img1), ("+ State", img2), ("All", img3)],
+    "ablation.png",
+)
 ```
 
 ---
