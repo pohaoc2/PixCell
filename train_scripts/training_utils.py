@@ -35,16 +35,30 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
     Returns dict:
         tme_module, optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme
     """
-    n_tme_channels = len(active_channels) - 1   # all channels except cell_mask
-    tme_module = build_model(
-        getattr(config, "tme_model", "TMEConditioningModule"),
-        False,
-        False,
-        n_tme_channels=n_tme_channels,
-        base_ch=getattr(config, "tme_base_ch", 32),
-    )
+    channel_groups_cfg = getattr(config, "channel_groups", None)
+
+    if channel_groups_cfg is not None:
+        group_specs = []
+        for g in channel_groups_cfg:
+            group_specs.append(dict(name=g["name"], n_channels=len(g["channels"])))
+        tme_module = build_model(
+            getattr(config, "tme_model", "MultiGroupTMEModule"),
+            False,
+            False,
+            channel_groups=group_specs,
+            base_ch=getattr(config, "tme_base_ch", 32),
+        )
+    else:
+        n_tme_channels = len(active_channels) - 1   # all channels except cell_mask
+        tme_module = build_model(
+            getattr(config, "tme_model", "TMEConditioningModule"),
+            False,
+            False,
+            n_tme_channels=n_tme_channels,
+            base_ch=getattr(config, "tme_base_ch", 32),
+        )
     logger.info(
-        f"[TMEConditioningModule] n_tme_channels={n_tme_channels}  "
+        f"[TME Module: {type(tme_module).__name__}] "
         f"trainable params="
         f"{sum(p.numel() for p in tme_module.parameters() if p.requires_grad):,}"
     )
