@@ -39,25 +39,33 @@ data = dict(
 exp_data_root = f"{root}/data/orion-crc"
 
 # =====================================================================
+# Channel Groups — per-group TME encoder + cross-attention
+# =====================================================================
+channel_groups = [
+    dict(name="cell_identity", channels=["cell_type_healthy", "cell_type_cancer", "cell_type_immune"]),
+    dict(name="cell_state",    channels=["cell_state_prolif", "cell_state_nonprolif", "cell_state_dead"]),
+    dict(name="vasculature",   channels=["vasculature"]),
+    dict(name="microenv",      channels=["oxygen", "glucose"]),
+]
+
+# =====================================================================
 # TME Encoder
 # =====================================================================
-# n_tme_channels = 9  (all active_channels except cell_mask)
-tme_model   = "TMEConditioningModule"
+tme_model   = "MultiGroupTMEModule"
 tme_base_ch = 32
 tme_lr      = 1e-5
 
 # =====================================================================
 # Experimental training knobs
 # =====================================================================
-# CFG dropout: fraction of steps where the UNI embedding is zeroed.
-# Enables TME-only inference (null_uni_embed) at no extra training cost.
 cfg_dropout_prob = 0.15
 
-# Per-tme-channel reliability weights (9 values, matching tme_channels order):
-#   [cell_type_healthy, cell_type_cancer, cell_type_immune,        → 1.0 (pixel-perfect)
-#    cell_state_prolif, cell_state_nonprolif, cell_state_dead,     → 1.0 (pixel-perfect)
-#    vasculature, oxygen, glucose]                                 → 0.5 (CODEX approximation)
-channel_reliability_weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5]
+group_dropout_probs = dict(
+    cell_identity=0.10,
+    cell_state=0.10,
+    vasculature=0.15,
+    microenv=0.20,
+)
 
 # =====================================================================
 # Model
