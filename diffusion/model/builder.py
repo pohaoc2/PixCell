@@ -4,6 +4,8 @@ from diffusion.model.utils import set_grad_checkpoint
 
 MODELS = Registry('models')
 
+import diffusion.model.nets.multi_group_tme  # noqa: F401
+
 
 def build_model(cfg, use_grad_checkpoint=False, use_fp32_attention=False, gc_step=1, **kwargs):
     if isinstance(cfg, str):
