@@ -251,6 +251,23 @@ def train_controlnet_exp(models_dict):
                         optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,
                         global_step, epoch, config, logger,
                     )
+                    if accelerator.is_main_process and use_multi_group:
+                        try:
+                            generate_validation_visualizations(
+                                tme_module=tme_module,
+                                controlnet=controlnet,
+                                base_model=base_model,
+                                vae=vae,
+                                train_diffusion=train_diffusion,
+                                val_control_input=batch[2][:1],
+                                val_vae_mask=batch[3][:1],
+                                val_uni_embeds=batch[1][:1],
+                                config=config,
+                                save_dir=os.path.join(config.work_dir, f"vis/step_{global_step}"),
+                                device=accelerator.device,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Validation vis failed at step {global_step}: {e}")
 
             if global_step >= total_steps:
                 logger.info(f"Reached max steps ({total_steps}). Stopping.")
@@ -268,6 +285,82 @@ def train_controlnet_exp(models_dict):
     logger.info("=" * 80)
     logger.info("Fine-tuning Complete!")
     logger.info("=" * 80)
+
+
+@torch.no_grad()
+def generate_validation_visualizations(
+    tme_module, controlnet, base_model, vae, train_diffusion,
+    val_control_input, val_vae_mask, val_uni_embeds,
+    config, save_dir, device,
+):
+    """Generate attention heatmaps, residual maps, and ablation grid for one fixed sample."""
+    from pathlib import Path
+    from tools.channel_group_utils import split_channels_to_groups
+    from tools.visualize_group_attention import save_attention_heatmap_figure
+    from tools.visualize_group_residuals import save_residual_magnitude_figure
+    from tools.visualize_ablation_grid import save_ablation_grid
+    from train_scripts.inference_controlnet import denoise
+    from diffusers import DDPMScheduler
+    import numpy as np
+
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    channel_groups = config.channel_groups
+    active_channels = config.data.active_channels
+    dtype = next(tme_module.parameters()).dtype
+    vae_scale, vae_shift = config.scale_factor, config.shift_factor
+
+    tme_dict = split_channels_to_groups(
+        val_control_input.to(device, dtype=dtype), active_channels, channel_groups,
+    )
+    mask_latent = val_vae_mask.to(device, dtype=dtype)
+    mask_latent_scaled = (mask_latent - vae_shift) * vae_scale
+
+    tme_module.eval()
+    fused, residuals, attn_maps = tme_module(
+        mask_latent_scaled, tme_dict,
+        return_residuals=True, return_attn_weights=True,
+    )
+    tme_module.train()
+
+    scheduler = DDPMScheduler(
+        num_train_timesteps=1000, beta_start=0.0001, beta_end=0.02,
+        beta_schedule="linear", prediction_type="epsilon", clip_sample=False,
+    )
+    scheduler.set_timesteps(20, device=device)
+    latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
+    latents = torch.randn(latent_shape, device=device, dtype=dtype)
+    latents = latents * scheduler.init_noise_sigma
+
+    controlnet.eval()
+    denoised = denoise(
+        latents=latents,
+        uni_embeds=val_uni_embeds.to(device, dtype=dtype),
+        controlnet_input_latent=fused,
+        scheduler=scheduler,
+        controlnet_model=controlnet,
+        pixcell_controlnet_model=base_model,
+        guidance_scale=2.5,
+        device=device,
+    )
+    controlnet.train()
+
+    scaled_latents = (denoised.to(dtype) / vae_scale) + vae_shift
+    gen_img = vae.decode(scaled_latents, return_dict=False)[0]
+    gen_img = (gen_img / 2 + 0.5).clamp(0, 1)
+    gen_np = (gen_img.cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
+
+    mask_ch = val_control_input[0, 0].cpu().numpy()
+    mask_rgb = np.stack([mask_ch] * 3, axis=-1)
+    mask_rgb = (mask_rgb * 255).astype(np.uint8)
+
+    save_attention_heatmap_figure(mask_rgb, gen_np, attn_maps, save_dir / "attention_heatmaps.png")
+    save_residual_magnitude_figure(mask_rgb, gen_np, residuals, save_dir / "residual_magnitudes.png")
+    save_ablation_grid(
+        [("All groups", gen_np)],
+        save_dir / "ablation_grid.png",
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
