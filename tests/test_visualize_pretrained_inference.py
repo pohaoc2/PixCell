@@ -63,3 +63,45 @@ def test_save_comparison_figure_writes_output_without_reference():
 
         assert output_path.exists()
         assert output_path.stat().st_size > 0
+
+
+def test_save_comparison_figure_includes_reference_when_present():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        mask_path = root / "mask.png"
+        ref_path = root / "reference.png"
+        _write_mask(mask_path, size=32)
+        Image.fromarray(np.full((32, 32, 3), 127, dtype=np.uint8)).save(ref_path)
+        generated = np.zeros((32, 32, 3), dtype=np.uint8)
+        output_path = root / "comparison_with_ref.png"
+
+        save_comparison_figure(
+            mask_path=mask_path,
+            gen_img=generated,
+            save_path=output_path,
+            reference_he_path=ref_path,
+            resolution=32,
+        )
+
+        assert output_path.exists()
+        assert output_path.stat().st_size > 0
+
+
+def test_save_comparison_figure_ignores_missing_reference_path():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        mask_path = root / "mask.png"
+        _write_mask(mask_path, size=32)
+        generated = np.zeros((32, 32, 3), dtype=np.uint8)
+        output_path = root / "comparison_missing_ref.png"
+
+        save_comparison_figure(
+            mask_path=mask_path,
+            gen_img=generated,
+            save_path=output_path,
+            reference_he_path=root / "does_not_exist.png",
+            resolution=32,
+        )
+
+        assert output_path.exists()
+        assert output_path.stat().st_size > 0
