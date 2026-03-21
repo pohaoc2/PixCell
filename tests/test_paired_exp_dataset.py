@@ -11,12 +11,12 @@ RESOLUTION = 256
 LT_SZ = RESOLUTION // 8   # 32
 
 BINARY_CHANNELS = [
-    "cell_mask",
+    "cell_masks",
     "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
     "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
 ]
 FLOAT_CHANNELS = ["vasculature", "oxygen", "glucose"]
-ALL_TME_CHANNELS = BINARY_CHANNELS + FLOAT_CHANNELS  # cell_mask first
+ALL_TME_CHANNELS = BINARY_CHANNELS + FLOAT_CHANNELS  # cell_masks first
 
 ACTIVE_CHANNELS = ALL_TME_CHANNELS
 
@@ -108,7 +108,7 @@ def test_dataset_item_shapes(exp_root):
     assert vae_mask.shape == (16, LT_SZ, LT_SZ), f"Got {vae_mask.shape}"
     assert "img_hw" in data_info
     assert "aspect_ratio" in data_info
-    assert "tile_id" in data_info
+    assert "tile_idx" in data_info
 
 
 def test_dataset_is_paired(exp_root):
@@ -124,7 +124,8 @@ def test_dataset_is_paired(exp_root):
     ).view(1, 1, -1)
 
     _, ssl_feat, _, _, info = ds[0]
-    assert info["tile_id"] == "tile_0001"
+    assert ds.get_ids(0)["tile_id"] == "tile_0001"
+    assert info["tile_idx"].item() == 0
     assert torch.allclose(ssl_feat, expected_uni), "ssl_feat is not paired with vae_feat"
 
 
@@ -157,6 +158,21 @@ def test_missing_vae_mask_returns_zeros(exp_root):
         active_channels=ACTIVE_CHANNELS,
     )
     _, _, _, vae_mask, info = ds[0]
-    assert info["tile_id"] == "tile_0001"
+    assert info["tile_idx"].item() == 0
     assert vae_mask.shape == (16, LT_SZ, LT_SZ)
     assert torch.all(vae_mask == 0.0), "Expected zeros when mask file is missing"
+
+
+def test_legacy_cell_mask_alias_is_accepted(exp_root):
+    from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
+
+    legacy_channels = ["cell_mask", *ACTIVE_CHANNELS[1:]]
+    ds = PairedExpControlNetData(
+        root=str(exp_root),
+        resolution=RESOLUTION,
+        active_channels=legacy_channels,
+    )
+
+    assert ds.active_channels[0] == "cell_masks"
+    _, _, ctrl_tensor, _, _ = ds[0]
+    assert ctrl_tensor.shape == (len(ACTIVE_CHANNELS), RESOLUTION, RESOLUTION)

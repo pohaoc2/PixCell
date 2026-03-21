@@ -7,14 +7,14 @@ Unlike SimControlNetData (unpaired), each tile provides:
     - H&E VAE latent     (paired — same tile_id)
     - UNI embedding      (paired — same tile_id)
     - CODEX TME channels (paired — same tile_id)
-    - cell_mask VAE latent (paired — same tile_id)
+    - cell_masks VAE latent (paired — same tile_id)
 
 Directory layout under `root`:
     exp_data_root/
     ├── metadata/
     │   └── exp_index.hdf5          # flat list of paired tile IDs
     ├── exp_channels/               # one sub-folder per channel (same format as sim_channels)
-    │   ├── cell_mask/              # binary PNG (required)
+    │   ├── cell_masks/              # binary PNG (required)
     │   ├── cell_type_healthy/      # binary PNG  (one-hot, required)
     │   ├── cell_type_cancer/       # binary PNG  (one-hot, required)
     │   ├── cell_type_immune/       # binary PNG  (one-hot, required)
@@ -50,7 +50,7 @@ from diffusion.data.datasets.sim_controlnet_dataset import (
 # ── Channel registry ──────────────────────────────────────────────────────────
 
 REQUIRED_CHANNELS: list[str] = [
-    "cell_mask",
+    "cell_masks",
     "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
     "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
 ]
@@ -58,13 +58,28 @@ OPTIONAL_CHANNELS: list[str] = ["vasculature", "oxygen", "glucose"]
 ALL_CHANNELS: list[str] = REQUIRED_CHANNELS + OPTIONAL_CHANNELS
 
 _BINARY_CHANNELS: frozenset[str] = frozenset({
-    "cell_mask",
+    "cell_masks",
     "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
     "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
 })
+_CHANNEL_ALIASES: dict[str, str] = {
+    "cell_mask": "cell_masks",
+}
+
+
+def _normalize_channels(active: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for channel in active:
+        name = _CHANNEL_ALIASES.get(channel, channel)
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered
 
 
 def _validate_channels(active: list[str]) -> list[str]:
+    active = _normalize_channels(active)
     unknown = set(active) - set(ALL_CHANNELS)
     if unknown:
         raise ValueError(f"Unknown channels: {unknown}. Available: {ALL_CHANNELS}")
@@ -222,7 +237,7 @@ def build_exp_index(
     key_name: str | None = None,
 ):
     """
-    Build HDF5 index for paired exp tiles by scanning exp_channels/cell_mask/.
+    Build HDF5 index for paired exp tiles by scanning exp_channels/cell_masks/.
 
     Run once before training to create metadata/exp_index.hdf5.
 
@@ -232,9 +247,9 @@ def build_exp_index(
             "exp_data_root/metadata/exp_index.hdf5",
         )
     """
-    mask_dir = Path(exp_channels_dir) / "cell_mask"
+    mask_dir = Path(exp_channels_dir) / "cell_masks"
     if not mask_dir.exists():
-        raise RuntimeError(f"cell_mask directory not found: {mask_dir}")
+        raise RuntimeError(f"cell_masks directory not found: {mask_dir}")
     files = sorted(p for ext in ("*.png", "*.npy") for p in mask_dir.glob(ext))
     if not files:
         raise RuntimeError(f"No PNG/NPY files found in {mask_dir}")

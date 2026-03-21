@@ -19,13 +19,13 @@ data = dict(
     type="PairedExpControlNetData",
     resolution=image_size,
     exp_channels_dir="exp_channels",
-    features_dir="../../orion-crc/features",
-    vae_features_dir="../../orion-crc/vae_features",
-    exp_index_h5="../../orion-crc/metadata/exp_index.hdf5",
+    features_dir="features",
+    vae_features_dir="vae_features",
+    exp_index_h5="metadata/exp_index.hdf5",
     vae_prefix="sd3_vae",
     ssl_prefix="uni",
     active_channels=[
-        "cell_mask",
+        "cell_masks",
         # One-hot cell type (healthy=0, cancer=1, immune=2)
         "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
         # One-hot cell state (prolif=0, nonprolif=1, dead=2)
@@ -36,7 +36,7 @@ data = dict(
 )
 
 # Root of the paired experimental dataset — set before training
-exp_data_root = f"{root}/data/orion-crc"
+exp_data_root = f"{root}/data/orion-crc33"
 
 # =====================================================================
 # Channel Groups — per-group TME encoder + cross-attention
@@ -75,7 +75,7 @@ base_model_path  = f"{root}/pretrained_models/pixcell-256/transformer"
 model_max_length = 1
 
 controlnet_model                 = "PixCell_ControlNet_XL_2_UNI"
-controlnet_depth                 = 2
+controlnet_depth                 = 27
 controlnet_conditioning_channels = 16
 controlnet_conditioning_scale    = 1.0
 controlnet_load_from             = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors"
@@ -96,8 +96,8 @@ fp32_attention   = True
 # Training
 # =====================================================================
 num_workers                 = 4
-train_batch_size            = 4
-num_epochs                  = 1
+train_batch_size            = 64
+num_epochs                  = 100
 gradient_accumulation_steps = 1
 grad_checkpointing          = True
 gradient_clip               = 1.0
