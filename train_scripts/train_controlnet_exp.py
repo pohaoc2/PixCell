@@ -13,6 +13,7 @@ Entry point: use stage2_train.py (calls main() here).
 """
 import os
 import time
+from pathlib import Path
 
 import torch
 
@@ -24,12 +25,19 @@ from train_scripts.initialize_models import (
 )
 from diffusion.data.builder import build_dataloader
 
-from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
+from diffusion.data.datasets.paired_exp_controlnet_dataset import (
+    PairedExpControlNetData,
+    build_exp_index,
+)
 from train_scripts.training_utils import (
     training_losses_controlnet,
     save_checkpoint_with_tme,
     load_tme_checkpoint,
     _build_tme_module_and_optimizers,
+)
+from train_scripts.exp_config_utils import (
+    resolve_exp_active_channels,
+    resolve_exp_dataset_kwargs,
 )
 from tools.channel_group_utils import split_channels_to_groups, apply_group_dropout
 
@@ -49,20 +57,27 @@ def initialize_exp_training(config, accelerator, logger, controlnet):
         channel_reliability_weights (list[float])  one per tme channel (excl. cell_mask)
         tme_model, tme_base_ch, tme_lr             (same as sim config)
     """
-    active_channels = getattr(config, "active_channels", [
-        "cell_mask",
-        "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
-        "cell_state_prolif",  "cell_state_nonprolif", "cell_state_dead",
-        "vasculature", "oxygen", "glucose",
-    ])
+    dataset_kwargs = resolve_exp_dataset_kwargs(config)
+    active_channels = dataset_kwargs["active_channels"]
+    exp_root = Path(config.exp_data_root)
+    exp_index_path = exp_root / dataset_kwargs["exp_index_h5"]
+    if not exp_index_path.exists():
+        exp_channels_path = exp_root / dataset_kwargs["exp_channels_dir"]
+        logger.info(
+            f"Paired-exp index not found at {exp_index_path}; "
+            f"building from {exp_channels_path}."
+        )
+        build_exp_index(
+            exp_channels_dir=exp_channels_path,
+            output_path=exp_index_path,
+            resolution=config.image_size,
+        )
 
     # ── Dataset ───────────────────────────────────────────────────────────────
     dataset = PairedExpControlNetData(
         root=config.exp_data_root,
         resolution=config.image_size,
-        active_channels=active_channels,
-        vae_prefix=getattr(config, "vae_prefix", "sd3_vae"),
-        ssl_prefix=getattr(config, "ssl_prefix", "uni"),
+        **dataset_kwargs,
     )
     train_dataloader = build_dataloader(
         dataset,
@@ -173,7 +188,7 @@ def train_controlnet_exp(models_dict):
             tme_dtype = next(tme_module.parameters()).dtype
 
             if use_multi_group:
-                active_channels = config.data.active_channels
+                active_channels = resolve_exp_active_channels(config)
                 tme_channel_dict = split_channels_to_groups(
                     control_input.to(dtype=tme_dtype), active_channels, channel_groups,
                 )
@@ -307,7 +322,7 @@ def generate_validation_visualizations(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     channel_groups = config.channel_groups
-    active_channels = config.data.active_channels
+    active_channels = resolve_exp_active_channels(config)
     dtype = next(tme_module.parameters()).dtype
     vae_scale, vae_shift = config.scale_factor, config.shift_factor
 
