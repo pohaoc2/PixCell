@@ -8,52 +8,34 @@ PixCell-ControlNet maps tumor microenvironment (TME) simulation outputs to reali
 
 ## System-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          TRAINING INPUTS                                    │
-├────────────────────┬────────────────────────┬──────────────────────────────┤
-│   H&E Image        │    Cell Mask           │    TME Channels              │
-│  [256, 256, 3]     │   [256, 256, 1]        │   [256, 256, 9]              │
-└────────┬───────────┴──────────┬─────────────┴──────────┬───────────────────┘
-         │                      │                         │
-         ▼                      ▼                         ▼
-  ┌──────────────┐      ┌──────────────┐        ┌────────────────────┐
-  │  SD3.5 VAE   │      │  SD3.5 VAE   │        │  Multi-Group TME   │
-  │   Encoder    │      │   Encoder    │        │     Module         │
-  │  (FROZEN)    │      │  (FROZEN)    │        │  (TRAINABLE)       │
-  └──────┬───────┘      └──────┬───────┘        └────────┬───────────┘
-         │                     │                          │
-         ▼                     ▼                          │
-  [B, 4, 32, 32]       [B, 16, 32, 32]                   │
-  H&E latent x_0       mask latent ──────────────────────►│
-         │                     │                          │
-         │  ┌──────────────────┘                          │
-         │  │  t ~ Uniform(0, 1000)                       │
-         │  │  ε ~ N(0, I)                                │
-         │  │  x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε          │
-         │  │  (noise added here, once per batch)         │
-         │  └──────────────────┐                          │
-         │                     ▼                          ▼
-         │             ┌───────────────┐        [B, 16, 32, 32]
-         │             │  ControlNet   │        fused conditioning
-         │             │  (TRAINABLE)  │◄───────────────────────
-         │             │  27 blocks    │
-         │             └──────┬────────┘
-         │                    │
-         │               27 residuals
-         │               [B, N, 1152]
-         ▼                    ▼
-  ┌─────────────────────────────────────┐
-  │     Base PixArt-256 Transformer     │   ◄── Timestep t + UNI-2h embedding
-  │         (FROZEN, 28 blocks)         │
-  │     input: noisy x_t [B, 4, 32, 32]│
-  └────────────────┬────────────────────┘
-                   │
-                   ▼
-          ε_pred  (noise prediction)
-                   │
-           diffusion loss
-          ║ε_pred − ε║²
+```mermaid
+flowchart TD
+    subgraph INPUTS["TRAINING INPUTS"]
+        HE["H&E Image<br/>[256, 256, 3]"]
+        CM["Cell Mask<br/>[256, 256, 1]"]
+        TMEIN["TME Channels<br/>[256, 256, 9]"]
+    end
+
+    HE --> VAE1["SD3.5 VAE Encoder<br/>(FROZEN)"]
+    HE --> UNI["UNI-2h Embedder<br/>(FROZEN)"]
+    CM --> VAE2["SD3.5 VAE Encoder<br/>(FROZEN)"]
+    TMEIN --> TMEMOD["Multi-Group TME Module<br/>(TRAINABLE)"]
+
+    VAE1 -->|"H&E latent x₀ [B, 16, 32, 32]"| NOISE["Noise Addition<br/>t ~ Uniform(0, 1000),  ε ~ N(0, I)<br/>x_t = √ᾱ_t · x₀ + √(1−ᾱ_t) · ε"]
+    VAE2 -->|"mask latent [B, 16, 32, 32]"| TMEMOD
+
+    TMEMOD -->|"fused conditioning [B, 16, 32, 32]"| CN["ControlNet<br/>(TRAINABLE, 27 blocks)<br/>— cross-attn(x, KV=UNI) at each block —<br/>zero-init output projection"]
+    NOISE -->|"noisy x_t [B, 16, 32, 32]"| CN
+    UNI -->|"[B, 1, 1536] cross-attn KV"| CN
+    TS["Timestep t"] --> CN
+
+    CN -->|"27 residuals encoding<br/>x_t + fused mask + UNI [B, N, 1152]"| BASE["Base PixArt-256 Transformer<br/>(FROZEN, 28 blocks)"]
+    NOISE -->|"noisy x_t [B, 16, 32, 32]"| BASE
+    UNI -->|"[B, 1, 1536] additional cross-attn KV"| BASE
+    TS --> BASE
+
+    BASE --> PRED["ε_pred  (noise prediction)"]
+    PRED --> LOSS["Diffusion Loss: ‖ε_pred − ε‖²"]
 ```
 
 ---
