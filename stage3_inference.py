@@ -77,6 +77,7 @@ from train_scripts.inference_controlnet import (
     load_vae,
     null_uni_embed,
     denoise,
+    encode_ctrl_mask_latent,
     load_controlnet_model_from_checkpoint,
     load_pixcell_controlnet_model_from_checkpoint,
 )
@@ -86,6 +87,12 @@ _ALL_BINARY = _BINARY_CHANNELS | EXP_BINARY
 
 
 # ── Channel loading ───────────────────────────────────────────────────────────
+
+_CHANNEL_DIR_ALIASES: dict[str, str] = {
+    # Experimental dataset uses "cell_masks" (plural); sim dirs use "cell_mask" (singular)
+    "cell_masks": "cell_mask",
+}
+
 
 def load_sim_channels(sim_channels_dir: Path, sim_id: str,
                       active_channels: list[str], resolution: int) -> torch.Tensor:
@@ -104,6 +111,8 @@ def load_sim_channels(sim_channels_dir: Path, sim_id: str,
     planes = []
     for ch in active_channels:
         ch_dir = sim_channels_dir / ch
+        if not ch_dir.exists() and ch in _CHANNEL_DIR_ALIASES:
+            ch_dir = sim_channels_dir / _CHANNEL_DIR_ALIASES[ch]
         fpath  = _find_file(ch_dir, sim_id)
         arr    = _load_spatial_file(fpath, resolution=resolution,
                                     binary=(ch in _ALL_BINARY))
@@ -238,13 +247,14 @@ def generate(
     )
 
     # 2. VAE-encode cell_mask (channel 0) → conditioning latent
-    cell_mask_img = ctrl_full[0:1].unsqueeze(0).repeat(1, 3, 1, 1)  # [1, 3, H, W]
-    cell_mask_img = 2 * (cell_mask_img - 0.5)
-    with torch.no_grad():
-        vae_mask = vae.encode(
-            cell_mask_img.to(device, dtype=dtype)
-        ).latent_dist.mean
-        vae_mask = (vae_mask - vae_shift) * vae_scale
+    vae_mask = encode_ctrl_mask_latent(
+        ctrl_full,
+        vae,
+        vae_shift=vae_shift,
+        vae_scale=vae_scale,
+        device=device,
+        dtype=dtype,
+    )
 
     # 3. Fuse TME channels through TME (flat or multi-group) module
     channel_groups_cfg = getattr(config, "channel_groups", None)
