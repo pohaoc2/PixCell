@@ -182,3 +182,35 @@ def test_build_tme_creates_split_optimizer_when_proj_lr_set():
     assert len(opt.param_groups) == 2, f"Expected 2 param groups, got {len(opt.param_groups)}"
     assert opt.param_groups[0]["lr"] == pytest.approx(3e-4), "proj group should be 3e-4"
     assert opt.param_groups[1]["lr"] == pytest.approx(1e-5), "other group should be 1e-5"
+
+
+def test_load_tme_checkpoint_reset_skips_optimizer(tmp_path):
+    """With optimizer_tme=None, model weights load but optimizer state is not touched."""
+    from diffusion.model.nets.multi_group_tme import MultiGroupTMEModule
+    from train_scripts.training_utils import load_tme_checkpoint
+
+    channel_groups = [dict(name="g1", n_channels=1)]
+    src_tme = MultiGroupTMEModule(channel_groups=channel_groups)
+
+    with torch.no_grad():
+        for p in src_tme.parameters():
+            p.fill_(0.42)
+
+    ckpt = {
+        "step": 4890,
+        "epoch": 30,
+        "model_state": src_tme.state_dict(),
+        # Single-group state — loading into a two-group optimizer would crash without reset
+        "optim_state": {"state": {}, "param_groups": [{"lr": 1e-5, "betas": (0.9, 0.999),
+                                                        "eps": 1e-8, "weight_decay": 0.0,
+                                                        "amsgrad": False, "params": []}]},
+        "sched_state": {"last_epoch": 4890},
+    }
+    torch.save(ckpt, tmp_path / "tme_module.pth")
+
+    dst_tme = MultiGroupTMEModule(channel_groups=channel_groups)
+    step = load_tme_checkpoint(str(tmp_path), dst_tme, optimizer_tme=None, lr_scheduler_tme=None)
+
+    assert step == 4890
+    for p in dst_tme.parameters():
+        assert torch.allclose(p, torch.tensor(0.42)), "model weights must transfer"

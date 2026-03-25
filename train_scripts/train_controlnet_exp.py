@@ -420,11 +420,17 @@ def main():
 
     tme_ckpt = getattr(config, "resume_tme_checkpoint", None)
     if tme_ckpt:
+        reset_opt = getattr(config, "reset_tme_optimizer", False)
         step = load_tme_checkpoint(
-            tme_ckpt, tme_module, optimizer_tme, lr_scheduler_tme,
+            tme_ckpt, tme_module,
+            optimizer_tme=None if reset_opt else optimizer_tme,
+            lr_scheduler_tme=None if reset_opt else lr_scheduler_tme,
             device=accelerator.device,
         )
-        logger.info(f"Resumed TME module from step {step} ({tme_ckpt})")
+        logger.info(
+            f"Resumed TME module from step {step} ({tme_ckpt})"
+            + (" [optimizer reset]" if reset_opt else "")
+        )
 
     models = {
         'base_model':       base_model,
