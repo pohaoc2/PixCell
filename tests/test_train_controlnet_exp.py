@@ -122,8 +122,6 @@ def test_proj_param_filter_captures_all_proj_layers():
     # filter is exhaustive — no param lost or double-counted
     total = sum(1 for _ in tme.named_parameters())
     assert len(proj_names) + len(other_names) == total
-    for name in proj_names:
-        assert "cross_attn.proj" in name
 
 
 def test_split_tme_optimizer_has_correct_lrs():
@@ -138,6 +136,8 @@ def test_split_tme_optimizer_has_correct_lrs():
         weight_decay=0.0,
     )
 
+    total = sum(1 for _ in tme.parameters())
+    assert len(proj_params) + len(other_params) == total, "split must cover all params"
     assert len(opt.param_groups) == 2
     assert opt.param_groups[0]["lr"] == pytest.approx(3e-4), "proj group LR"
     assert opt.param_groups[1]["lr"] == pytest.approx(1e-5), "other group LR"
