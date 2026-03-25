@@ -276,9 +276,10 @@ def load_checkpoint(checkpoint,
     # 6. Optional: Load EMA/Optimizer/Scheduler (Usually only in .pth)
     if not is_safetensors:
         print("is_safetensors is False")
-        if controlnet is not None and 'controlnet_state_dict' in checkpoint_data:
-            print("controlnet is not None and 'controlnet_state_dict' in checkpoint_data")
-            controlnet.load_state_dict(checkpoint_data['controlnet_state_dict'], strict=False)
+        if controlnet is not None:
+            ctrl_sd = checkpoint_data.get('controlnet_state_dict') or checkpoint_data.get('state_dict')
+            if ctrl_sd is not None:
+                controlnet.load_state_dict(ctrl_sd, strict=False)
         if model_ema is not None and 'state_dict_ema' in checkpoint_data:
             model_ema.load_state_dict(checkpoint_data['state_dict_ema'], strict=False)
         if optimizer is not None and resume_optimizer and 'optimizer' in checkpoint_data:
