@@ -402,8 +402,7 @@ def generate_validation_visualizations(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    config_path = "./configs/config_controlnet_exp.py"
-    init_data   = initialize_config_and_accelerator([config_path])
+    init_data   = initialize_config_and_accelerator()
     config      = init_data['config']
     accelerator = init_data['accelerator']
     logger      = init_data['logger']

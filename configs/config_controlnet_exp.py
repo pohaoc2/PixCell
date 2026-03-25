@@ -11,6 +11,7 @@ Set exp_data_root to your actual paired dataset path before running.
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
 root = "./"
+#root = "/content/PixCell"
 
 # =====================================================================
 # Dataset — PairedExpControlNetData
@@ -89,23 +90,28 @@ load_from   = f"{root}/pretrained_models/pixcell-256/transformer"
 # To resume from a sim ControlNet checkpoint:
 # resume_from = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
 # resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
-resume_from = None
+resume_from = dict(
+    checkpoint=f"{root}/checkpoints/pixcell_controlnet_exp/checkpoints/controlnet_epoch_30_step_4890.pth",
+    load_ema=True,
+    resume_optimizer=True,
+    resume_lr_scheduler=True,
+)
 resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_exp/checkpoints"
 
 vae_pretrained   = f"{root}/pretrained_models/sd-3.5-vae/vae"
 pe_interpolation = 0.5
 
-mixed_precision  = 'no'
+mixed_precision  = 'bf16'
 fp32_attention   = True
 
 # =====================================================================
 # Training
 # =====================================================================
 num_workers                 = 4
-train_batch_size            = 64
+train_batch_size            = 32
 # 0 = save ControlNet + freshly initialized TME to work_dir/checkpoints/ and exit (no optimizer steps).
 num_epochs                  = 100
-gradient_accumulation_steps = 1
+gradient_accumulation_steps = 2   # effective batch = 64
 grad_checkpointing          = True
 gradient_clip               = 1.0
 
