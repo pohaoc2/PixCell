@@ -90,7 +90,7 @@ load_from   = f"{root}/pretrained_models/pixcell-256/transformer"
 # resume_from = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
 # resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
 resume_from = None
-resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_exp/checkpoints/controlnet_epoch_30_step_4890.pth"
+resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_exp/checkpoints"
 
 vae_pretrained   = f"{root}/pretrained_models/sd-3.5-vae/vae"
 pe_interpolation = 0.5
