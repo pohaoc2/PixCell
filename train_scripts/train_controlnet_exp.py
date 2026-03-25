@@ -144,6 +144,8 @@ def train_controlnet_exp(models_dict):
     logger.info(f"start_epoch={start_epoch}  start_step={start_step}  total_steps={total_steps}")
     logger.info("=" * 80)
 
+    _proj_grad_norms: dict = {}
+    _tme_residuals:   dict = {}
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         for step, batch in enumerate(train_dataloader):
             if step < skip_step:
@@ -201,7 +203,10 @@ def train_controlnet_exp(models_dict):
                         gname = g["name"]
                         if gname not in active_groups_per_sample[b_idx] and gname in tme_channel_dict:
                             tme_channel_dict[gname][b_idx] = 0.0
-                vae_mask = tme_module(vae_mask.to(dtype=tme_dtype), tme_channel_dict)
+                fused, _tme_residuals = tme_module(
+                    vae_mask.to(dtype=tme_dtype), tme_channel_dict, return_residuals=True,
+                )
+                vae_mask = fused
             else:
                 tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
                 channel_weights = getattr(config, "channel_reliability_weights", None)
@@ -234,6 +239,15 @@ def train_controlnet_exp(models_dict):
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
+                    _proj_grad_norms = {}
+                    if use_multi_group:
+                        for _gname, _gblock in accelerator.unwrap_model(tme_module).groups.items():
+                            _g = _gblock.cross_attn.proj.weight.grad
+                            if _g is not None:
+                                _proj_grad_norms[_gname] = (
+                                    _g.norm().item(),
+                                    _gblock.cross_attn.proj.weight.abs().max().item(),
+                                )
                     accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
                     optimizer.step()
                     lr_scheduler.step()
@@ -247,6 +261,13 @@ def train_controlnet_exp(models_dict):
             # 4. Logging
             if accelerator.sync_gradients:
                 global_step += 1
+                if (global_step % config.log_interval == 0
+                        and accelerator.is_main_process
+                        and use_multi_group):
+                    for _gname, _delta in _tme_residuals.items():
+                        logger.info(f"  delta_mean[{_gname}]={_delta.abs().mean():.3e}")
+                    for _gname, (_gnorm, _wmax) in _proj_grad_norms.items():
+                        logger.info(f"  proj_grad[{_gname}]={_gnorm:.3e}  proj_wmax={_wmax:.3e}")
                 if global_step % config.log_interval == 0:
                     time_cost       = time.time() - last_tic
                     samples_per_sec = config.log_interval * config.train_batch_size / time_cost
