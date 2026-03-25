@@ -12,11 +12,13 @@ influence the generated H&E image. The ControlNet already produces acceptable ou
 `mask_latent` alone, so the gradient signal through the TME pathway is not amplified by task
 pressure.
 
-Two compounding risks with a naive blanket `tme_lr=3e-4` increase:
+Two compounding risks with a naive blanket `tme_lr=3e-4` increase (already applied to the
+config but not yet tested):
 1. The encoder CNN and Q/K/V weights are already healthy (0.1–0.5). A 30× LR jump could
    destabilize them.
 2. When resuming from the epoch-30 checkpoint, the restored optimizer state carries decayed
-   momentum and a potentially low effective LR regardless of the config value.
+   momentum. Loading it into a differently-structured (two-group) optimizer will hard-crash
+   with `ValueError: loaded state dict has a different number of parameter groups`.
 
 ## Solution: Split-LR + Diagnostics (Approaches A + B)
 
@@ -26,16 +28,26 @@ Two compounding risks with a naive blanket `tme_lr=3e-4` increase:
 keep their original rate.
 
 **Config changes** (`configs/config_controlnet_exp.py`):
+
+The current config has `tme_lr = 3e-4` (blanket increase — the naive approach). Replace with:
+
 ```python
 tme_lr              = 1e-5   # encoder CNN + Q/K/V — stable, already learning
 tme_proj_lr         = 3e-4   # cross_attn.proj only — zero-init, needs boost
-reset_tme_optimizer = True   # load model weights only on resume; fresh optim state
+reset_tme_optimizer = True   # REQUIRED for first resume after optimizer-split is activated
+                             # (see Section B — hard crash if False with old single-group ckpt)
 ```
+
+`reset_tme_optimizer=True` is **mandatory** for the first resume after this change. Attempting
+to load the old single-group optimizer state into the new two-group optimizer will raise a
+`ValueError`. Once training has saved a new checkpoint with the two-group optimizer, this
+can optionally be set back to `False`.
 
 **Optimizer split** (`train_scripts/training_utils.py`, `_build_tme_module_and_optimizers`):
 
 Replace the single `build_optimizer(tme_module, ...)` call with two param groups when
-`tme_proj_lr` is present in config:
+`tme_proj_lr` is present in config. `"cross_attn.proj" in n` correctly matches
+`groups.<name>.cross_attn.proj.weight` and `.bias` from `named_parameters()`:
 
 ```python
 tme_proj_lr = getattr(config, "tme_proj_lr", None)
@@ -57,12 +69,14 @@ else:
     optimizer_tme = build_optimizer(tme_module, tme_optimizer_cfg)
 ```
 
-The LR scheduler wraps the multi-group optimizer unchanged — PyTorch schedulers respect
-per-group base LRs automatically.
+The LR scheduler wraps the multi-group optimizer unchanged — PyTorch's `LambdaLR` applies the
+same multiplier to each group's `base_lr` independently. `save_checkpoint_with_tme` is also
+unchanged: `optimizer.state_dict()` is self-describing for any number of param groups.
 
 ### B. Optimizer reset on resume
 
-**`train_scripts/train_controlnet_exp.py`** — resume block:
+**`train_scripts/train_controlnet_exp.py`** — replace the existing unconditional resume block
+(lines 421–427) with the following. Do not add a second block; replace the existing one:
 
 ```python
 tme_ckpt = getattr(config, "resume_tme_checkpoint", None)
@@ -76,17 +90,27 @@ if tme_ckpt:
     )
 ```
 
-With `reset_tme_optimizer=True`: model weights from checkpoint, fresh optimizer/scheduler
-from new config. Also avoids a param-group shape mismatch when the old checkpoint had a
+With `reset_tme_optimizer=True`: loads model weights only; optimizer and scheduler start fresh
+from the new config. This is the only safe path when the checkpoint was saved with the old
 single-group optimizer.
+
+Note: `load_tme_checkpoint` is called after `accelerator.prepare()`. For the `reset_opt=True`
+path this is harmless (no optimizer state loaded). For future runs where `reset_opt=False`
+and the checkpoint also has two groups, this ordering is also fine for the default Accelerate
+(DDP) backend.
 
 ### C. Diagnostics
 
 Two logging additions in the `use_multi_group` branch of
-`train_scripts/train_controlnet_exp.py`:
+`train_scripts/train_controlnet_exp.py`. Both gates on `accelerator.sync_gradients` to avoid
+logging on accumulation micro-steps (where `.grad` is `None`).
 
-**Residual magnitudes** — logged at every `log_interval` steps (no extra forward pass
-overhead; uses `return_residuals=True`):
+`log_now` must be computed **once per step** before both diagnostic blocks — hoist it above
+the residuals branch and above `if accelerator.sync_gradients` so the grad-norm block can
+reference it without a `NameError`.
+
+**Residual magnitudes** — single forward pass, `return_residuals=True` on log steps only.
+The output `fused` is the one used for training — there is no second forward pass:
 
 ```python
 log_now = (global_step % config.log_interval == 0 and accelerator.is_main_process)
@@ -100,7 +124,9 @@ else:
 vae_mask = fused
 ```
 
-**Proj gradient norms** — inside `if accelerator.sync_gradients`, before gradient clipping:
+**Proj gradient norms** — inside `if accelerator.sync_gradients`, before gradient clipping.
+Grads are only non-None at sync steps; the `if g is not None` guard is defensive, not a
+substitute for being inside `sync_gradients`:
 
 ```python
 if log_now:
@@ -125,9 +151,9 @@ if log_now:
 
 | File | Change |
 |------|--------|
-| `configs/config_controlnet_exp.py` | Add `tme_proj_lr`, `reset_tme_optimizer`; revert `tme_lr=1e-5` |
+| `configs/config_controlnet_exp.py` | Revert `tme_lr=1e-5`; add `tme_proj_lr=3e-4`, `reset_tme_optimizer=True` |
 | `train_scripts/training_utils.py` | Split TME optimizer into two param groups |
-| `train_scripts/train_controlnet_exp.py` | Optimizer reset on resume; residual + grad norm logging |
+| `train_scripts/train_controlnet_exp.py` | Replace resume block (not add); residual + grad norm logging |
 
 ## Success Criteria
 
