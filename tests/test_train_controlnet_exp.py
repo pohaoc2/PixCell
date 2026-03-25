@@ -96,3 +96,89 @@ def test_cfg_dropout_batch_independence():
     # With prob=0.5 over 32 samples, all dropped or all kept is astronomically unlikely
     assert any(dropped), "at least one sample should be dropped"
     assert not all(dropped), "at least one sample should survive"
+
+
+# ── Split-optimizer (TME proj LR fix) ────────────────────────────────────────
+
+def _make_tme_module():
+    from diffusion.model.nets.multi_group_tme import MultiGroupTMEModule
+    channel_groups = [
+        dict(name="cell_identity", n_channels=3),
+        dict(name="cell_state",    n_channels=3),
+        dict(name="vasculature",   n_channels=1),
+        dict(name="microenv",      n_channels=2),
+    ]
+    return MultiGroupTMEModule(channel_groups=channel_groups)
+
+
+def test_proj_param_filter_captures_all_proj_layers():
+    """'cross_attn.proj' filter must capture exactly weight+bias for all 4 groups."""
+    tme = _make_tme_module()
+    proj_names  = [n for n, _ in tme.named_parameters() if "cross_attn.proj" in n]
+    other_names = [n for n, _ in tme.named_parameters() if "cross_attn.proj" not in n]
+
+    # 4 groups × (proj.weight + proj.bias) = 8
+    assert len(proj_names) == 8, f"Expected 8 proj params, got {len(proj_names)}: {proj_names}"
+    # filter is exhaustive — no param lost or double-counted
+    total = sum(1 for _ in tme.named_parameters())
+    assert len(proj_names) + len(other_names) == total
+    for name in proj_names:
+        assert "cross_attn.proj" in name
+
+
+def test_split_tme_optimizer_has_correct_lrs():
+    """Two-group AdamW must assign tme_proj_lr to proj params and tme_lr to the rest."""
+    tme = _make_tme_module()
+    proj_params  = [p for n, p in tme.named_parameters() if "cross_attn.proj" in n]
+    other_params = [p for n, p in tme.named_parameters() if "cross_attn.proj" not in n]
+
+    opt = torch.optim.AdamW(
+        [{"params": proj_params,  "lr": 3e-4},
+         {"params": other_params, "lr": 1e-5}],
+        weight_decay=0.0,
+    )
+
+    assert len(opt.param_groups) == 2
+    assert opt.param_groups[0]["lr"] == pytest.approx(3e-4), "proj group LR"
+    assert opt.param_groups[1]["lr"] == pytest.approx(1e-5), "other group LR"
+
+
+def test_build_tme_creates_split_optimizer_when_proj_lr_set():
+    """_build_tme_module_and_optimizers creates two param groups when tme_proj_lr is set."""
+    from train_scripts.training_utils import _build_tme_module_and_optimizers
+    from unittest.mock import MagicMock, patch
+    import types
+
+    config = types.SimpleNamespace(
+        tme_model="MultiGroupTMEModule",
+        tme_base_ch=32,
+        tme_proj_lr=3e-4,
+        tme_lr=1e-5,
+        channel_groups=[
+            dict(name="cell_identity", channels=["a", "b", "c"]),
+            dict(name="microenv",      channels=["x", "y"]),
+        ],
+        optimizer={"type": "AdamW", "lr": 5e-6, "weight_decay": 0.0,
+                   "betas": (0.9, 0.999), "eps": 1e-8},
+        lr_schedule_args={"num_warmup_steps": 10},
+        num_epochs=1,
+    )
+    controlnet = MagicMock()
+    dataloader = MagicMock()
+    dataloader.__len__ = lambda self: 10
+    logger     = MagicMock()
+    active_ch  = ["cell_masks", "a", "b", "c", "x", "y"]
+
+    # Patch the controlnet optimizer and scheduler builders so only the TME path runs
+    with patch("train_scripts.training_utils.build_optimizer") as mock_opt, \
+         patch("train_scripts.training_utils.build_lr_scheduler") as mock_sched:
+        mock_opt.return_value   = MagicMock()
+        mock_sched.return_value = MagicMock()
+        result = _build_tme_module_and_optimizers(
+            config, controlnet, dataloader, active_ch, logger
+        )
+
+    opt = result["optimizer_tme"]
+    assert len(opt.param_groups) == 2, f"Expected 2 param groups, got {len(opt.param_groups)}"
+    assert opt.param_groups[0]["lr"] == pytest.approx(3e-4), "proj group should be 3e-4"
+    assert opt.param_groups[1]["lr"] == pytest.approx(1e-5), "other group should be 1e-5"
