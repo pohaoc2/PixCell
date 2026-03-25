@@ -66,9 +66,22 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
     optimizer    = build_optimizer(controlnet, config.optimizer)
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio=1)
 
-    tme_optimizer_cfg       = deepcopy(config.optimizer)
-    tme_optimizer_cfg['lr'] = getattr(config, "tme_lr", config.optimizer.get('lr', 1e-4))
-    optimizer_tme    = build_optimizer(tme_module, tme_optimizer_cfg)
+    tme_proj_lr = getattr(config, "tme_proj_lr", None)
+    if tme_proj_lr is not None:
+        proj_params  = [p for n, p in tme_module.named_parameters() if "cross_attn.proj" in n]
+        other_params = [p for n, p in tme_module.named_parameters() if "cross_attn.proj" not in n]
+        base_tme_lr  = getattr(config, "tme_lr", 1e-5)
+        optimizer_tme = torch.optim.AdamW(
+            [{"params": proj_params,  "lr": tme_proj_lr},
+             {"params": other_params, "lr": base_tme_lr}],
+            weight_decay=config.optimizer.get("weight_decay", 0.0),
+            betas=tuple(config.optimizer.get("betas", (0.9, 0.999))),
+            eps=config.optimizer.get("eps", 1e-8),
+        )
+    else:
+        tme_optimizer_cfg       = deepcopy(config.optimizer)
+        tme_optimizer_cfg['lr'] = getattr(config, "tme_lr", config.optimizer.get('lr', 1e-4))
+        optimizer_tme = build_optimizer(tme_module, tme_optimizer_cfg)
     lr_scheduler_tme = build_lr_scheduler(config, optimizer_tme, train_dataloader, lr_scale_ratio=1)
 
     return {
