@@ -53,7 +53,12 @@ channel_groups = [
 # =====================================================================
 tme_model   = "MultiGroupTMEModule"
 tme_base_ch = 32
-tme_lr      = 1e-5
+tme_lr          = 1e-5   # encoder CNN + Q/K/V — already healthy, keep stable
+tme_proj_lr     = 3e-4   # cross_attn.proj only — zero-init, needs the boost
+# REQUIRED for the first resume after the optimizer-split is activated.
+# Without this, loading the old single-group optimizer state into the new two-group
+# optimizer raises: ValueError: loaded state dict has a different number of param groups.
+reset_tme_optimizer = True
 
 # =====================================================================
 # Experimental training knobs
@@ -85,6 +90,7 @@ load_from   = f"{root}/pretrained_models/pixcell-256/transformer"
 # resume_from = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
 # resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
 resume_from = None
+resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_exp/checkpoints/controlnet_epoch_30_step_4890.pth"
 
 vae_pretrained   = f"{root}/pretrained_models/sd-3.5-vae/vae"
 pe_interpolation = 0.5
@@ -97,6 +103,7 @@ fp32_attention   = True
 # =====================================================================
 num_workers                 = 4
 train_batch_size            = 64
+# 0 = save ControlNet + freshly initialized TME to work_dir/checkpoints/ and exit (no optimizer steps).
 num_epochs                  = 100
 gradient_accumulation_steps = 1
 grad_checkpointing          = True
