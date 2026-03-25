@@ -142,6 +142,10 @@ class PairedExpControlNetData(Dataset):
         if not self.tile_ids:
             raise RuntimeError(f"No tile IDs found in {exp_h5}")
 
+        max_samples = kwargs.get("max_train_samples", None)
+        if max_samples is not None:
+            self.tile_ids = self.tile_ids[:max_samples]
+
         self.load_vae_feat = True
 
         print(

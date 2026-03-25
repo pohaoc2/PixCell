@@ -13,9 +13,12 @@ Entry point: use stage2_train.py (calls main() here).
 """
 import os
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import torch
+from diffusion.utils.lr_scheduler import build_lr_scheduler
+from diffusion.utils.optimizer import build_optimizer
 
 from train_scripts.initialize_models import (
     initialize_config_and_accelerator,
@@ -268,6 +271,27 @@ def train_controlnet_exp(models_dict):
                         logger.info(f"  delta_mean[{_gname}]={_delta.abs().mean():.3e}")
                     for _gname, (_gnorm, _wmax) in _proj_grad_norms.items():
                         logger.info(f"  proj_grad[{_gname}]={_gnorm:.3e}  proj_wmax={_wmax:.3e}")
+
+                # Debug: on first 3 optimizer steps, verify TME optimizer
+                # is tracking live parameters (exp_avg must be non-zero).
+                if global_step <= 3 and accelerator.is_main_process and use_multi_group:
+                    _tme_state = optimizer_tme.state
+                    _any_nonzero = any(
+                        s.get("exp_avg", torch.tensor(0.0)).abs().max() > 0
+                        for s in _tme_state.values()
+                    )
+                    _proj_ids = optimizer_tme.param_groups[0]["params"]
+                    _proj_avg = max(
+                        (_tme_state[pid]["exp_avg"].abs().max().item()
+                         for pid in _proj_ids if pid in _tme_state),
+                        default=0.0,
+                    )
+                    logger.info(
+                        f"  [debug step {global_step}] "
+                        f"tme_any_nonzero_moment={_any_nonzero}  "
+                        f"proj_exp_avg_max={_proj_avg:.3e}  "
+                        f"(expect non-zero if optimizer fix is working)"
+                    )
                 if global_step % config.log_interval == 0:
                     time_cost       = time.time() - last_tic
                     samples_per_sec = config.log_interval * config.train_batch_size / time_cost
@@ -432,6 +456,29 @@ def main():
         optimizer, train_dataloader, lr_scheduler,
         tme_module, optimizer_tme,
     )
+
+    # Rebuild optimizer_tme after prepare: accelerator.prepare() may replace
+    # nn.Parameter objects during dtype conversion (PyTorch _apply creates new
+    # Parameter instances), leaving optimizer_tme with stale param references
+    # that are no longer in the computation graph.  Collect params from the
+    # prepared model so the optimizer always steps on live parameters.
+    _tme = accelerator.unwrap_model(tme_module)
+    _tme_proj_lr = getattr(config, "tme_proj_lr", None)
+    if _tme_proj_lr is not None:
+        _proj  = [p for n, p in _tme.named_parameters() if "cross_attn.proj" in n]
+        _other = [p for n, p in _tme.named_parameters() if "cross_attn.proj" not in n]
+        optimizer_tme = torch.optim.AdamW(
+            [{"params": _proj,  "lr": _tme_proj_lr},
+             {"params": _other, "lr": getattr(config, "tme_lr", 1e-5)}],
+            weight_decay=config.optimizer.get("weight_decay", 0.0),
+            betas=tuple(config.optimizer.get("betas", (0.9, 0.999))),
+            eps=config.optimizer.get("eps", 1e-8),
+        )
+    else:
+        _tme_optcfg = deepcopy(config.optimizer)
+        _tme_optcfg["lr"] = getattr(config, "tme_lr", config.optimizer.get("lr", 1e-4))
+        optimizer_tme = build_optimizer(_tme, _tme_optcfg)
+    lr_scheduler_tme = build_lr_scheduler(config, optimizer_tme, train_dataloader, lr_scale_ratio=1)
 
     state_data = setup_training_state(
         config, accelerator, logger, args, train_dataloader,
