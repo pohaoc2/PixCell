@@ -23,6 +23,38 @@ def null_uni_embed(device="cuda", dtype=torch.float16):
     return torch.zeros(1, 1, 1, 1536, device=device, dtype=dtype)
 
 
+def encode_ctrl_mask_latent(
+    ctrl_full: torch.Tensor,
+    vae,
+    *,
+    vae_shift,
+    vae_scale,
+    device: str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """VAE-encode the cell-mask channel (index 0) of ctrl_full to scaled latent space.
+
+    Matches training/inference convention: repeat mask to RGB, map [0,1] → [-1,1], encode mean,
+    then apply (latent - vae_shift) * vae_scale.
+
+    Args:
+        ctrl_full: [C, H, W] control stack; channel 0 is the binary mask in [0, 1].
+        vae: Frozen VAE (caller sets ``.eval()`` and device).
+        vae_shift: Config ``shift_factor``.
+        vae_scale: Config ``scale_factor``.
+        device: Encode device.
+        dtype: Encode dtype (e.g. float16 on CUDA).
+
+    Returns:
+        Scaled mask latent [1, 16, H/8, W/8].
+    """
+    cell_mask_img = ctrl_full[0:1].unsqueeze(0).repeat(1, 3, 1, 1)
+    cell_mask_img = 2 * (cell_mask_img - 0.5)
+    with torch.no_grad():
+        lat = vae.encode(cell_mask_img.to(device=device, dtype=dtype)).latent_dist.mean
+    return (lat - vae_shift) * vae_scale
+
+
 def load_controlnet_model(module_name, file_path, checkpoints_folder, device="cuda"):
     import importlib.util
     import sys
@@ -422,7 +454,6 @@ def decode_latents(vae, latents, hist_image, mask_image, save_path):
         cell_mask = (labeled == label_id).astype(np.uint8)
         contours, _ = cv2.findContours(cell_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(contour_overlay, contours, -1, color=(255, 0, 0), thickness=1)
-    contour_overlay = gen_img
     # --- Plot ---
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
     ax[0].imshow(hist_image)

@@ -32,6 +32,7 @@ from diffusion.data.datasets.sim_controlnet_dataset import _load_spatial_file, _
 from diffusion.data.datasets.paired_exp_controlnet_dataset import (
     _BINARY_CHANNELS as EXP_BINARY,
 )
+from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
 
 if TYPE_CHECKING:
     from pipeline.extract_features import UNI2hExtractor
@@ -118,11 +119,14 @@ def run_validation(
         )
 
         # 2. VAE-encode cell_mask (channel 0) for ControlNet conditioning
-        cell_mask_img = ctrl_full[0:1].unsqueeze(0).repeat(1, 3, 1, 1)  # [1,3,H,W]
-        cell_mask_img = 2 * (cell_mask_img - 0.5)
-        with torch.no_grad():
-            vae_mask = vae.encode(cell_mask_img.to(device, dtype=dtype)).latent_dist.mean
-            vae_mask = (vae_mask - vae_shift) * vae_scale
+        vae_mask = encode_ctrl_mask_latent(
+            ctrl_full,
+            vae,
+            vae_shift=vae_shift,
+            vae_scale=vae_scale,
+            device=device,
+            dtype=dtype,
+        )
 
         # 3. Fuse TME channels (no weight attenuation at inference — sim channels are clean)
         tme_channels = ctrl_full[1:].unsqueeze(0).to(device, dtype=dtype)
@@ -186,7 +190,6 @@ def main():
     from diffusion.utils.misc import read_config
     from pipeline.extract_features import UNI2hExtractor
     from train_scripts.inference_controlnet import (
-        denoise,
         load_controlnet_model_from_checkpoint,
         load_pixcell_controlnet_model_from_checkpoint,
         load_vae,

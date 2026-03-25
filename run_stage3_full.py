@@ -167,6 +167,7 @@ def generate_tile(
         vis_data: dict with mask_rgb, residuals, attn_maps (if return_vis_data)
     """
     from tools.channel_group_utils import split_channels_to_groups
+    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
 
     active_channels = config.data.active_channels
     vae_scale = config.scale_factor
@@ -184,13 +185,14 @@ def generate_tile(
     ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size)
 
     # 2. VAE-encode cell_mask (channel 0)
-    cell_mask_img = ctrl_full[0:1].unsqueeze(0).repeat(1, 3, 1, 1)  # [1,3,H,W]
-    cell_mask_img = 2 * (cell_mask_img - 0.5)
-    with torch.no_grad():
-        vae_mask = vae.encode(
-            cell_mask_img.to(device, dtype=dtype)
-        ).latent_dist.mean
-        vae_mask = (vae_mask - vae_shift) * vae_scale
+    vae_mask = encode_ctrl_mask_latent(
+        ctrl_full,
+        vae,
+        vae_shift=vae_shift,
+        vae_scale=vae_scale,
+        device=device,
+        dtype=dtype,
+    )
 
     # 3. Split channels to groups
     tme_dict = split_channels_to_groups(
@@ -211,7 +213,6 @@ def generate_tile(
             residuals, attn_maps = {}, {}
 
     # 5. Denoise
-    from train_scripts.inference_controlnet import denoise
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
     latents = torch.randn(latent_shape, device=device, dtype=dtype)
     latents = latents * scheduler.init_noise_sigma
@@ -260,7 +261,7 @@ def _generate_ablation_images(
 ) -> list:
     """Return list of (label, gen_np) for progressive group addition."""
     from tools.channel_group_utils import split_channels_to_groups
-    from train_scripts.inference_controlnet import denoise
+    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
 
     active_channels = config.data.active_channels
     vae_scale = config.scale_factor
@@ -275,13 +276,14 @@ def _generate_ablation_images(
     vae.to(device=device, dtype=dtype).eval()
 
     ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size)
-    cell_mask_img = ctrl_full[0:1].unsqueeze(0).repeat(1, 3, 1, 1)
-    cell_mask_img = 2 * (cell_mask_img - 0.5)
-    with torch.no_grad():
-        vae_mask = vae.encode(
-            cell_mask_img.to(device, dtype=dtype)
-        ).latent_dist.mean
-        vae_mask = (vae_mask - vae_shift) * vae_scale
+    vae_mask = encode_ctrl_mask_latent(
+        ctrl_full,
+        vae,
+        vae_shift=vae_shift,
+        vae_scale=vae_scale,
+        device=device,
+        dtype=dtype,
+    )
 
     tme_dict = split_channels_to_groups(
         ctrl_full.unsqueeze(0).to(device, dtype=dtype),
@@ -704,8 +706,8 @@ def main():
     )
     scheduler.set_timesteps(NUM_STEPS, device=DEVICE)
 
-    # Null UNI embedding (TME-only mode)
-    uni_embeds = null_uni_embed(device="cpu", dtype=torch.float32)
+    # Null UNI embedding used as fallback when paired features are missing
+    null_uni = null_uni_embed(device="cpu", dtype=torch.float32)
 
     # ── Initialize UNI extractor for cosine similarity ──────────────────────
     print("\nLoading UNI extractor for validation metrics...")
@@ -713,13 +715,25 @@ def main():
 
     # ── INFERENCE SET ────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("INFERENCE SET (paired exp data)")
+    print("INFERENCE SET (paired exp data — using paired UNI style)")
     print(f"{'='*60}")
     inf_cosine_sims = []
 
     for i, tid in enumerate(inference_ids):
         do_vis = (i < N_VIS_TILES)
         print(f"[{i+1:02d}/{N_INFERENCE}] {tid}", end="")
+
+        # Use the paired H&E UNI embedding as style condition.
+        # This is the correct mode for paired inference: the model sees
+        # the same H&E style it was trained on, and we measure how well
+        # the TME channels drive the layout.
+        exp_feat_path = FEAT_DIR / f"{tid}_uni.npy"
+        if exp_feat_path.exists():
+            uni_embeds = torch.from_numpy(np.load(exp_feat_path)).view(1, 1, 1, 1536)
+            print(f"  [style=paired UNI]", end="")
+        else:
+            uni_embeds = null_uni
+            print(f"  [style=null UNI (no paired feat)]", end="")
 
         gen_np, vis_data = generate_tile(
             tile_id=tid,
@@ -805,12 +819,18 @@ def main():
 
     # ── VALIDATION SET (unpaired) ────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("VALIDATION SET (unpaired exp data)")
+    print("VALIDATION SET (paired exp data — using paired UNI style)")
     print(f"{'='*60}")
     val_cosine_sims = []
 
     for i, tid in enumerate(validation_ids):
         print(f"[{i+1:02d}/{N_VALIDATION}] {tid}", end="")
+
+        exp_feat_path = FEAT_DIR / f"{tid}_uni.npy"
+        if exp_feat_path.exists():
+            uni_embeds = torch.from_numpy(np.load(exp_feat_path)).view(1, 1, 1, 1536)
+        else:
+            uni_embeds = null_uni
 
         gen_np, _ = generate_tile(
             tile_id=tid,
@@ -948,7 +968,7 @@ def main():
         "guidance_scale": GUIDANCE_SCALE,
         "num_steps": NUM_STEPS,
         "inference_paired": {
-            "mode": "TME-only (null UNI)",
+            "mode": "style-conditioned (paired UNI)",
             "n_tiles": N_INFERENCE,
             "tile_ids": inference_ids,
             "cosine_sims": inf_cosine_sims,
@@ -956,7 +976,7 @@ def main():
             "std_cosine_sim":  float(np.std(inf_cosine_sims))  if inf_cosine_sims else None,
         },
         "validation_paired": {
-            "mode": "TME-only (null UNI)",
+            "mode": "style-conditioned (paired UNI)",
             "n_tiles": N_VALIDATION,
             "tile_ids": validation_ids,
             "cosine_sims": val_cosine_sims,
@@ -980,8 +1000,8 @@ def main():
         m, s = d["mean_cosine_sim"], d["std_cosine_sim"]
         return f"{m:.4f} ± {s:.4f}" if m is not None else "n/a"
 
-    print(f"\nInference  (paired,   TME-only)  — mean UNI cos sim: {_fmt(results['inference_paired'])}")
-    print(f"Validation (paired,   TME-only)  — mean UNI cos sim: {_fmt(results['validation_paired'])}")
+    print(f"\nInference  (paired,   style-cond) — mean UNI cos sim: {_fmt(results['inference_paired'])}")
+    print(f"Validation (paired,   style-cond) — mean UNI cos sim: {_fmt(results['validation_paired'])}")
     print(f"Inference  (unpaired, style-cond) — mean UNI cos sim: {_fmt(results['inference_unpaired'])}")
     print(f"\nOutputs saved to: {OUT_DIR}")
     print(f"Metrics:          {metrics_path}")

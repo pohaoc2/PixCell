@@ -4,46 +4,115 @@
 
 PixCell-ControlNet maps tumor microenvironment (TME) simulation outputs to realistic H&E histology images using a conditional latent diffusion model. The key innovation is the **Multi-Group TME Module**, which encodes disentangled spatial biology channels (cell identity, cell state, vasculature, microenvironment) into additive conditioning residuals.
 
+Two latent streams are active throughout the system:
+
+1. **Denoising latent stream**: the current diffusion latent passed as `hidden_states`.
+   - Training: `x_t`, obtained by adding noise to the VAE latent of the target H&E image.
+   - Inference: starts from random Gaussian noise `x_T`.
+2. **Conditioning latent stream**: the latent passed as `conditioning` to ControlNet.
+   - Official PixCell ControlNet: VAE-encoded cell-mask latent only.
+   - This repo: cell-mask latent fused with TME residuals from the Multi-Group TME Module.
+
 ---
 
 ## System-Level Architecture
 
-```mermaid
-flowchart TD
-    subgraph INPUTS["TRAINING INPUTS"]
-        HE["H&E Image<br/>[256, 256, 3]"]
-        CM["Cell Mask<br/>[256, 256, 1]"]
-        TMEIN["TME Channels<br/>[256, 256, 9]"]
-    end
+### Training
 
-    HE --> VAE1["SD3.5 VAE Encoder<br/>(FROZEN)"]
-    HE --> UNI["UNI-2h Embedder<br/>(FROZEN)"]
-    CM --> VAE2["SD3.5 VAE Encoder<br/>(FROZEN)"]
-    TMEIN --> TMEMOD["Multi-Group TME Module<br/>(TRAINABLE)"]
-
-    VAE1 -->|"H&E latent x₀ [B, 16, 32, 32]"| NOISE["Noise Addition<br/>t ~ Uniform(0, 1000),  ε ~ N(0, I)<br/>x_t = √ᾱ_t · x₀ + √(1−ᾱ_t) · ε"]
-    VAE2 -->|"mask latent [B, 16, 32, 32]"| TMEMOD
-
-    TMEMOD -->|"fused conditioning [B, 16, 32, 32]"| CN["ControlNet<br/>(TRAINABLE, 27 blocks)<br/>— cross-attn(x, KV=UNI) at each block —<br/>zero-init output projection"]
-    NOISE -->|"noisy x_t [B, 16, 32, 32]"| CN
-    UNI -->|"[B, 1, 1536] cross-attn KV"| CN
-    TS["Timestep t"] --> CN
-
-    CN -->|"27 residuals encoding<br/>x_t + fused mask + UNI [B, N, 1152]"| BASE["Base PixArt-256 Transformer<br/>(FROZEN, 28 blocks)"]
-    NOISE -->|"noisy x_t [B, 16, 32, 32]"| BASE
-    UNI -->|"[B, 1, 1536] additional cross-attn KV"| BASE
-    TS --> BASE
-
-    BASE --> PRED["ε_pred  (noise prediction)"]
-    PRED --> LOSS["Diffusion Loss: ‖ε_pred − ε‖²"]
 ```
+H&E Image [256, 256, 3]                     Cell Mask [256, 256, 1]
+        │                                            │
+        ├──► SD3.5 VAE Encoder (FROZEN)              └──► SD3.5 VAE Encoder (FROZEN)
+        │         │                                            │
+        │         ▼                                            ▼
+        │   clean H&E latent x_0                        mask latent [B, 16, 32, 32]
+        │   [B, 16, 32, 32]                                      │
+        │         │                                              │
+        │         └──► Forward Diffusion                         │
+        │               t ~ Uniform(0, 1000)                     │
+        │               ε ~ N(0, I)                              │
+        │               x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε          │
+        │                              │                         │
+        ▼                              │                         ▼
+UNI-2h Embedder (FROZEN)               │                 Multi-Group TME Module
+[B, 1536]                              │                 + raw TME channels [B, 9, 256, 256]
+        │                              │                         │
+        │                              ▼                         ▼
+        │                      noisy latent x_t           conditioning latent
+        │                      [B, 16, 32, 32]           [B, 16, 32, 32]
+        │                              │                         │
+        │                              ├──────────────┬──────────┘
+        │                              │              │
+        │                              ▼              ▼
+        │                      PixCell ControlNet (TRAINABLE, 27 blocks)
+        │                      input = x_t + conditioning + UNI + timestep
+        │                              │
+        │                              ▼
+        │                      27 residuals [B, N, 1152]
+        │                              │
+        │                              ▼
+        └──────────────────────► Base PixArt-256 Transformer (FROZEN, 28 blocks)
+                                 input = same noisy latent x_t + UNI + timestep
+                                         + ControlNet residuals
+                                          │
+                                          ▼
+                                 model output [B, 32, 32, 32]
+                                 = ε + variance
+                                          │
+                                          ▼
+                                 Diffusion Loss: ||ε_pred − ε||²
+                                 (first 16 output channels used as ε_pred)
+```
+
+At inference, the denoising latent stream changes but the conditioning path stays the same:
+
+### Inference
+
+```
+Reference H&E [256, 256, 3]             Cell Mask [256, 256, 1]
+        │                                        │
+        └──► UNI-2h Embedder                     └──► SD3.5 VAE Encoder
+             [B, 1536]                                      │
+                  │                                          ▼
+                  │                                  mask latent [B, 16, 32, 32]
+                  │                                          │
+                  │                                          ▼
+                  │                                  Multi-Group TME Module
+                  │                                  + raw TME channels [B, 9, 256, 256]
+                  │                                          │
+                  │                                          ▼
+                  │                                  conditioning latent
+                  │                                  [B, 16, 32, 32]
+                  │                                          │
+                  │                                          │
+Random Gaussian latent x_T [B, 16, 32, 32]                  │
+                  │                                          │
+                  ├──────────────────────────────┬───────────┘
+                  │                              │
+                  ▼                              ▼
+          Denoising loop (20 scheduler steps) with:
+            - current latent x_t
+            - ControlNet residuals from conditioning + UNI
+            - Base transformer cross-attention to UNI
+                  │
+                  ▼
+          final latent x_0_hat [B, 16, 32, 32]
+                  │
+                  ▼
+          SD3.5 VAE Decoder
+                  │
+                  ▼
+          Generated H&E [256, 256, 3]
+```
+
+For official PixCell ControlNet, `TMEMOD` is absent and `conditioning latent = mask latent`.
 
 ---
 
 ## Component 1 — Base PixArt-256 Transformer (Frozen)
 
 ```
-Input latent x_t  [B, 4, 32, 32]
+Input latent x_t  [B, 16, 32, 32]
         │
         ▼
   Patch Embedding ──► 1024 patches [B, 1024, 1152]
@@ -73,11 +142,13 @@ Input latent x_t  [B, 4, 32, 32]
   Final Layer + Unpatchify
         │
         ▼
-  [B, 8, 32, 32]  (noise prediction)
+  [B, 32, 32, 32]  (pred_sigma=True: noise + variance)
+        │
+        └──► first 16 channels used as ε prediction during sampling / loss
 
 Key parameters:
   hidden_size=1152   depth=28   num_heads=16
-  patch_size=2       in_channels=4   mlp_ratio=4.0
+  patch_size=2       in_channels=16   mlp_ratio=4.0
   caption_channels=1536
 ```
 
@@ -86,12 +157,14 @@ Key parameters:
 ## Component 2 — PixCell ControlNet (Trainable)
 
 ```
-Cell mask VAE latent [B, 16, 32, 32]
+Conditioning latent [B, 16, 32, 32]
+(official PixCell: mask latent only;
+ this repo: mask latent + TME residuals)
         │
         ▼
   Cond Embedder  ──►  [B, 1024, 1152]
   (ZERO-INIT)                │
-                             │  +  x_embedder(H&E latent)
+                             │  +  x_embedder(noisy latent x_t)
                              ▼
                       fused patches [B, 1024, 1152]
                              │
@@ -209,15 +282,15 @@ base_ch=32   latent_ch=16   Kaiming initialization
 
 ---
 
-## Component 5 — Feature Encoders (Frozen, Pre-computed)
+## Component 5 — Frozen Encoders / Latent Sources
 
 ```
 H&E Image [256, 256, 3]
-    ├──► SD3.5 VAE Encoder ──► [B, 4, 32, 32]    (reparameterized at train time)
-    └──► UNI-2h Embedder   ──► [B, 1536]         (cached as .npy files)
+    ├──► SD3.5 VAE Encoder ──► [B, 16, 32, 32]   (clean latent x_0 for training)
+    └──► UNI-2h Embedder   ──► [B, 1536]         (style / morphology reference)
 
 Cell Mask [256, 256, 1]
-    └──► SD3.5 VAE Encoder ──► [B, 16, 32, 32]   (cached as .npy files)
+    └──► SD3.5 VAE Encoder ──► [B, 16, 32, 32]   (ControlNet conditioning base)
 ```
 
 ---
@@ -228,9 +301,10 @@ Cell Mask [256, 256, 1]
 
 | Signal | Dims | Role | During Inference |
 |--------|------|------|-----------------|
+| Denoising latent | [B, 16, 32, 32] | Current diffusion state passed as `hidden_states` | Starts from random Gaussian `x_T` |
 | Cell mask VAE latent | [B, 16, 32, 32] | Spatial cell layout → ControlNet | Required |
-| TME channels | [B, 9, 256, 256] | Biology groups → TME Module | Required |
-| UNI-2h embedding | [B, 1536] | H&E style → Base model cross-attn | Optional (zero = TME-only) |
+| TME channels | [B, 9, 256, 256] | Biology groups → TME Module | Required in this repo, absent in official PixCell ControlNet |
+| UNI-2h embedding | [B, 1536] | H&E style / morphology → transformer cross-attn | Usually from a reference H&E image; can be zeroed for unconditional / TME-only runs |
 | Timestep | scalar | Diffusion schedule modulation | Required |
 
 ### Noise Addition (Training)
@@ -249,6 +323,23 @@ Step 5  loss = ‖ε_pred − ε‖²
 
 Linear beta schedule: β ∈ [0.0001, 0.02], T = 1000.
 At small t: x_t ≈ x_0 (mostly clean). At large t: x_t ≈ ε (pure noise).
+
+---
+
+### Sampling Path (Inference)
+
+Inference does **not** start from a reference H&E VAE latent. It starts from random noise in the same latent space:
+
+```
+Step 1  x_T ~ N(0, I)                    sample random latent in SD3 latent space
+Step 2  build conditioning latent        mask_latent (official) or fused_cond (this repo)
+Step 3  extract UNI embedding            from reference H&E, if style conditioning is used
+Step 4  for t = T ... 1:                predict ε from current latent + conditioning + UNI
+Step 5  scheduler update                 x_t → x_{t-1}
+Step 6  decode final latent             SD3.5 VAE Decoder(x_0_hat)
+```
+
+So the reference H&E contributes UNI features for style, not the initial denoising latent.
 
 ---
 
@@ -294,25 +385,23 @@ Inactive groups produce identity residuals (Δ = 0), isolating each group's caus
 ## End-to-End Inference Flow
 
 ```
-Simulation TME channels                Reference H&E (optional)
-[cell_identity, cell_state,            [256, 256, 3]
- vasculature, microenv]                       │
-        │                                     ▼
-        │                              UNI-2h Embedder
-        │                              [1536] style vec
-        │                                     │
-        ▼                                     │
-Multi-Group TME Module                        │
-[B, 16, 32, 32] fused                         │
-        │                                     │
-        ▼                                     │
-ControlNet conditioning ──────────────────────┤
-                                              │
-x_T ~ N(0,I) ──► Denoising Loop (20 steps) ◄─┘
+Control stack                                  Reference H&E (optional)
+[cell_mask + TME channels]                     [256, 256, 3]
+        │                                              │
+        ├──► cell_mask ─► SD3.5 VAE Encoder ─► mask_latent [B, 16, 32, 32]
+        │                                              │
+        ├──► TME groups ───────────────────────────────┘
+        │                      │
+        │                      ▼
+        │              Multi-Group TME Module
+        │              fused_cond [B, 16, 32, 32]
+        │                      │
+        ▼                      ▼
+x_T ~ N(0,I) ──► Denoising Loop with Base Transformer + ControlNet ◄── UNI-2h embedding [B, 1536]
                      │
                      │  CFG at each step
                      ▼
-               x_0 [B, 4, 32, 32]
+              x_0_hat [B, 16, 32, 32]
                      │
                SD3.5 VAE Decoder
                      │

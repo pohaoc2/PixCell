@@ -37,6 +37,7 @@ This project fine-tunes [PixCell-256](https://huggingface.co/StonyBrook-CVLab/Pi
 - [📂 Data Reference](#-data-reference)
 - [🔍 Analysis Tools](#-analysis-tools)
 - [📦 Pretrained Weights](#-pretrained-weights)
+- [Pretrained inference check](#pretrained-inference-check)
 
 ---
 
@@ -497,6 +498,49 @@ save_ablation_grid(
 | UNI-2h | Feature extractor | [HuggingFace](https://huggingface.co/MahmoodLab/UNI2-h) |
 
 Download automatically with `python stage0_setup.py`.
+
+### Pretrained inference check
+
+[`verify_pretrained_inference.py`](verify_pretrained_inference.py) loads the **public** PixCell-256 transformer and ControlNet weights (not your Stage 2 fine-tuned checkpoint), runs a short denoising pass on a mask + reference H&E, and writes a comparison figure—useful to confirm `stage0_setup.py` and remapping work before training or inference.
+
+**Prerequisites:** `python stage0_setup.py` (and `inference_data/` sample mask + reference images, or pass your own paths).
+
+**Minimal run** (uses defaults in the script):
+
+```bash
+python verify_pretrained_inference.py
+```
+
+**Explicit paths** (matches the script defaults; override as needed):
+
+```bash
+python verify_pretrained_inference.py \
+    --config                 configs/config_controlnet_exp.py \
+    --base-safetensors       pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors \
+    --controlnet-safetensors pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors \
+    --vae-path               pretrained_models/sd-3.5-vae/vae \
+    --uni-model-path         pretrained_models/uni-2h \
+    --mask-path              inference_data/sample/test_mask.png \
+    --reference-he           inference_data/sample/test_control_image.png \
+    --reference-uni          inference_data/sample/test_control_image_uni.npy \
+    --mask-latent            inference_data/sample/test_mask_sd3_vae.npy \
+    --generated-output       inference_data/sample/generated_he_pretrained_test_mask.png \
+    --output-path            inference_data/sample/vis_pretrained_verification_test_mask.png
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | `configs/config_controlnet_exp.py` | Builds base + ControlNet architecture |
+| `--base-safetensors` | `pretrained_models/pixcell-256/transformer/diffusion_pytorch_model.safetensors` | Frozen PixCell transformer |
+| `--controlnet-safetensors` | `pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors` | Init ControlNet (key-remapped on load) |
+| `--vae-path` | `pretrained_models/sd-3.5-vae/vae` | SD3.5 VAE directory |
+| `--uni-model-path` | `pretrained_models/uni-2h` | UNI-2h for reference style embedding |
+| `--mask-path` | `inference_data/test_mask.png` | Cell mask image (RGB PNG) |
+| `--reference-he` | `inference_data/test_control_image.png` | Reference H&E for UNI conditioning / plot |
+| `--reference-uni` | `inference_data/test_control_image_uni.npy` | Cached UNI vector (created if missing) |
+| `--mask-latent` | `inference_data/test_mask_sd3_vae.npy` | Cached VAE latent for mask (created if missing) |
+| `--generated-output` | `inference_data/generated_he_pretrained_test_mask.png` | Saved generated H&E |
+| `--output-path` | `inference_data/vis_pretrained_verification_test_mask.png` | Side-by-side comparison figure |
 
 ---
 
