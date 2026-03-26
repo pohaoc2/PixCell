@@ -12,6 +12,11 @@ Default input layout: ``inference_data/sample`` (flat sim-style: ``cell_mask/``,
 ORION-style trees with ``exp_channels/``, ``features/``, ``he/`` are also supported;
 see ``tools.stage3_tile_pipeline.resolve_data_layout``.
 
+**Reference H&E in figures:** The overview/attention “style” column uses a PNG from
+``--reference-he``, or else ``{he_dir}/{tile_id}.png`` when ``he/`` exists (ORION), or
+``{data-root}/{tile_id}.png`` for flat layouts. If that file is missing, the style
+column is omitted (common for ``inference_data/sample`` without paired H&E tiles).
+
 Run from repo root:
 
   python tools/generate_stage3_tile_vis.py \\
@@ -35,6 +40,144 @@ from PIL import Image
 
 # Repo root (parent of tools/)
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def run_vis_suite(
+    layout_tile_id: str,
+    models: dict,
+    scheduler,
+    config,
+    device: str,
+    exp_channels_dir: Path,
+    feat_dir: Path,
+    he_dir: Path,
+    out_dir: Path,
+    uni_embeds: torch.Tensor,
+    *,
+    guidance_scale: float,
+    seed: int,
+    style_reference_he_path: Path | None = None,
+    cosine_compare_feat_path: Path | None = None,
+    disable_cosine: bool = False,
+    overview_style_label: str = "H&E (style)",
+    ablation_ref_section: str = "style_ref",
+    ablation_ref_label: str = "H&E (style)",
+) -> None:
+    """
+    Run one generation + save overview / attention / ablation.
+
+    - ``layout_tile_id``: TME channels loaded from ``exp_channels_dir`` for this tile.
+    - ``uni_embeds``: Style conditioning (paired: same tile's UNI; unpaired: style tile B).
+    - ``style_reference_he_path``: PNG shown in overview/attention style column; default
+      ``he_dir / {layout_tile_id}.png`` when ``None``.
+    - ``cosine_compare_feat_path``: UNI .npy to compare generated image against (cosine
+      in overview title); default ``feat_dir / {layout_tile_id}_uni.npy`` when ``None``.
+    """
+    from pipeline.extract_features import UNI2hExtractor
+
+    from tools.stage3_figures import (
+        save_enhanced_ablation_grid,
+        save_enhanced_attention_figure,
+        save_overview_figure,
+    )
+    from tools.stage3_tile_pipeline import generate_ablation_images, generate_tile
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ref_he_candidate = (
+        style_reference_he_path
+        if style_reference_he_path is not None
+        else he_dir / f"{layout_tile_id}.png"
+    )
+    if ref_he_candidate.exists():
+        ref_he = np.array(Image.open(ref_he_candidate).convert("RGB"))
+        print(f"  Reference H&E panel: {ref_he_candidate}")
+    else:
+        ref_he = None
+        print(
+            f"  Reference H&E panel: SKIPPED (missing {ref_he_candidate}) — "
+            "overview has no style column; use --reference-he or place PNG at default path."
+        )
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    gen_np, vis_data = generate_tile(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        return_vis_data=True,
+    )
+    if vis_data is None:
+        raise RuntimeError("vis_data missing")
+
+    style_inp = ([(overview_style_label, ref_he)] if ref_he is not None else [])
+
+    sim = None
+    if disable_cosine:
+        print("  Cosine sim: skipped (disabled)")
+    else:
+        cos_feat = (
+            cosine_compare_feat_path
+            if cosine_compare_feat_path is not None
+            else feat_dir / f"{layout_tile_id}_uni.npy"
+        )
+        if cos_feat.exists():
+            exp_feat = np.load(cos_feat)
+            uni_model_path = getattr(config, "uni_model_path", str(ROOT / "pretrained_models/uni-2h"))
+            extractor = UNI2hExtractor(model_path=uni_model_path, device=device)
+            gen_feat = extractor.extract(gen_np)
+            a = gen_feat / (np.linalg.norm(gen_feat) + 1e-8)
+            b = exp_feat / (np.linalg.norm(exp_feat) + 1e-8)
+            sim = float(np.dot(a, b))
+        else:
+            print(f"  Cosine sim: skipped (missing {cos_feat})")
+
+    ctrl_full_np = vis_data["ctrl_full"]
+    active_channels = vis_data["active_channels"]
+
+    save_overview_figure(
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+        gen_np=gen_np,
+        save_path=out_dir / "overview.png",
+        style_inputs=style_inp,
+        cosine_sim_val=sim,
+    )
+    save_enhanced_attention_figure(
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+        gen_np=gen_np,
+        attn_maps=vis_data["attn_maps"],
+        save_path=out_dir / "attention_heatmaps.png",
+        style_inputs=style_inp,
+    )
+
+    print("  Generating ablation grid...")
+    ablation_imgs = generate_ablation_images(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+    )
+    save_enhanced_ablation_grid(
+        ablation_images=ablation_imgs,
+        refs=[(ablation_ref_section, ablation_ref_label, ref_he)] if ref_he is not None else [],
+        save_path=out_dir / "ablation_grid.png",
+    )
+
+    Image.fromarray(gen_np).save(out_dir / "generated_he.png")
+    print(f"  Done → {out_dir}")
 
 
 def main():
@@ -91,15 +234,8 @@ def main():
     from diffusion.utils.misc import read_config
     from train_scripts.inference_controlnet import null_uni_embed
 
-    from tools.stage3_figures import (
-        save_enhanced_ablation_grid,
-        save_enhanced_attention_figure,
-        save_overview_figure,
-    )
     from tools.stage3_tile_pipeline import (
         find_latest_checkpoint_dir,
-        generate_ablation_images,
-        generate_tile,
         load_all_models,
         resolve_data_layout,
     )
@@ -132,84 +268,30 @@ def main():
         uni_embeds = null_uni_embed(device="cpu", dtype=torch.float32)
         if not args.null_uni:
             print(f"Warning: missing {feat_path}, using null UNI")
+        cos_path = None
     else:
         uni_embeds = torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
+        cos_path = feat_path
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    ref_arg = Path(args.reference_he) if args.reference_he else None
 
-    gen_np, vis_data = generate_tile(
-        tile_id=args.tile_id,
+    run_vis_suite(
+        layout_tile_id=args.tile_id,
         models=models,
-        config=config,
         scheduler=scheduler,
-        uni_embeds=uni_embeds,
+        config=config,
         device=device,
         exp_channels_dir=exp_channels_dir,
-        guidance_scale=args.guidance_scale,
-        return_vis_data=True,
-    )
-    if vis_data is None:
-        raise RuntimeError("vis_data missing")
-
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    ref_he_path = Path(args.reference_he) if args.reference_he else he_dir / f"{args.tile_id}.png"
-    ref_he = np.array(Image.open(ref_he_path).convert("RGB")) if ref_he_path.exists() else None
-    style_inp = ([("H&E (style)", ref_he)] if ref_he is not None else [])
-
-    sim = None
-    if feat_path.exists():
-        from pipeline.extract_features import UNI2hExtractor
-
-        exp_feat = np.load(feat_path)
-        uni_model_path = getattr(config, "uni_model_path", str(ROOT / "pretrained_models/uni-2h"))
-        extractor = UNI2hExtractor(model_path=uni_model_path, device=device)
-        gen_feat = extractor.extract(gen_np)
-        a = gen_feat / (np.linalg.norm(gen_feat) + 1e-8)
-        b = exp_feat / (np.linalg.norm(exp_feat) + 1e-8)
-        sim = float(np.dot(a, b))
-
-    ctrl_full_np = vis_data["ctrl_full"]
-    active_channels = vis_data["active_channels"]
-
-    save_overview_figure(
-        ctrl_full=ctrl_full_np,
-        active_channels=active_channels,
-        gen_np=gen_np,
-        save_path=out_dir / "overview.png",
-        style_inputs=style_inp,
-        cosine_sim_val=sim,
-    )
-    save_enhanced_attention_figure(
-        ctrl_full=ctrl_full_np,
-        active_channels=active_channels,
-        gen_np=gen_np,
-        attn_maps=vis_data["attn_maps"],
-        save_path=out_dir / "attention_heatmaps.png",
-        style_inputs=style_inp,
-    )
-
-    print("Generating ablation grid...")
-    ablation_imgs = generate_ablation_images(
-        tile_id=args.tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
+        feat_dir=feat_dir,
+        he_dir=he_dir,
+        out_dir=Path(args.output_dir),
         uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
         guidance_scale=args.guidance_scale,
         seed=args.seed,
+        style_reference_he_path=ref_arg,
+        cosine_compare_feat_path=cos_path,
+        disable_cosine=args.null_uni or not feat_path.exists(),
     )
-    save_enhanced_ablation_grid(
-        ablation_images=ablation_imgs,
-        refs=[("style_ref", "H&E (style)", ref_he)] if ref_he is not None else [],
-        save_path=out_dir / "ablation_grid.png",
-    )
-
-    print(f"Done → {out_dir}")
 
 
 if __name__ == "__main__":

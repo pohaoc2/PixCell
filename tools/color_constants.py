@@ -20,18 +20,16 @@ from matplotlib.colors import LinearSegmentedColormap as _LSCmap
 OXYGEN_PROXY_CMAP = _LSCmap.from_list(
     "oxygen_proxy",
     [
-        (0.00, (0.35, 0.00, 0.08)),  # hypoxic — deep red
-        (0.45, (0.75, 0.35, 0.20)),
-        (1.00, (0.45, 0.92, 1.00)),  # oxygenated — light cyan
+        (0.0, (0.0, 0.0, 0.0)),  # hypoxic — black
+        (1.0, (0.0, 1.0, 1.0)),  # oxygenated — cyan
     ],
 )
 
 GLUCOSE_PROXY_CMAP = _LSCmap.from_list(
     "glucose_proxy",
     [
-        (0.00, (0.12, 0.02, 0.22)),  # depleted — dark violet
-        (0.50, (0.55, 0.40, 0.08)),
-        (1.00, (0.98, 0.95, 0.35)),  # high — bright yellow
+        (0.0, (0.0, 0.0, 0.0)),  # depleted — black
+        (1.0, (1.0, 0.95, 0.12)),  # high — bright yellow
     ],
 )
 
@@ -66,8 +64,8 @@ CELL_STATE_COLORS: dict[str, tuple[int, int, int, int]] = {
 #   cell types  — each uses the color family matching its CELL_TYPE_COLORS entry
 #   cell states — warm/cool/earthy to distinguish biological significance
 #   vasculature — Reds (blood vessels)
-#   oxygen      — OXYGEN_PROXY_CMAP (hypoxic red → oxygenated cyan)
-#   glucose     — GLUCOSE_PROXY_CMAP (depleted violet → high yellow)
+#   oxygen      — OXYGEN_PROXY_CMAP (hypoxic black → oxygenated cyan)
+#   glucose     — GLUCOSE_PROXY_CMAP (depleted black → high bright yellow)
 
 CHANNEL_CMAP: dict = {
     # Binary channels: black background → cell color
