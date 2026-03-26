@@ -11,7 +11,7 @@ Set exp_data_root to your actual paired dataset path before running.
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
 root = "./"
-root = "/content/PixCell"
+#root = "/content/PixCell"
 
 # =====================================================================
 # Dataset — PairedExpControlNetData
@@ -54,7 +54,7 @@ channel_groups = [
 # =====================================================================
 tme_model   = "MultiGroupTMEModule"
 tme_base_ch = 32
-tme_lr          = 1e-5   # encoder CNN + Q/K/V — already healthy, keep stable
+tme_lr          = 1e-4   # encoder CNN + Q/K/V — fresh init, needs room to move
 tme_proj_lr     = 3e-4   # cross_attn.proj only — zero-init, needs the boost
 # REQUIRED for the first resume after the optimizer-split is activated.
 # Without this, loading the old single-group optimizer state into the new two-group
@@ -117,7 +117,7 @@ gradient_clip               = 1.0
 
 optimizer = dict(
     type='AdamW',
-    lr=5e-6,            # lower than sim (1e-5) — fine-tuning from sim checkpoint
+    lr=1e-5,            # fresh training from pretrained ControlNet weights
     weight_decay=0.0,
     betas=(0.9, 0.999),
     eps=1e-8,

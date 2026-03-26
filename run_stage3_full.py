@@ -21,7 +21,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from diffusers import DDPMScheduler
 from PIL import Image
 
@@ -46,608 +45,24 @@ DEVICE         = "cuda" if torch.cuda.is_available() else "cpu"
 # Channel that holds the cell mask in exp data
 MASK_CHANNEL = "cell_masks"
 
-# Binary channels (thresholded to {0,1})
-_BINARY = frozenset({
-    "cell_masks",
-    "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
-    "cell_state_prolif",  "cell_state_nonprolif", "cell_state_dead",
-})
+from tools.stage3_figures import (
+    save_enhanced_ablation_grid,
+    save_enhanced_attention_figure,
+    save_enhanced_residual_figure,
+    save_overview_figure,
+)
+from tools.stage3_tile_pipeline import (
+    generate_ablation_images,
+    generate_tile,
+    load_all_models,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def load_channel(ch_dir: Path, tile_id: str, resolution: int, binary: bool) -> np.ndarray:
-    """Load a single channel PNG → float32 [H, W] in [0, 1]."""
-    fpath = ch_dir / f"{tile_id}.png"
-    if not fpath.exists():
-        fpath = ch_dir / f"{tile_id}.npy"
-    if not fpath.exists():
-        raise FileNotFoundError(f"Channel file not found: {ch_dir / tile_id}.*")
-    if fpath.suffix == ".npy":
-        arr = np.load(fpath).astype(np.float32)
-    else:
-        import cv2
-        img = cv2.imread(str(fpath), cv2.IMREAD_GRAYSCALE)
-        arr = img.astype(np.float32) / 255.0
-    if arr.shape != (resolution, resolution):
-        import cv2
-        arr = cv2.resize(arr, (resolution, resolution), interpolation=cv2.INTER_LINEAR)
-    if binary:
-        arr = (arr > 0.5).astype(np.float32)
-    return arr
-
-
-def load_exp_channels(tile_id: str, active_channels: list, resolution: int) -> torch.Tensor:
-    """Load all active channels from exp_channels → [C, H, W]."""
-    planes = []
-    for ch in active_channels:
-        ch_dir = EXP_CH_DIR / ch
-        arr = load_channel(ch_dir, tile_id, resolution, binary=(ch in _BINARY))
-        planes.append(arr)
-    return torch.from_numpy(np.stack(planes, axis=0))  # [C, H, W]
-
 
 def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     a = a / (np.linalg.norm(a) + 1e-8)
     b = b / (np.linalg.norm(b) + 1e-8)
     return float(np.dot(a, b))
-
-
-# ── Model loading ─────────────────────────────────────────────────────────────
-
-def load_all_models(config, device: str):
-    import glob as _glob
-    from diffusion.model.builder import build_model
-    from diffusion.utils.misc import read_config
-    from train_scripts.inference_controlnet import (
-        load_vae, load_controlnet_model_from_checkpoint,
-        load_pixcell_controlnet_model_from_checkpoint,
-    )
-    from train_scripts.training_utils import load_tme_checkpoint
-
-    print("Loading VAE...")
-    vae = load_vae(config.vae_pretrained, device)
-
-    print("Loading TME module...")
-    group_specs = [
-        dict(name=g["name"], n_channels=len(g["channels"]))
-        for g in config.channel_groups
-    ]
-    tme_module = build_model(
-        "MultiGroupTMEModule", False, False,
-        channel_groups=group_specs,
-        base_ch=getattr(config, "tme_base_ch", 32),
-    )
-    load_tme_checkpoint(str(CKPT_DIR), tme_module, device=device)
-    dtype = torch.float16 if device == "cuda" else torch.float32
-    tme_module.to(device=device, dtype=dtype).eval()
-
-    print("Loading ControlNet...")
-    controlnet_pths = sorted(_glob.glob(str(CKPT_DIR / "controlnet_*.pth")))
-    if not controlnet_pths:
-        raise FileNotFoundError(f"No controlnet_*.pth in {CKPT_DIR}")
-    controlnet_pth = controlnet_pths[-1]
-    print(f"  → {controlnet_pth}")
-    controlnet = load_controlnet_model_from_checkpoint(
-        str(CONFIG_PATH), controlnet_pth, device
-    )
-
-    print("Loading base model...")
-    base_model_path = getattr(config, "load_from", config.base_model_path)
-    if os.path.isdir(base_model_path):
-        candidates = (
-            _glob.glob(os.path.join(base_model_path, "*.safetensors")) +
-            _glob.glob(os.path.join(base_model_path, "*.pth"))
-        )
-        base_model_path = sorted(candidates)[0]
-    print(f"  → {base_model_path}")
-    base_model = load_pixcell_controlnet_model_from_checkpoint(
-        str(CONFIG_PATH), base_model_path
-    )
-    base_model.to(device).eval()
-
-    return dict(vae=vae, controlnet=controlnet, base_model=base_model, tme_module=tme_module)
-
-
-# ── Single-tile generation ────────────────────────────────────────────────────
-
-def generate_tile(
-    tile_id: str,
-    models: dict,
-    config,
-    scheduler,
-    uni_embeds: torch.Tensor,
-    device: str,
-    return_vis_data: bool = False,
-):
-    """
-    Generate H&E for one tile from its exp channels.
-
-    Returns:
-        gen_np: uint8 [H, W, 3]
-        vis_data: dict with mask_rgb, residuals, attn_maps (if return_vis_data)
-    """
-    from tools.channel_group_utils import split_channels_to_groups
-    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
-
-    active_channels = config.data.active_channels
-    vae_scale = config.scale_factor
-    vae_shift  = config.shift_factor
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
-    vae        = models["vae"]
-    controlnet = models["controlnet"]
-    base_model = models["base_model"]
-    tme_module = models["tme_module"]
-
-    vae.to(device=device, dtype=dtype).eval()
-
-    # 1. Load channels → [C, H, W]
-    ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size)
-
-    # 2. VAE-encode cell_mask (channel 0)
-    vae_mask = encode_ctrl_mask_latent(
-        ctrl_full,
-        vae,
-        vae_shift=vae_shift,
-        vae_scale=vae_scale,
-        device=device,
-        dtype=dtype,
-    )
-
-    # 3. Split channels to groups
-    tme_dict = split_channels_to_groups(
-        ctrl_full.unsqueeze(0).to(device, dtype=dtype),
-        active_channels,
-        config.channel_groups,
-    )
-
-    # 4. TME module forward
-    with torch.no_grad():
-        if return_vis_data:
-            fused, residuals, attn_maps = tme_module(
-                vae_mask, tme_dict,
-                return_residuals=True, return_attn_weights=True,
-            )
-        else:
-            fused = tme_module(vae_mask, tme_dict)
-            residuals, attn_maps = {}, {}
-
-    # 5. Denoise
-    latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
-    latents = torch.randn(latent_shape, device=device, dtype=dtype)
-    latents = latents * scheduler.init_noise_sigma
-    denoised = denoise(
-        latents=latents,
-        uni_embeds=uni_embeds.to(device, dtype=dtype),
-        controlnet_input_latent=fused,
-        scheduler=scheduler,
-        controlnet_model=controlnet,
-        pixcell_controlnet_model=base_model,
-        guidance_scale=GUIDANCE_SCALE,
-        device=device,
-    )
-
-    # 6. Decode → RGB
-    with torch.no_grad():
-        scaled = (denoised.to(dtype) / vae_scale) + vae_shift
-        gen_img = vae.decode(scaled, return_dict=False)[0]
-    gen_img = (gen_img / 2 + 0.5).clamp(0, 1)
-    gen_np = (gen_img.cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
-
-    vis_data = None
-    if return_vis_data:
-        mask_ch = ctrl_full[0].numpy()
-        mask_rgb = (np.stack([mask_ch] * 3, axis=-1) * 255).astype(np.uint8)
-        vis_data = dict(
-            mask_rgb=mask_rgb,
-            residuals=residuals,
-            attn_maps=attn_maps,
-            ctrl_full=ctrl_full.numpy(),          # [C, H, W] float32
-            active_channels=active_channels,
-        )
-
-    return gen_np, vis_data
-
-
-# ── Ablation grid ─────────────────────────────────────────────────────────────
-
-def _generate_ablation_images(
-    tile_id: str,
-    models: dict,
-    config,
-    scheduler,
-    uni_embeds: torch.Tensor,
-    device: str,
-) -> list:
-    """Return list of (label, gen_np) for progressive group addition."""
-    from tools.channel_group_utils import split_channels_to_groups
-    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
-
-    active_channels = config.data.active_channels
-    vae_scale = config.scale_factor
-    vae_shift  = config.shift_factor
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
-    vae        = models["vae"]
-    controlnet = models["controlnet"]
-    base_model = models["base_model"]
-    tme_module = models["tme_module"]
-
-    vae.to(device=device, dtype=dtype).eval()
-
-    ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size)
-    vae_mask = encode_ctrl_mask_latent(
-        ctrl_full,
-        vae,
-        vae_shift=vae_shift,
-        vae_scale=vae_scale,
-        device=device,
-        dtype=dtype,
-    )
-
-    tme_dict = split_channels_to_groups(
-        ctrl_full.unsqueeze(0).to(device, dtype=dtype),
-        active_channels,
-        config.channel_groups,
-    )
-
-    group_names = [g["name"] for g in config.channel_groups]
-    ablation_images = []
-
-    torch.manual_seed(SEED)
-    latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
-    fixed_noise = torch.randn(latent_shape, device=device, dtype=dtype)
-    fixed_noise = fixed_noise * scheduler.init_noise_sigma
-
-    for n in range(len(group_names) + 1):
-        if n == 0:
-            label  = "Mask only\n(no TME groups)"
-            active = set()
-        else:
-            active = set(group_names[:n])
-            label  = "Groups:\n" + "\n".join(group_names[:n])
-
-        with torch.no_grad():
-            fused = (
-                tme_module(vae_mask, tme_dict, active_groups=active)
-                if active else vae_mask.clone()
-            )
-
-        denoised = denoise(
-            latents=fixed_noise.clone(),
-            uni_embeds=uni_embeds.to(device, dtype=dtype),
-            controlnet_input_latent=fused,
-            scheduler=scheduler,
-            controlnet_model=controlnet,
-            pixcell_controlnet_model=base_model,
-            guidance_scale=GUIDANCE_SCALE,
-            device=device,
-        )
-        with torch.no_grad():
-            scaled = (denoised.to(dtype) / vae_scale) + vae_shift
-            gen = vae.decode(scaled, return_dict=False)[0]
-        gen = (gen / 2 + 0.5).clamp(0, 1)
-        gen_np = (gen.cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
-        ablation_images.append((label, gen_np))
-
-    return ablation_images
-
-
-# ── Visualization helpers ─────────────────────────────────────────────────────
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-
-from tools.color_constants import (
-    CHANNEL_CMAP as _CHANNEL_CMAP,
-    CHANNEL_LABEL as _CHANNEL_LABEL,
-    SECTION_BG, SECTION_TEXT,
-)
-
-
-def _header_ax(ax, label, section_key):
-    """Render a section header on a thin axes row."""
-    ax.set_facecolor(SECTION_BG[section_key])
-    ax.text(0.5, 0.5, label,
-            ha="center", va="center", fontsize=10, fontweight="bold",
-            color=SECTION_TEXT[section_key], transform=ax.transAxes)
-    ax.axis("off")
-
-
-def _image_ax(ax, img, label, section_key, cmap=None, fontsize=8, cosine_sim_val=None):
-    """Render a single image panel (row 1 of overview)."""
-    ax.set_facecolor(SECTION_BG[section_key])
-    vmax = 1.0 if (img.ndim == 2 or img.dtype != np.uint8) else None
-    ax.imshow(img, cmap=cmap, vmin=0, vmax=vmax)
-    title = label
-    if cosine_sim_val is not None:
-        title += f"\ncos sim={cosine_sim_val:.3f}"
-    ax.set_title(title, fontsize=fontsize, fontweight="bold",
-                 color=SECTION_TEXT[section_key], pad=3)
-    ax.axis("off")
-
-
-def save_overview_figure(
-    ctrl_full: np.ndarray,          # [C, H, W] float32
-    active_channels: list,
-    gen_np: np.ndarray,             # uint8 [H, W, 3]
-    save_path: Path,
-    style_inputs: list | None = None,   # [(label, image), ...] prepended as style inputs
-    cosine_sim_val: float | None = None,
-):
-    """
-    3-row GridSpec overview (inputs split across 2 rows, output spans both).
-
-    Row 0 (thin header): INPUTS header | ▶ | OUTPUT header
-    Row 1 (images):  [style H&E purple] [TME ch 0..N/2] | ▶ | [Generated H&E  ↕ spans rows 1&2]
-    Row 2 (images):  [TME ch N/2..end]                  | ↕ | [                               ]
-
-    style_inputs: shown at the start of row 1 with style_ref (purple) coloring.
-                  For paired inference the style tile = layout tile; for unpaired they differ.
-    """
-    style_inputs = style_inputs or []
-    n_style   = len(style_inputs)
-    n_ch      = len(active_channels)
-    n_total   = n_style + n_ch
-
-    # Split inputs across 2 rows: ceil(n_total/2) in row 1, rest in row 2.
-    # Style panels always go into row 1.
-    n_row1    = (n_total + 1) // 2
-    n_ch_r1   = n_row1 - n_style   # TME channels in row 1
-    n_ch_r2   = n_ch - n_ch_r1     # TME channels in row 2
-
-    # Grid columns: n_row1 input cols + narrow arrow + output
-    n_cols  = n_row1 + 1 + 1
-    ratios  = [1.0] * n_row1 + [0.25] + [1.0]
-    fig_w   = max(n_cols * 2.2, 8)
-    fig_h   = 5.5
-
-    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
-    gs = gridspec.GridSpec(
-        3, n_cols, figure=fig,
-        width_ratios=ratios, height_ratios=[0.07, 0.465, 0.465],
-        wspace=0.05, hspace=0.08,
-        left=0.01, right=0.99, top=0.97, bottom=0.02,
-    )
-
-    # ── Row 0: section headers ──────────────────────────────────────────────
-    inp_hdr_text = (
-        "INPUTS  (style H&E + TME layout channels)"
-        if n_style > 0 else "INPUTS  (TME channels)"
-    )
-    _header_ax(fig.add_subplot(gs[0, 0:n_row1]), inp_hdr_text, "input")
-    fig.add_subplot(gs[0, n_row1]).axis("off")
-    _header_ax(fig.add_subplot(gs[0, n_row1 + 1]), "OUTPUT", "output")
-
-    # ── Row 1: style panels + first half of TME channels ────────────────────
-    for j, (lbl, img) in enumerate(style_inputs):
-        _image_ax(fig.add_subplot(gs[1, j]), img, lbl, "style_ref", fontsize=7)
-    for i in range(n_ch_r1):
-        ch = active_channels[i]
-        _image_ax(fig.add_subplot(gs[1, n_style + i]),
-                  ctrl_full[i], _CHANNEL_LABEL.get(ch, ch), "input",
-                  cmap=_CHANNEL_CMAP.get(ch), fontsize=7)
-
-    # ── Row 2: second half of TME channels (left-aligned) ───────────────────
-    for i in range(n_ch_r2):
-        ch = active_channels[n_ch_r1 + i]
-        _image_ax(fig.add_subplot(gs[2, i]),
-                  ctrl_full[n_ch_r1 + i], _CHANNEL_LABEL.get(ch, ch), "input",
-                  cmap=_CHANNEL_CMAP.get(ch), fontsize=7)
-
-    # ── Arrow spanning both image rows ───────────────────────────────────────
-    ax_arr = fig.add_subplot(gs[1:3, n_row1])
-    ax_arr.text(0.5, 0.5, "▶", ha="center", va="center",
-                fontsize=24, color="#555555", transform=ax_arr.transAxes)
-    ax_arr.axis("off")
-
-    # ── Output spanning both image rows ──────────────────────────────────────
-    _image_ax(fig.add_subplot(gs[1:3, n_row1 + 1]),
-              gen_np, "Generated H&E", "output",
-              fontsize=9, cosine_sim_val=cosine_sim_val)
-
-    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close()
-    print(f"Overview figure saved → {save_path}")
-
-
-def _titled_ax(ax, img, section_key, title, cmap=None, fontsize=9):
-    """Image panel with plain title (no colored bbox)."""
-    ax.set_facecolor(SECTION_BG[section_key])
-    vmax = 1.0 if (img.ndim == 2 or img.dtype != np.uint8) else None
-    ax.imshow(img, cmap=cmap, vmin=0, vmax=vmax)
-    ax.set_title(title, fontsize=fontsize, fontweight="bold",
-                 color=SECTION_TEXT[section_key], pad=4)
-    ax.axis("off")
-
-
-def save_enhanced_attention_figure(
-    ctrl_full: np.ndarray,
-    active_channels: list,
-    gen_np: np.ndarray,
-    attn_maps: dict,
-    save_path: Path,
-    style_inputs: list | None = None,   # [(label, image), ...] prepended as style inputs
-    spatial_size: tuple = (32, 32),
-    output_resolution: int = 256,
-):
-    """
-    Layout (2 rows):
-      Row 0 headers: INPUTS (style H&E + cell mask) | OUTPUT | ── | ATTENTION (per group)
-      Row 1 images:  [style img purple] [cell mask blue] | gen H&E | ── | heatmaps on mask
-    """
-    from tools.visualize_group_attention import compute_attention_heatmaps
-    heatmaps = compute_attention_heatmaps(attn_maps, spatial_size, output_resolution)
-    style_inputs = style_inputs or []
-
-    n_style  = len(style_inputs)
-    # Left columns: style panels + cell mask + gen H&E
-    n_left   = n_style + 2
-    n_attn   = len(heatmaps)
-    has_attn = n_attn > 0
-    # +1 divider col; +1 dedicated colorbar col (keeps heatmap axes full-width)
-    n_cols   = n_left + 1 + n_attn + (1 if has_attn else 0)
-
-    ratios = [1.0] * n_left + [0.08] + [1.0] * n_attn + ([0.08] if has_attn else [])
-    fig = plt.figure(figsize=(n_cols * 2.6, 5.0), facecolor="white")
-    gs = gridspec.GridSpec(2, n_cols, figure=fig,
-                           width_ratios=ratios, height_ratios=[0.13, 0.87],
-                           wspace=0.05, hspace=0.08,
-                           left=0.01, right=0.99, top=0.97, bottom=0.02)
-
-    mask_img = ctrl_full[active_channels.index("cell_masks")]
-
-    # ── Row 0: headers ──────────────────────────────────────────────────────
-    inp_hdr_text = (
-        "INPUTS  (style H&E + cell mask)"
-        if n_style > 0 else "INPUT"
-    )
-    # INPUTS header spans style panels + cell mask
-    _header_ax(fig.add_subplot(gs[0, 0:n_style + 1]), inp_hdr_text, "input")
-    _header_ax(fig.add_subplot(gs[0, n_style + 1]), "OUTPUT", "output")
-    fig.add_subplot(gs[0, n_left]).axis("off")   # divider
-    if has_attn:
-        _header_ax(fig.add_subplot(gs[0, n_left + 1: n_left + 1 + n_attn]),
-                   "ATTENTION  (per TME group)", "analysis")
-        fig.add_subplot(gs[0, -1]).axis("off")   # colorbar column header
-
-    # ── Row 1: images ───────────────────────────────────────────────────────
-    for j, (lbl, img) in enumerate(style_inputs):
-        _titled_ax(fig.add_subplot(gs[1, j]), img, "style_ref", lbl)
-    _titled_ax(fig.add_subplot(gs[1, n_style]), mask_img, "input", "Cell Mask", cmap="gray")
-    _titled_ax(fig.add_subplot(gs[1, n_style + 1]), gen_np, "output", "Generated H&E")
-    fig.add_subplot(gs[1, n_left]).axis("off")
-
-    last_im = None
-    for k, (name, hmap) in enumerate(heatmaps.items()):
-        ax = fig.add_subplot(gs[1, n_left + 1 + k])
-        ax.set_facecolor(SECTION_BG["analysis"])
-        last_im = ax.imshow(hmap, cmap="jet", vmin=0, vmax=1)
-        ax.set_title(name, fontsize=8, fontweight="bold",
-                     color=SECTION_TEXT["analysis"], pad=4)
-        ax.axis("off")
-    if last_im is not None:
-        cbar_ax = fig.add_subplot(gs[1, -1])
-        cbar = fig.colorbar(last_im, cax=cbar_ax)
-        cbar.set_label("Attention weight", fontsize=7)
-        cbar.ax.tick_params(labelsize=7)
-
-    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close()
-    print(f"Attention heatmaps saved → {save_path}")
-
-
-def save_enhanced_residual_figure(
-    ctrl_full: np.ndarray,
-    active_channels: list,
-    gen_np: np.ndarray,
-    residuals: dict,
-    save_path: Path,
-    refs: list | None = None,       # [(section_key, label, image), ...]
-    output_resolution: int = 256,
-):
-    """
-    Layout (2 rows):
-      Row 0 headers: INPUT | OUTPUT | REF(s) | ── | RESIDUALS (per group)
-      Row 1 images:  mask  | gen H&E| ref(s) | ── | ‖Δ_group‖ maps
-    """
-    from tools.visualize_group_residuals import compute_residual_maps
-    res_maps = compute_residual_maps(residuals, output_resolution)
-    global_max = max(m.max() for m in res_maps.values()) if res_maps else 1.0
-    refs = refs or []
-
-    n_fixed = 2 + len(refs)
-    n_res   = len(res_maps)
-    n_cols  = n_fixed + 1 + n_res
-
-    ratios = [1.0] * n_fixed + [0.08] + [1.0] * n_res
-    fig = plt.figure(figsize=(n_cols * 2.6, 5.0), facecolor="white")
-    gs = gridspec.GridSpec(2, n_cols, figure=fig,
-                           width_ratios=ratios, height_ratios=[0.13, 0.87],
-                           wspace=0.05, hspace=0.08,
-                           left=0.01, right=0.99, top=0.97, bottom=0.02)
-
-    mask_img = ctrl_full[active_channels.index("cell_masks")]
-
-    _header_ax(fig.add_subplot(gs[0, 0]), "INPUT", "input")
-    _header_ax(fig.add_subplot(gs[0, 1]), "OUTPUT", "output")
-    for j, (sk, lbl, _) in enumerate(refs):
-        _header_ax(fig.add_subplot(gs[0, 2 + j]), lbl, sk)
-    fig.add_subplot(gs[0, n_fixed]).axis("off")
-    if n_res:
-        _header_ax(fig.add_subplot(gs[0, n_fixed + 1:]), "RESIDUALS  ‖Δ_group‖", "analysis")
-
-    _titled_ax(fig.add_subplot(gs[1, 0]), mask_img, "input", "Cell Mask", cmap="gray")
-    _titled_ax(fig.add_subplot(gs[1, 1]), gen_np, "output", "Generated H&E")
-    for j, (sk, lbl, img) in enumerate(refs):
-        _titled_ax(fig.add_subplot(gs[1, 2 + j]), img, sk, lbl)
-    fig.add_subplot(gs[1, n_fixed]).axis("off")
-
-    last_im = None
-    for k, (name, rmap) in enumerate(res_maps.items()):
-        ax = fig.add_subplot(gs[1, n_fixed + 1 + k])
-        ax.set_facecolor(SECTION_BG["analysis"])
-        last_im = ax.imshow(rmap, cmap="inferno", vmin=0, vmax=global_max)
-        ax.set_title(f"‖Δ_{name}‖", fontsize=8, fontweight="bold",
-                     color=SECTION_TEXT["analysis"], pad=4,
-                     bbox=dict(boxstyle="round,pad=0.25",
-                               facecolor=SECTION_BG["analysis"],
-                               edgecolor="none", alpha=0.9))
-        ax.axis("off")
-
-    if last_im is not None:
-        fig.colorbar(last_im, ax=fig.axes[-1], fraction=0.046, pad=0.04, label="L2 norm")
-
-    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close()
-    print(f"Residual magnitude maps saved → {save_path}")
-
-
-def save_enhanced_ablation_grid(
-    ablation_images: list,          # [(label, gen_np), ...]
-    save_path: Path,
-    refs: list | None = None,       # [(section_key, label, image), ...] prepended
-):
-    """
-    2-row ablation grid. Row 0: section headers. Row 1: images.
-    refs panels are prepended (e.g. reference H&E for comparison).
-    Then: Mask only → +group1 → ... → all groups.
-    """
-    refs = refs or []
-
-    # Build full panel list: (section_key, label, image)
-    panels = list(refs)
-    for i, (label, img) in enumerate(ablation_images):
-        sk = "input" if i == 0 else "output"
-        panels.append((sk, label, img))
-
-    n = len(panels)
-    fig = plt.figure(figsize=(n * 2.5, 5.0), facecolor="white")
-    gs = gridspec.GridSpec(2, n, figure=fig,
-                           height_ratios=[0.13, 0.87],
-                           wspace=0.05, hspace=0.08,
-                           left=0.01, right=0.99, top=0.97, bottom=0.02)
-
-    for j, (sk, lbl, img) in enumerate(panels):
-        _header_ax(fig.add_subplot(gs[0, j]), lbl, sk)
-        _titled_ax(fig.add_subplot(gs[1, j]), img, sk, lbl, fontsize=7)
-
-    # Dashed separator after ref panels
-    n_refs = len(refs)
-    if n_refs > 0 and n_refs < n:
-        ax_last_ref = fig.axes[n_refs * 2 - 1]   # row-1 axis of last ref
-        ax_first_abl = fig.axes[n_refs * 2 + 1]  # row-1 axis of first ablation
-        x_sep = (ax_last_ref.get_position().x1 +
-                 ax_first_abl.get_position().x0) / 2
-        fig.add_artist(plt.Line2D([x_sep, x_sep], [0.02, 0.98],
-                                  transform=fig.transFigure,
-                                  color="#aaaaaa", linewidth=1.5, linestyle="--"))
-
-    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close()
-    print(f"Ablation grid saved → {save_path}")
 
 
 # ── UNI extraction ────────────────────────────────────────────────────────────
@@ -697,7 +112,7 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
 
     # Load models
-    models = load_all_models(config, DEVICE)
+    models = load_all_models(config, CONFIG_PATH, CKPT_DIR, DEVICE)
 
     # Scheduler
     scheduler = DDPMScheduler(
@@ -742,6 +157,8 @@ def main():
             scheduler=scheduler,
             uni_embeds=uni_embeds,
             device=DEVICE,
+            exp_channels_dir=EXP_CH_DIR,
+            guidance_scale=GUIDANCE_SCALE,
             return_vis_data=do_vis,
         )
 
@@ -807,9 +224,16 @@ def main():
 
             # 4. Ablation grid (progressive group addition)
             print(f"  Generating ablation grid...")
-            ablation_imgs = _generate_ablation_images(
-                tile_id=tid, models=models, config=config,
-                scheduler=scheduler, uni_embeds=uni_embeds, device=DEVICE,
+            ablation_imgs = generate_ablation_images(
+                tile_id=tid,
+                models=models,
+                config=config,
+                scheduler=scheduler,
+                uni_embeds=uni_embeds,
+                device=DEVICE,
+                exp_channels_dir=EXP_CH_DIR,
+                guidance_scale=GUIDANCE_SCALE,
+                seed=SEED,
             )
             save_enhanced_ablation_grid(
                 ablation_images=ablation_imgs,
@@ -839,6 +263,8 @@ def main():
             scheduler=scheduler,
             uni_embeds=uni_embeds,
             device=DEVICE,
+            exp_channels_dir=EXP_CH_DIR,
+            guidance_scale=GUIDANCE_SCALE,
             return_vis_data=False,
         )
 
@@ -892,6 +318,8 @@ def main():
             scheduler=scheduler,
             uni_embeds=uni_B,
             device=DEVICE,
+            exp_channels_dir=EXP_CH_DIR,
+            guidance_scale=GUIDANCE_SCALE,
             return_vis_data=True,
         )
 
@@ -948,9 +376,16 @@ def main():
 
             # 4. Ablation grid — progressive group addition with B's style
             print(f"  Generating unpaired ablation grid...")
-            ablation_imgs = _generate_ablation_images(
-                tile_id=tid_A, models=models, config=config,
-                scheduler=scheduler, uni_embeds=uni_B, device=DEVICE,
+            ablation_imgs = generate_ablation_images(
+                tile_id=tid_A,
+                models=models,
+                config=config,
+                scheduler=scheduler,
+                uni_embeds=uni_B,
+                device=DEVICE,
+                exp_channels_dir=EXP_CH_DIR,
+                guidance_scale=GUIDANCE_SCALE,
+                seed=SEED,
             )
             save_enhanced_ablation_grid(
                 ablation_images=ablation_imgs,
