@@ -438,12 +438,21 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cell_mask_dir = sim_channels_dir / "cell_mask"
-    sim_ids = sorted(p.stem for p in cell_mask_dir.glob("*.png"))
+    mask_pngs = list(cell_mask_dir.glob("*.png"))
+    if not mask_pngs:
+        alt = sim_channels_dir / "cell_masks"
+        mask_pngs = list(alt.glob("*.png"))
+        if mask_pngs:
+            cell_mask_dir = alt
+    sim_ids = sorted(p.stem for p in mask_pngs)
     if args.n_tiles:
         sim_ids = sim_ids[: args.n_tiles]
 
     if not sim_ids:
-        raise RuntimeError(f"No sim channel PNGs found in {cell_mask_dir}")
+        raise RuntimeError(
+            f"No sim channel PNGs in {sim_channels_dir / 'cell_mask'} "
+            f"or {sim_channels_dir / 'cell_masks'}"
+        )
 
     print(f"Batch generating {len(sim_ids)} tiles → {output_dir}")
     for sim_id in sim_ids:

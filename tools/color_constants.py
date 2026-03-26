@@ -6,12 +6,34 @@ Import in any visualization script for consistent coloring across all figures:
     from tools.color_constants import (
         CELL_TYPE_COLORS, CELL_STATE_COLORS,
         CHANNEL_CMAP, CHANNEL_LABEL,
+        GLUCOSE_PROXY_CMAP, OXYGEN_PROXY_CMAP,
         SECTION_BG, SECTION_TEXT,
     )
 """
 from __future__ import annotations
 
 from matplotlib.colors import LinearSegmentedColormap as _LSCmap
+
+# ── Nutrient proxy RGBA-style gradients (continuous [0, 1]) ─────────────────────
+# Used for matplotlib imshow + matching colorbars in Stage 3 overviews.
+
+OXYGEN_PROXY_CMAP = _LSCmap.from_list(
+    "oxygen_proxy",
+    [
+        (0.00, (0.35, 0.00, 0.08)),  # hypoxic — deep red
+        (0.45, (0.75, 0.35, 0.20)),
+        (1.00, (0.45, 0.92, 1.00)),  # oxygenated — light cyan
+    ],
+)
+
+GLUCOSE_PROXY_CMAP = _LSCmap.from_list(
+    "glucose_proxy",
+    [
+        (0.00, (0.12, 0.02, 0.22)),  # depleted — dark violet
+        (0.50, (0.55, 0.40, 0.08)),
+        (1.00, (0.98, 0.95, 0.35)),  # high — bright yellow
+    ],
+)
 
 
 def _bk_cmap(r: int, g: int, b: int, name: str):
@@ -44,8 +66,8 @@ CELL_STATE_COLORS: dict[str, tuple[int, int, int, int]] = {
 #   cell types  — each uses the color family matching its CELL_TYPE_COLORS entry
 #   cell states — warm/cool/earthy to distinguish biological significance
 #   vasculature — Reds (blood vessels)
-#   oxygen      — RdYlBu  (blue=high O2, red=hypoxic)
-#   glucose     — hot     (metabolic energy map)
+#   oxygen      — OXYGEN_PROXY_CMAP (hypoxic red → oxygenated cyan)
+#   glucose     — GLUCOSE_PROXY_CMAP (depleted violet → high yellow)
 
 CHANNEL_CMAP: dict = {
     # Binary channels: black background → cell color
@@ -58,8 +80,8 @@ CHANNEL_CMAP: dict = {
     "cell_state_dead":      _bk_cmap(110, 60,  20,  "cmap_dead"),    # black → brown
     # Continuous channels: keep standard colormaps
     "vasculature":          "Reds",
-    "oxygen":               "RdYlBu",
-    "glucose":              "hot",
+    "oxygen":               OXYGEN_PROXY_CMAP,
+    "glucose":              GLUCOSE_PROXY_CMAP,
 }
 
 # ── Per-channel display labels ─────────────────────────────────────────────────
