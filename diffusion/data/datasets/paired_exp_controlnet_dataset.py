@@ -66,6 +66,11 @@ _CHANNEL_ALIASES: dict[str, str] = {
     "cell_mask": "cell_masks",
 }
 
+# Reflect-pad non-binary channels by this many pixels before resize to suppress
+# simulation boundary artifacts (Dirichlet BCs create sharp border gradients that
+# the CNN encoder mistakes for signal).
+_MIRROR_BORDER_PX: int = 8
+
 
 def _normalize_channels(active: list[str]) -> list[str]:
     ordered: list[str] = []
@@ -118,6 +123,7 @@ class PairedExpControlNetData(Dataset):
         vae_prefix (str):        VAE latent filename suffix. Default "sd3_vae".
         ssl_prefix (str):        UNI embedding filename suffix. Default "uni".
         train_subset_keys (list[str] | None): restrict to specific HDF5 keys.
+        max_train_samples (int | None): cap dataset size (useful for debug overfitting runs).
     """
 
     def __init__(self, root: str, resolution: int, **kwargs):
@@ -172,10 +178,12 @@ class PairedExpControlNetData(Dataset):
         for ch in self.active_channels:
             ch_dir = self.exp_channels_dir / ch
             fpath  = _find_file(ch_dir, tile_id)
+            is_binary = ch in _BINARY_CHANNELS
             arr    = _load_spatial_file(
                 fpath,
                 resolution=self.resolution,
-                binary=(ch in _BINARY_CHANNELS),
+                binary=is_binary,
+                mirror_border_px=0 if is_binary else _MIRROR_BORDER_PX,
             )
             planes.append(arr)
         ctrl = torch.from_numpy(np.stack(planes, axis=0))

@@ -107,7 +107,12 @@ def _find_file(directory: Path, stem: str) -> Path:
     )
 
 
-def _load_spatial_file(path: Path, resolution: int, binary: bool = False) -> np.ndarray:
+def _load_spatial_file(
+    path: Path,
+    resolution: int,
+    binary: bool = False,
+    mirror_border_px: int = 0,
+) -> np.ndarray:
     """
     Load a 2D spatial field from PNG or NPY and return a float32 [H, W] array.
 
@@ -117,11 +122,15 @@ def _load_spatial_file(path: Path, resolution: int, binary: bool = False) -> np.
         - Any input resolution             → bilinear resize to (resolution, resolution)
         - binary=True                      → threshold at 0.5 → {0.0, 1.0}
         - binary=False                     → min-max normalize to [0, 1]
+        - mirror_border_px > 0             → reflect-pad the raw image before resize
+          to suppress simulation boundary artifacts (e.g. oxygen/glucose Dirichlet BCs).
+          Only applied when binary=False.
 
     Args:
-        path:       File to load (.png or .npy).
-        resolution: Target spatial resolution.
-        binary:     Whether to binarize (True for cell_mask).
+        path:             File to load (.png or .npy).
+        resolution:       Target spatial resolution.
+        binary:           Whether to binarize (True for cell_mask).
+        mirror_border_px: Pixels of reflect-padding added before resize (default 0).
 
     Returns:
         np.ndarray, shape (resolution, resolution), dtype float32.
@@ -159,6 +168,10 @@ def _load_spatial_file(path: Path, resolution: int, binary: bool = False) -> np.
             f"Unsupported file extension '{suffix}'. "
             f"Supported: {list(_EXTS)}"
         )
+
+    # ── Mirror-pad to suppress boundary artifacts (non-binary channels only) ──
+    if mirror_border_px > 0 and not binary:
+        arr = np.pad(arr, mirror_border_px, mode="reflect")
 
     # ── Resize ────────────────────────────────────────────────────────────────
     if arr.shape != (resolution, resolution):
