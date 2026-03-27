@@ -206,29 +206,34 @@ def save_enhanced_attention_figure(
     output_resolution: int = 256,
 ):
     """
-    Layout (2 rows):
-      Row 0 headers: INPUTS (style H&E + cell mask) | OUTPUT | ── | ATTENTION (per group)
-      Row 1 images:  [style img purple] [cell mask blue] | gen H&E | ── | heatmaps on mask
-    """
-    from tools.visualize_group_attention import compute_attention_heatmaps
+    Dual-row attention figure.
 
-    heatmaps = compute_attention_heatmaps(attn_maps, spatial_size, output_resolution)
+    Row 1 — TME space (sum over Q):  which TME positions were consulted.
+    Row 2 — Mask space (sum over KV): which mask positions were seeking info.
+
+    Layout per row: [style?] [cell mask] | [gen H&E] | ── | heatmaps…
+    """
+    from tools.visualize_group_attention import compute_attention_heatmaps_dual
+
+    dual = compute_attention_heatmaps_dual(attn_maps, spatial_size, output_resolution)
     style_inputs = style_inputs or []
 
     n_style = len(style_inputs)
-    n_left = n_style + 2
-    n_attn = len(heatmaps)
+    n_left = n_style + 2      # style panels + cell mask + gen H&E
+    group_names = list(dual.keys())
+    n_attn = len(group_names)
     has_attn = n_attn > 0
     n_cols = n_left + 1 + n_attn + (1 if has_attn else 0)
 
     ratios = [1.0] * n_left + [0.08] + [1.0] * n_attn + ([0.08] if has_attn else [])
-    fig = plt.figure(figsize=(n_cols * 2.6, 5.0), facecolor="white")
+    # 5 rows: global header | tme sub-header | tme images | mask sub-header | mask images
+    fig = plt.figure(figsize=(n_cols * 2.6, 9.0), facecolor="white")
     gs = gridspec.GridSpec(
-        2,
+        5,
         n_cols,
         figure=fig,
         width_ratios=ratios,
-        height_ratios=[0.13, 0.87],
+        height_ratios=[0.07, 0.06, 0.42, 0.06, 0.42],
         wspace=0.05,
         hspace=0.08,
         left=0.01,
@@ -238,8 +243,9 @@ def save_enhanced_attention_figure(
     )
 
     mask_img = ctrl_full[active_channels.index("cell_masks")]
-
     inp_hdr_text = "INPUTS  (style H&E + cell mask)" if n_style > 0 else "INPUT"
+
+    # ── Row 0: global section headers ──────────────────────────────────────────
     _header_ax(fig.add_subplot(gs[0, 0 : n_style + 1]), inp_hdr_text, "input")
     _header_ax(fig.add_subplot(gs[0, n_style + 1]), "OUTPUT", "output")
     fig.add_subplot(gs[0, n_left]).axis("off")
@@ -251,36 +257,45 @@ def save_enhanced_attention_figure(
         )
         fig.add_subplot(gs[0, -1]).axis("off")
 
-    for j, (lbl, img) in enumerate(style_inputs):
-        _titled_ax(fig.add_subplot(gs[1, j]), img, "style_ref", lbl)
-    _titled_ax(
-        fig.add_subplot(gs[1, n_style]),
-        mask_img,
-        "input",
-        "Cell Mask",
-        cmap="gray",
-    )
-    _titled_ax(fig.add_subplot(gs[1, n_style + 1]), gen_np, "output", "Generated H&E")
-    fig.add_subplot(gs[1, n_left]).axis("off")
+    def _render_attn_row(data_row, sub_row, maps_key, row_subtitle):
+        # sub-header label
+        ax_lbl = fig.add_subplot(gs[sub_row, n_left + 1 : n_left + 1 + n_attn])
+        ax_lbl.set_facecolor(SECTION_BG["analysis"])
+        ax_lbl.text(0.5, 0.5, row_subtitle, ha="center", va="center",
+                    fontsize=8, style="italic", color=SECTION_TEXT["analysis"],
+                    transform=ax_lbl.transAxes)
+        ax_lbl.axis("off")
+        fig.add_subplot(gs[sub_row, 0 : n_left + 1]).axis("off")
+        if has_attn:
+            fig.add_subplot(gs[sub_row, -1]).axis("off")
 
-    last_im = None
-    for k, (name, hmap) in enumerate(heatmaps.items()):
-        ax = fig.add_subplot(gs[1, n_left + 1 + k])
-        ax.set_facecolor(SECTION_BG["analysis"])
-        last_im = ax.imshow(hmap, cmap="jet", vmin=0, vmax=1)
-        ax.set_title(
-            name,
-            fontsize=8,
-            fontweight="bold",
-            color=SECTION_TEXT["analysis"],
-            pad=4,
-        )
-        ax.axis("off")
-    if last_im is not None:
-        cbar_ax = fig.add_subplot(gs[1, -1])
-        cbar = fig.colorbar(last_im, cax=cbar_ax)
-        cbar.set_label("Attention weight", fontsize=7)
-        cbar.ax.tick_params(labelsize=7)
+        # style + mask + gen panels
+        for j, (lbl, img) in enumerate(style_inputs):
+            _titled_ax(fig.add_subplot(gs[data_row, j]), img, "style_ref", lbl)
+        _titled_ax(fig.add_subplot(gs[data_row, n_style]), mask_img, "input",
+                   "Cell Mask", cmap="gray")
+        _titled_ax(fig.add_subplot(gs[data_row, n_style + 1]), gen_np, "output",
+                   "Generated H&E")
+        fig.add_subplot(gs[data_row, n_left]).axis("off")
+
+        # heatmap panels
+        last_im = None
+        for k, name in enumerate(group_names):
+            hmap = dual[name][maps_key]
+            ax = fig.add_subplot(gs[data_row, n_left + 1 + k])
+            ax.set_facecolor(SECTION_BG["analysis"])
+            last_im = ax.imshow(hmap, cmap="jet", vmin=0, vmax=1)
+            ax.set_title(name, fontsize=8, fontweight="bold",
+                         color=SECTION_TEXT["analysis"], pad=4)
+            ax.axis("off")
+        if last_im is not None and has_attn:
+            cbar_ax = fig.add_subplot(gs[data_row, -1])
+            cbar = fig.colorbar(last_im, cax=cbar_ax)
+            cbar.set_label("Attn weight", fontsize=7)
+            cbar.ax.tick_params(labelsize=7)
+
+    _render_attn_row(2, 1, "tme_space",  "TME space — which TME positions were consulted")
+    _render_attn_row(4, 3, "mask_space", "Mask space — which mask positions were seeking info")
 
     plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close()
@@ -405,7 +420,11 @@ def save_enhanced_ablation_grid(
 
     for j, (sk, lbl, img) in enumerate(panels):
         _header_ax(fig.add_subplot(gs[0, j]), lbl, sk)
-        _titled_ax(fig.add_subplot(gs[1, j]), img, sk, lbl, fontsize=7)
+        ax = fig.add_subplot(gs[1, j])
+        ax.set_facecolor(SECTION_BG[sk])
+        vmax = None if img.dtype == np.uint8 else 1.0
+        ax.imshow(img, vmin=0, vmax=vmax)
+        ax.axis("off")
 
     n_refs = len(refs)
     if n_refs > 0 and n_refs < n:
@@ -426,3 +445,89 @@ def save_enhanced_ablation_grid(
     plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close()
     print(f"Ablation grid saved → {save_path}")
+
+
+def save_loo_ablation_grid(
+    ablation_images: list,
+    save_path: str | Path,
+    refs: list | None = None,
+):
+    """Leave-one-out ablation grid.
+
+    ablation_images: [(label, gen_np), ...] where first item is 'All groups'
+                     and remainder are 'minus_G' conditions.
+    refs: optional list of (section_key, label, img) reference panels prepended.
+    """
+    refs = refs or []
+    panels = list(refs)
+    for i, (label, img) in enumerate(ablation_images):
+        sk = "output" if i == 0 else "analysis"
+        panels.append((sk, label, img))
+
+    n = len(panels)
+    fig = plt.figure(figsize=(n * 2.5, 5.0), facecolor="white")
+    gs = gridspec.GridSpec(2, n, figure=fig, height_ratios=[0.13, 0.87],
+                           wspace=0.05, hspace=0.08,
+                           left=0.01, right=0.99, top=0.97, bottom=0.02)
+
+    for j, (sk, lbl, img) in enumerate(panels):
+        _header_ax(fig.add_subplot(gs[0, j]), lbl, sk)
+        ax = fig.add_subplot(gs[1, j])
+        ax.set_facecolor(SECTION_BG[sk])
+        ax.imshow(img, vmin=0, vmax=None if img.dtype == np.uint8 else 1.0)
+        ax.axis("off")
+
+    # Separator between reference and first ablation
+    n_refs = len(refs)
+    if n_refs > 0 and n_refs < n:
+        x_sep = (fig.axes[n_refs * 2 - 1].get_position().x1 +
+                 fig.axes[n_refs * 2 + 1].get_position().x0) / 2
+        fig.add_artist(plt.Line2D([x_sep, x_sep], [0.02, 0.98],
+                                  transform=fig.transFigure, color="#aaaaaa",
+                                  linewidth=1.5, linestyle="--"))
+
+    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close()
+    print(f"LOO ablation grid saved → {save_path}")
+
+
+def save_pairwise_ablation_grid(
+    ablation_images: list,
+    save_path: str | Path,
+    refs: list | None = None,
+):
+    """Pairwise ablation grid: mask_only + mask+single_group for each group.
+
+    ablation_images: [(label, gen_np), ...] first = 'Mask only', rest = '+G'.
+    refs: optional list of (section_key, label, img) reference panels.
+    """
+    refs = refs or []
+    panels = list(refs)
+    for i, (label, img) in enumerate(ablation_images):
+        sk = "input" if i == 0 else "output"
+        panels.append((sk, label, img))
+
+    n = len(panels)
+    fig = plt.figure(figsize=(n * 2.5, 5.0), facecolor="white")
+    gs = gridspec.GridSpec(2, n, figure=fig, height_ratios=[0.13, 0.87],
+                           wspace=0.05, hspace=0.08,
+                           left=0.01, right=0.99, top=0.97, bottom=0.02)
+
+    for j, (sk, lbl, img) in enumerate(panels):
+        _header_ax(fig.add_subplot(gs[0, j]), lbl, sk)
+        ax = fig.add_subplot(gs[1, j])
+        ax.set_facecolor(SECTION_BG[sk])
+        ax.imshow(img, vmin=0, vmax=None if img.dtype == np.uint8 else 1.0)
+        ax.axis("off")
+
+    n_refs = len(refs)
+    if n_refs > 0 and n_refs < n:
+        x_sep = (fig.axes[n_refs * 2 - 1].get_position().x1 +
+                 fig.axes[n_refs * 2 + 1].get_position().x0) / 2
+        fig.add_artist(plt.Line2D([x_sep, x_sep], [0.02, 0.98],
+                                  transform=fig.transFigure, color="#aaaaaa",
+                                  linewidth=1.5, linestyle="--"))
+
+    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close()
+    print(f"Pairwise ablation grid saved → {save_path}")

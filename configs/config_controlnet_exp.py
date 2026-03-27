@@ -34,10 +34,11 @@ data = dict(
         # Approximate channels derived from CODEX (CD31, Ki67+dist, metabolic model)
         "vasculature", "oxygen", "glucose",
     ],
+    # max_train_samples=100,  # uncomment to use a tiny subset for debugging
 )
 
 # Root of the paired experimental dataset — set before training
-exp_data_root = f"{root}/data/orion-crc33"
+exp_data_root = f"{root}/data/test-orion-crc33"
 
 # =====================================================================
 # Channel Groups — per-group TME encoder + cross-attention
@@ -55,10 +56,8 @@ channel_groups = [
 tme_model   = "MultiGroupTMEModule"
 tme_base_ch = 32
 tme_lr          = 1e-4   # encoder CNN + Q/K/V — fresh init, needs room to move
-tme_proj_lr     = 3e-4   # cross_attn.proj only — zero-init, needs the boost
-# REQUIRED for the first resume after the optimizer-split is activated.
-# Without this, loading the old single-group optimizer state into the new two-group
-# optimizer raises: ValueError: loaded state dict has a different number of param groups.
+tme_proj_lr     = 3e-3   # cross_attn.proj only — raised 10× to escape zero-init faster
+# Reset TME optimizer on resume when changing tme_proj_lr, so the new LR is respected.
 reset_tme_optimizer = False
 
 # =====================================================================
@@ -87,9 +86,10 @@ controlnet_conditioning_scale    = 1.0
 controlnet_load_from             = f"{root}/pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors"
 load_from   = f"{root}/pretrained_models/pixcell-256/transformer"
 
-# To resume from a sim ControlNet checkpoint:
-# resume_from = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
-# resume_tme_checkpoint = f"{root}/checkpoints/pixcell_controlnet_sim/checkpoints/step_XXXXXXX"
+# To resume from a checkpoint:
+# resume_from = dict(checkpoint=f"{root}/checkpoints/.../step_XXXXXXX", load_ema=True,
+#                    resume_optimizer=True, resume_lr_scheduler=True)
+# resume_tme_checkpoint = f"{root}/checkpoints/.../step_XXXXXXX"
 resume_from = dict(
     checkpoint=None,
     load_ema=True,
@@ -107,29 +107,29 @@ fp32_attention   = True
 # =====================================================================
 # Training
 # =====================================================================
+# test-orion-crc33: 128 tiles, bs=16 → 8 steps/epoch, 800 steps over 100 epochs.
 num_workers                 = 4
-train_batch_size            = 64
-# 0 = save ControlNet + freshly initialized TME to work_dir/checkpoints/ and exit (no optimizer steps).
-num_epochs                  = 10
-gradient_accumulation_steps = 2   # effective batch = 64
+train_batch_size            = 16
+num_epochs                  = 50
+gradient_accumulation_steps = 1
 grad_checkpointing          = True
 gradient_clip               = 1.0
 
 optimizer = dict(
     type='AdamW',
-    lr=1e-5,            # fresh training from pretrained ControlNet weights
+    lr=1e-5,
     weight_decay=0.0,
     betas=(0.9, 0.999),
     eps=1e-8,
 )
 
-lr_schedule_args = dict(num_warmup_steps=500)
+lr_schedule_args = dict(num_warmup_steps=50)   # ~6% of 800 total steps
 auto_lr          = None
 
-log_interval       = 50
+log_interval       = 8    # log every epoch
 save_model_epochs  = 50
 save_model_steps   = 10000
-work_dir           = f"{root}/checkpoints/pixcell_controlnet_exp"
+work_dir           = f"{root}/checkpoints/pixcell_controlnet_exp_fresh"
 
 # =====================================================================
 # VAE

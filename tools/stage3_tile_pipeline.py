@@ -31,8 +31,15 @@ _BINARY: frozenset[str] = frozenset(
 )
 
 
+_MIRROR_BORDER_PX: int = 8  # reflect-pad non-binary channels before resize
+
+
 def load_channel(ch_dir: Path, tile_id: str, resolution: int, binary: bool) -> np.ndarray:
-    """Load a single channel PNG → float32 [H, W] in [0, 1]."""
+    """Load a single channel PNG → float32 [H, W] in [0, 1].
+
+    Non-binary (continuous) channels are reflect-padded by _MIRROR_BORDER_PX pixels
+    before resize to suppress simulation boundary artifacts.
+    """
     fpath = ch_dir / f"{tile_id}.png"
     if not fpath.exists():
         fpath = ch_dir / f"{tile_id}.npy"
@@ -45,6 +52,8 @@ def load_channel(ch_dir: Path, tile_id: str, resolution: int, binary: bool) -> n
 
         img = cv2.imread(str(fpath), cv2.IMREAD_GRAYSCALE)
         arr = img.astype(np.float32) / 255.0
+    if not binary and _MIRROR_BORDER_PX > 0:
+        arr = np.pad(arr, _MIRROR_BORDER_PX, mode="reflect")
     if arr.shape != (resolution, resolution):
         import cv2
 
@@ -333,6 +342,119 @@ def generate_ablation_images(
         ablation_images.append((label, gen_np))
 
     return ablation_images
+
+
+def generate_loo_ablation(
+    tile_id: str,
+    models: dict,
+    config,
+    scheduler,
+    uni_embeds: torch.Tensor,
+    device: str,
+    exp_channels_dir: Path,
+    guidance_scale: float,
+    seed: int,
+) -> list[tuple[str, np.ndarray]]:
+    """Leave-one-out ablation: all_groups then all_minus_G for each group G.
+
+    Returns [(label, gen_np), ...] with len = 1 + n_groups, fixed noise seed.
+    """
+    from tools.channel_group_utils import split_channels_to_groups
+    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
+
+    active_channels = config.data.active_channels
+    vae_scale = config.scale_factor
+    vae_shift = config.shift_factor
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    vae, controlnet, base_model, tme_module = (
+        models["vae"], models["controlnet"], models["base_model"], models["tme_module"]
+    )
+    vae.to(device=device, dtype=dtype).eval()
+
+    ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size, exp_channels_dir)
+    vae_mask = encode_ctrl_mask_latent(ctrl_full, vae, vae_shift=vae_shift, vae_scale=vae_scale,
+                                       device=device, dtype=dtype)
+    tme_dict = split_channels_to_groups(ctrl_full.unsqueeze(0).to(device, dtype=dtype),
+                                        active_channels, config.channel_groups)
+    group_names = [g["name"] for g in config.channel_groups]
+
+    torch.manual_seed(seed)
+    latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
+    fixed_noise = torch.randn(latent_shape, device=device, dtype=dtype) * scheduler.init_noise_sigma
+
+    all_groups = set(group_names)
+    conditions = [("All groups", all_groups)] + [
+        (f"−{g}", all_groups - {g}) for g in group_names
+    ]
+    results = []
+    for label, active in conditions:
+        with torch.no_grad():
+            fused = tme_module(vae_mask, tme_dict, active_groups=active)
+        denoised = denoise(latents=fixed_noise.clone(), uni_embeds=uni_embeds.to(device, dtype=dtype),
+                           controlnet_input_latent=fused, scheduler=scheduler,
+                           controlnet_model=controlnet, pixcell_controlnet_model=base_model,
+                           guidance_scale=guidance_scale, device=device)
+        with torch.no_grad():
+            gen = vae.decode(((denoised.to(dtype) / vae_scale) + vae_shift), return_dict=False)[0]
+        gen_np = ((gen / 2 + 0.5).clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
+        results.append((label, gen_np))
+    return results
+
+
+def generate_pairwise_ablation(
+    tile_id: str,
+    models: dict,
+    config,
+    scheduler,
+    uni_embeds: torch.Tensor,
+    device: str,
+    exp_channels_dir: Path,
+    guidance_scale: float,
+    seed: int,
+) -> list[tuple[str, np.ndarray]]:
+    """Pairwise ablation: mask_only then mask+single_group for each group G.
+
+    Returns [(label, gen_np), ...] with len = 1 + n_groups, fixed noise seed.
+    """
+    from tools.channel_group_utils import split_channels_to_groups
+    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
+
+    active_channels = config.data.active_channels
+    vae_scale = config.scale_factor
+    vae_shift = config.shift_factor
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    vae, controlnet, base_model, tme_module = (
+        models["vae"], models["controlnet"], models["base_model"], models["tme_module"]
+    )
+    vae.to(device=device, dtype=dtype).eval()
+
+    ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size, exp_channels_dir)
+    vae_mask = encode_ctrl_mask_latent(ctrl_full, vae, vae_shift=vae_shift, vae_scale=vae_scale,
+                                       device=device, dtype=dtype)
+    tme_dict = split_channels_to_groups(ctrl_full.unsqueeze(0).to(device, dtype=dtype),
+                                        active_channels, config.channel_groups)
+    group_names = [g["name"] for g in config.channel_groups]
+
+    torch.manual_seed(seed)
+    latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
+    fixed_noise = torch.randn(latent_shape, device=device, dtype=dtype) * scheduler.init_noise_sigma
+
+    conditions = [("Mask only", None)] + [(f"+{g}", {g}) for g in group_names]
+    results = []
+    for label, active in conditions:
+        with torch.no_grad():
+            fused = tme_module(vae_mask, tme_dict, active_groups=active) if active else vae_mask.clone()
+        denoised = denoise(latents=fixed_noise.clone(), uni_embeds=uni_embeds.to(device, dtype=dtype),
+                           controlnet_input_latent=fused, scheduler=scheduler,
+                           controlnet_model=controlnet, pixcell_controlnet_model=base_model,
+                           guidance_scale=guidance_scale, device=device)
+        with torch.no_grad():
+            gen = vae.decode(((denoised.to(dtype) / vae_scale) + vae_shift), return_dict=False)[0]
+        gen_np = ((gen / 2 + 0.5).clamp(0, 1).cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
+        results.append((label, gen_np))
+    return results
 
 
 def find_latest_checkpoint_dir(checkpoints_parent: Path) -> Path:
