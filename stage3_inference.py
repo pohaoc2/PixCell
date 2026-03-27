@@ -255,9 +255,6 @@ def generate(
         device=device,
         dtype=dtype,
     )
-    if getattr(config, "zero_mask_latent", False):
-        vae_mask = torch.zeros_like(vae_mask)
-
     # 3. Fuse TME channels through TME (flat or multi-group) module
     channel_groups_cfg = getattr(config, "channel_groups", None)
     if channel_groups_cfg is not None:
@@ -276,6 +273,9 @@ def generate(
         tme_channels = ctrl_full[1:].unsqueeze(0).to(device, dtype=dtype)
         with torch.no_grad():
             fused_cond = tme_module(vae_mask.to(dtype), tme_channels)
+
+    if getattr(config, "zero_mask_latent", False):
+        fused_cond = fused_cond - vae_mask.to(dtype)
 
     # 4. Diffusion denoising
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)

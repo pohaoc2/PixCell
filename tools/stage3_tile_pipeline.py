@@ -211,9 +211,6 @@ def generate_tile(
         device=device,
         dtype=dtype,
     )
-    if getattr(config, "zero_mask_latent", False):
-        vae_mask = torch.zeros_like(vae_mask)
-
     tme_dict = split_channels_to_groups(
         ctrl_full.unsqueeze(0).to(device, dtype=dtype),
         active_channels,
@@ -231,6 +228,8 @@ def generate_tile(
         else:
             fused = tme_module(vae_mask, tme_dict)
             residuals, attn_maps = {}, {}
+    if getattr(config, "zero_mask_latent", False):
+        fused = fused - vae_mask
 
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
     latents = torch.randn(latent_shape, device=device, dtype=dtype)
@@ -300,9 +299,6 @@ def generate_ablation_images(
         device=device,
         dtype=dtype,
     )
-    if getattr(config, "zero_mask_latent", False):
-        vae_mask = torch.zeros_like(vae_mask)
-
     tme_dict = split_channels_to_groups(
         ctrl_full.unsqueeze(0).to(device, dtype=dtype),
         active_channels,
@@ -311,6 +307,7 @@ def generate_ablation_images(
 
     group_names = [g["name"] for g in config.channel_groups]
     ablation_images = []
+    _zero_mask = getattr(config, "zero_mask_latent", False)
 
     torch.manual_seed(seed)
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
@@ -326,7 +323,12 @@ def generate_ablation_images(
             label = "Groups:\n" + "\n".join(group_names[:n])
 
         with torch.no_grad():
-            fused = tme_module(vae_mask, tme_dict, active_groups=active) if active else vae_mask.clone()
+            if active:
+                fused = tme_module(vae_mask, tme_dict, active_groups=active)
+                if _zero_mask:
+                    fused = fused - vae_mask
+            else:
+                fused = torch.zeros_like(vae_mask) if _zero_mask else vae_mask.clone()
 
         denoised = denoise(
             latents=fixed_noise.clone(),
@@ -379,11 +381,10 @@ def generate_loo_ablation(
     ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size, exp_channels_dir)
     vae_mask = encode_ctrl_mask_latent(ctrl_full, vae, vae_shift=vae_shift, vae_scale=vae_scale,
                                        device=device, dtype=dtype)
-    if getattr(config, "zero_mask_latent", False):
-        vae_mask = torch.zeros_like(vae_mask)
     tme_dict = split_channels_to_groups(ctrl_full.unsqueeze(0).to(device, dtype=dtype),
                                         active_channels, config.channel_groups)
     group_names = [g["name"] for g in config.channel_groups]
+    _zero_mask = getattr(config, "zero_mask_latent", False)
 
     torch.manual_seed(seed)
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
@@ -397,6 +398,8 @@ def generate_loo_ablation(
     for label, active in conditions:
         with torch.no_grad():
             fused = tme_module(vae_mask, tme_dict, active_groups=active)
+            if _zero_mask:
+                fused = fused - vae_mask
         denoised = denoise(latents=fixed_noise.clone(), uni_embeds=uni_embeds.to(device, dtype=dtype),
                            controlnet_input_latent=fused, scheduler=scheduler,
                            controlnet_model=controlnet, pixcell_controlnet_model=base_model,
@@ -439,11 +442,10 @@ def generate_pairwise_ablation(
     ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size, exp_channels_dir)
     vae_mask = encode_ctrl_mask_latent(ctrl_full, vae, vae_shift=vae_shift, vae_scale=vae_scale,
                                        device=device, dtype=dtype)
-    if getattr(config, "zero_mask_latent", False):
-        vae_mask = torch.zeros_like(vae_mask)
     tme_dict = split_channels_to_groups(ctrl_full.unsqueeze(0).to(device, dtype=dtype),
                                         active_channels, config.channel_groups)
     group_names = [g["name"] for g in config.channel_groups]
+    _zero_mask = getattr(config, "zero_mask_latent", False)
 
     torch.manual_seed(seed)
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
@@ -453,7 +455,12 @@ def generate_pairwise_ablation(
     results = []
     for label, active in conditions:
         with torch.no_grad():
-            fused = tme_module(vae_mask, tme_dict, active_groups=active) if active else vae_mask.clone()
+            if active:
+                fused = tme_module(vae_mask, tme_dict, active_groups=active)
+                if _zero_mask:
+                    fused = fused - vae_mask
+            else:
+                fused = torch.zeros_like(vae_mask) if _zero_mask else vae_mask.clone()
         denoised = denoise(latents=fixed_noise.clone(), uni_embeds=uni_embeds.to(device, dtype=dtype),
                            controlnet_input_latent=fused, scheduler=scheduler,
                            controlnet_model=controlnet, pixcell_controlnet_model=base_model,
