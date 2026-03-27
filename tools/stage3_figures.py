@@ -10,9 +10,12 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.colors as mcolors
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
+
+_RESIDUAL_CMAP = mcolors.LinearSegmentedColormap.from_list("black_red", ["black", "red"])
 
 from tools.color_constants import (
     CHANNEL_CMAP,
@@ -204,29 +207,33 @@ def save_enhanced_attention_figure(
     style_inputs: list | None = None,
     spatial_size: tuple = (32, 32),
     output_resolution: int = 256,
+    residuals: dict | None = None,
 ):
     """
-    Dual-row attention figure.
+    Dual-row attention + residual figure.
 
-    Row 1 — TME space (sum over Q):  which TME positions were consulted.
-    Row 2 — Mask space (sum over KV): which mask positions were seeking info.
+    Row 1 — TME space (sum over Q): which TME positions were consulted.
+    Row 2 — Residual magnitude ‖Δ_group‖: which mask positions were modified.
 
-    Layout per row: [style?] [cell mask] | [gen H&E] | ── | heatmaps…
+    Layout per row: [style?] [cell mask] | [gen H&E] | ── | maps…
     """
-    from tools.visualize_group_attention import compute_attention_heatmaps_dual
+    from tools.visualize_group_attention import compute_attention_heatmaps
+    from tools.visualize_group_residuals import compute_residual_maps
 
-    dual = compute_attention_heatmaps_dual(attn_maps, spatial_size, output_resolution)
+    tme_maps = compute_attention_heatmaps(attn_maps, spatial_size, output_resolution)
+    res_maps = compute_residual_maps(residuals, output_resolution) if residuals else {}
+    global_res_max = max(m.max() for m in res_maps.values()) if res_maps else 1.0
+
     style_inputs = style_inputs or []
-
     n_style = len(style_inputs)
     n_left = n_style + 2      # style panels + cell mask + gen H&E
-    group_names = list(dual.keys())
-    n_attn = len(group_names)
-    has_attn = n_attn > 0
-    n_cols = n_left + 1 + n_attn + (1 if has_attn else 0)
+    group_names = list(tme_maps.keys())
+    n_maps = len(group_names)
+    has_maps = n_maps > 0
+    n_cols = n_left + 1 + n_maps + (1 if has_maps else 0)
 
-    ratios = [1.0] * n_left + [0.08] + [1.0] * n_attn + ([0.08] if has_attn else [])
-    # 5 rows: global header | tme sub-header | tme images | mask sub-header | mask images
+    ratios = [1.0] * n_left + [0.08] + [1.0] * n_maps + ([0.08] if has_maps else [])
+    # 5 rows: global header | tme sub-header | tme images | residual sub-header | residual images
     fig = plt.figure(figsize=(n_cols * 2.6, 9.0), facecolor="white")
     gs = gridspec.GridSpec(
         5,
@@ -249,27 +256,25 @@ def save_enhanced_attention_figure(
     _header_ax(fig.add_subplot(gs[0, 0 : n_style + 1]), inp_hdr_text, "input")
     _header_ax(fig.add_subplot(gs[0, n_style + 1]), "OUTPUT", "output")
     fig.add_subplot(gs[0, n_left]).axis("off")
-    if has_attn:
+    if has_maps:
         _header_ax(
-            fig.add_subplot(gs[0, n_left + 1 : n_left + 1 + n_attn]),
-            "ATTENTION  (per TME group)",
+            fig.add_subplot(gs[0, n_left + 1 : n_left + 1 + n_maps]),
+            "ATTENTION & RESIDUALS  (per TME group)",
             "analysis",
         )
         fig.add_subplot(gs[0, -1]).axis("off")
 
-    def _render_attn_row(data_row, sub_row, maps_key, row_subtitle):
-        # sub-header label
-        ax_lbl = fig.add_subplot(gs[sub_row, n_left + 1 : n_left + 1 + n_attn])
+    def _render_row(data_row, sub_row, row_data, cmap, vmax, colorbar_label, subtitle):
+        ax_lbl = fig.add_subplot(gs[sub_row, n_left + 1 : n_left + 1 + n_maps])
         ax_lbl.set_facecolor(SECTION_BG["analysis"])
-        ax_lbl.text(0.5, 0.5, row_subtitle, ha="center", va="center",
+        ax_lbl.text(0.5, 0.5, subtitle, ha="center", va="center",
                     fontsize=8, style="italic", color=SECTION_TEXT["analysis"],
                     transform=ax_lbl.transAxes)
         ax_lbl.axis("off")
         fig.add_subplot(gs[sub_row, 0 : n_left + 1]).axis("off")
-        if has_attn:
+        if has_maps:
             fig.add_subplot(gs[sub_row, -1]).axis("off")
 
-        # style + mask + gen panels
         for j, (lbl, img) in enumerate(style_inputs):
             _titled_ax(fig.add_subplot(gs[data_row, j]), img, "style_ref", lbl)
         _titled_ax(fig.add_subplot(gs[data_row, n_style]), mask_img, "input",
@@ -278,24 +283,26 @@ def save_enhanced_attention_figure(
                    "Generated H&E")
         fig.add_subplot(gs[data_row, n_left]).axis("off")
 
-        # heatmap panels
         last_im = None
         for k, name in enumerate(group_names):
-            hmap = dual[name][maps_key]
+            hmap = row_data.get(name)
             ax = fig.add_subplot(gs[data_row, n_left + 1 + k])
             ax.set_facecolor(SECTION_BG["analysis"])
-            last_im = ax.imshow(hmap, cmap="jet", vmin=0, vmax=1)
+            if hmap is not None:
+                last_im = ax.imshow(hmap, cmap=cmap, vmin=0, vmax=vmax)
             ax.set_title(name, fontsize=8, fontweight="bold",
                          color=SECTION_TEXT["analysis"], pad=4)
             ax.axis("off")
-        if last_im is not None and has_attn:
+        if last_im is not None and has_maps:
             cbar_ax = fig.add_subplot(gs[data_row, -1])
             cbar = fig.colorbar(last_im, cax=cbar_ax)
-            cbar.set_label("Attn weight", fontsize=7)
+            cbar.set_label(colorbar_label, fontsize=7)
             cbar.ax.tick_params(labelsize=7)
 
-    _render_attn_row(2, 1, "tme_space",  "TME space — which TME positions were consulted")
-    _render_attn_row(4, 3, "mask_space", "Mask space — which mask positions were seeking info")
+    _render_row(2, 1, tme_maps, "jet",     1.0,            "Attn weight",
+                "TME space — which TME positions were consulted")
+    _render_row(4, 3, res_maps, _RESIDUAL_CMAP, global_res_max, "L2 norm",
+                "Residual ‖Δ_group‖ — which mask positions were modified")
 
     plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close()
@@ -362,7 +369,7 @@ def save_enhanced_residual_figure(
     for k, (name, rmap) in enumerate(res_maps.items()):
         ax = fig.add_subplot(gs[1, n_fixed + 1 + k])
         ax.set_facecolor(SECTION_BG["analysis"])
-        last_im = ax.imshow(rmap, cmap="inferno", vmin=0, vmax=global_max)
+        last_im = ax.imshow(rmap, cmap=_RESIDUAL_CMAP, vmin=0, vmax=global_max)
         ax.set_title(
             f"‖Δ_{name}‖",
             fontsize=8,

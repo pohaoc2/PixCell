@@ -11,7 +11,7 @@ Set exp_data_root to your actual paired dataset path before running.
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
 root = "./"
-#root = "/content/PixCell"
+root = "/content/PixCell"
 
 # =====================================================================
 # Dataset — PairedExpControlNetData
@@ -38,7 +38,7 @@ data = dict(
 )
 
 # Root of the paired experimental dataset — set before training
-exp_data_root = f"{root}/data/test-orion-crc33"
+exp_data_root = f"{root}/data/orion-crc33"
 
 # =====================================================================
 # Channel Groups — per-group TME encoder + cross-attention
@@ -109,8 +109,8 @@ fp32_attention   = True
 # =====================================================================
 # test-orion-crc33: 128 tiles, bs=16 → 8 steps/epoch, 800 steps over 100 epochs.
 num_workers                 = 4
-train_batch_size            = 16
-num_epochs                  = 50
+train_batch_size            = 80
+num_epochs                  = 30
 gradient_accumulation_steps = 1
 grad_checkpointing          = True
 gradient_clip               = 1.0
@@ -123,13 +123,13 @@ optimizer = dict(
     eps=1e-8,
 )
 
-lr_schedule_args = dict(num_warmup_steps=50)   # ~6% of 800 total steps
+lr_schedule_args = dict(num_warmup_steps=500)   # ~6% of 800 total steps
 auto_lr          = None
 
-log_interval       = 8    # log every epoch
-save_model_epochs  = 50
+log_interval       = 50    # log every epoch
+save_model_epochs  = 30
 save_model_steps   = 10000
-work_dir           = f"{root}/checkpoints/pixcell_controlnet_exp_fresh"
+work_dir           = f"{root}/checkpoints/pixcell_controlnet_exp"
 
 # =====================================================================
 # VAE

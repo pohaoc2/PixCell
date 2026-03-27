@@ -78,9 +78,17 @@ def run_vis_suite(
     from tools.stage3_figures import (
         save_enhanced_ablation_grid,
         save_enhanced_attention_figure,
+        save_enhanced_residual_figure,
+        save_loo_ablation_grid,
         save_overview_figure,
+        save_pairwise_ablation_grid,
     )
-    from tools.stage3_tile_pipeline import generate_ablation_images, generate_tile
+    from tools.stage3_tile_pipeline import (
+        generate_ablation_images,
+        generate_loo_ablation,
+        generate_pairwise_ablation,
+        generate_tile,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -156,6 +164,16 @@ def run_vis_suite(
         attn_maps=vis_data["attn_maps"],
         save_path=out_dir / "attention_heatmaps.png",
         style_inputs=style_inp,
+        residuals=vis_data["residuals"],
+    )
+
+    save_enhanced_residual_figure(
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+        gen_np=gen_np,
+        residuals=vis_data["residuals"],
+        refs=[],
+        save_path=out_dir / "residual_magnitudes.png",
     )
 
     print("  Generating ablation grid...")
@@ -175,6 +193,34 @@ def run_vis_suite(
         refs=[(ablation_ref_section, ablation_ref_label, ref_he)] if ref_he is not None else [],
         save_path=out_dir / "ablation_grid.png",
     )
+
+    print("  Generating LOO ablation...")
+    loo_imgs = generate_loo_ablation(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+    )
+    save_loo_ablation_grid(loo_imgs, out_dir / "ablation_loo.png")
+
+    print("  Generating pairwise ablation...")
+    pw_imgs = generate_pairwise_ablation(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+    )
+    save_pairwise_ablation_grid(pw_imgs, out_dir / "ablation_pairwise.png")
 
     Image.fromarray(gen_np).save(out_dir / "generated_he.png")
     print(f"  Done → {out_dir}")
