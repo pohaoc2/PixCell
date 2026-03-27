@@ -184,8 +184,6 @@ def train_controlnet_exp(models_dict):
             ).long()
 
             vae_mask = (vae_mask - vae_shift) * vae_scale
-            if getattr(config, "zero_mask_latent", False):
-                vae_mask = torch.zeros_like(vae_mask)
 
             # <- EXP 1: CFG dropout — zero the UNI embedding for a fraction of samples
             for b in range(bs):
@@ -211,6 +209,8 @@ def train_controlnet_exp(models_dict):
                 fused, _tme_residuals = tme_module(
                     vae_mask.to(dtype=tme_dtype), tme_channel_dict, return_residuals=True,
                 )
+                if getattr(config, "zero_mask_latent", False):
+                    fused = fused - vae_mask.to(dtype=tme_dtype)
                 vae_mask = fused
             else:
                 tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
