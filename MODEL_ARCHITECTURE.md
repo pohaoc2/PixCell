@@ -11,7 +11,11 @@ Two latent streams are active throughout the system:
    - Inference: starts from random Gaussian noise `x_T`.
 2. **Conditioning latent stream**: the latent passed as `conditioning` to ControlNet.
    - Official PixCell ControlNet: VAE-encoded cell-mask latent only.
-   - This repo: cell-mask latent fused with TME residuals from the Multi-Group TME Module.
+   - This repo (`zero_mask_latent=True`): mask latent is **zeroed** before the TME module; conditioning = TME residuals only. Cell-type/state channels fully encode cell layout, making the mask VAE latent redundant.
+
+> **Why `zero_mask_latent=True`?**
+> With the mask latent active, the pretrained ControlNet produces plausible H&E from mask_latent alone (bypass path), so `∂loss/∂proj ≈ 0` — the TME proj layers never escape near-zero (observed: `proj_wmax ≈ 4e-4` after 30 epochs at `tme_lr=1e-5`).
+> Zeroing the mask latent closes the bypass path. Since `controlnet_blocks` (ControlNet output projections) hold non-zero pretrained weights, `∂loss/∂fused_cond ≠ 0` from step 1, and `∂loss/∂proj` is immediately non-zero, breaking the starvation.
 
 ---
 
@@ -159,7 +163,7 @@ Key parameters:
 ```
 Conditioning latent [B, 16, 32, 32]
 (official PixCell: mask latent only;
- this repo: mask latent + TME residuals)
+ this repo [zero_mask_latent=True]: zeros + TME residuals = TME residuals only)
         │
         ▼
   Cond Embedder  ──►  [B, 1024, 1152]
@@ -184,6 +188,12 @@ Conditioning latent [B, 16, 32, 32]
 
 Zero initialization ensures ControlNet starts
 as identity (no effect), then learns incrementally.
+
+With `zero_mask_latent=True`:
+- `cond_pos_embed(0) ≈ 0` initially (pretrained to process cell-mask distribution,
+   outputs near-zero when given zeros)
+- `controlnet_blocks` weights are non-zero (loaded from pretrained checkpoint)
+   → gradient highway from loss → `fused_cond` → TME proj is open from step 1
 ```
 
 ---
@@ -192,8 +202,11 @@ as identity (no effect), then learns incrementally.
 
 The core architectural innovation: each biology channel group gets its own encoder and cross-attention module, producing additive residuals over the mask latent.
 
+With `zero_mask_latent=True`, the mask latent is zeroed before this module, so `fused = 0 + Σ(Δ_g)`. Q tokens derive from zeros → uniform attention weights → cross-attention output ≈ mean(V) × proj. Since proj is zero-init, residuals start near zero but grad is non-zero from the first step.
+
 ```
 Cell mask latent  [B, 16, 32, 32]
+  (zeroed when zero_mask_latent=True)
         │
         ▼
   LayerNorm  ──►  Q tokens  [B, 1024, 16]
@@ -302,8 +315,8 @@ Cell Mask [256, 256, 1]
 | Signal | Dims | Role | During Inference |
 |--------|------|------|-----------------|
 | Denoising latent | [B, 16, 32, 32] | Current diffusion state passed as `hidden_states` | Starts from random Gaussian `x_T` |
-| Cell mask VAE latent | [B, 16, 32, 32] | Spatial cell layout → ControlNet | Required |
-| TME channels | [B, 9, 256, 256] | Biology groups → TME Module | Required in this repo, absent in official PixCell ControlNet |
+| Cell mask VAE latent | [B, 16, 32, 32] | Spatial cell layout → ControlNet base | **Zeroed** when `zero_mask_latent=True` (cell type/state channels make it redundant; zeroing closes the bypass path that starved TME gradients) |
+| TME channels | [B, 9, 256, 256] | Biology groups → TME Module residuals | Required in this repo, absent in official PixCell ControlNet |
 | UNI-2h embedding | [B, 1536] | H&E style / morphology → transformer cross-attn | Usually from a reference H&E image; can be zeroed for unconditional / TME-only runs |
 | Timestep | scalar | Diffusion schedule modulation | Required |
 

@@ -10,8 +10,8 @@ Set exp_data_root to your actual paired dataset path before running.
 
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
-root = "./"
-root = "/content/PixCell"
+import os as _os
+root = _os.environ.get("PIXCELL_ROOT", "/home/ec2-user/PixCell")
 
 # =====================================================================
 # Dataset — PairedExpControlNetData
@@ -55,10 +55,12 @@ channel_groups = [
 # =====================================================================
 tme_model   = "MultiGroupTMEModule"
 tme_base_ch = 32
-tme_lr          = 1e-4   # encoder CNN + Q/K/V — fresh init, needs room to move
-tme_proj_lr     = 3e-3   # cross_attn.proj only — raised 10× to escape zero-init faster
-# Reset TME optimizer on resume when changing tme_proj_lr, so the new LR is respected.
-reset_tme_optimizer = False
+tme_lr          = 1e-4   # encoder CNN + Q/K/V
+tme_proj_lr     = 3e-3   # cross_attn.proj only — zero-init, needs boost
+# Zero the VAE-encoded mask latent so ControlNet must use TME residuals (no bypass path).
+zero_mask_latent    = True
+# Reset optimizer when resuming: old single-path state is incompatible with zero_mask_latent.
+reset_tme_optimizer = True
 
 # =====================================================================
 # Experimental training knobs

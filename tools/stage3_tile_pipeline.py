@@ -211,6 +211,8 @@ def generate_tile(
         device=device,
         dtype=dtype,
     )
+    if getattr(config, "zero_mask_latent", False):
+        vae_mask = torch.zeros_like(vae_mask)
 
     tme_dict = split_channels_to_groups(
         ctrl_full.unsqueeze(0).to(device, dtype=dtype),
@@ -298,6 +300,8 @@ def generate_ablation_images(
         device=device,
         dtype=dtype,
     )
+    if getattr(config, "zero_mask_latent", False):
+        vae_mask = torch.zeros_like(vae_mask)
 
     tme_dict = split_channels_to_groups(
         ctrl_full.unsqueeze(0).to(device, dtype=dtype),
@@ -375,6 +379,8 @@ def generate_loo_ablation(
     ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size, exp_channels_dir)
     vae_mask = encode_ctrl_mask_latent(ctrl_full, vae, vae_shift=vae_shift, vae_scale=vae_scale,
                                        device=device, dtype=dtype)
+    if getattr(config, "zero_mask_latent", False):
+        vae_mask = torch.zeros_like(vae_mask)
     tme_dict = split_channels_to_groups(ctrl_full.unsqueeze(0).to(device, dtype=dtype),
                                         active_channels, config.channel_groups)
     group_names = [g["name"] for g in config.channel_groups]
@@ -433,6 +439,8 @@ def generate_pairwise_ablation(
     ctrl_full = load_exp_channels(tile_id, active_channels, config.image_size, exp_channels_dir)
     vae_mask = encode_ctrl_mask_latent(ctrl_full, vae, vae_shift=vae_shift, vae_scale=vae_scale,
                                        device=device, dtype=dtype)
+    if getattr(config, "zero_mask_latent", False):
+        vae_mask = torch.zeros_like(vae_mask)
     tme_dict = split_channels_to_groups(ctrl_full.unsqueeze(0).to(device, dtype=dtype),
                                         active_channels, config.channel_groups)
     group_names = [g["name"] for g in config.channel_groups]
