@@ -255,6 +255,8 @@ def generate(
         device=device,
         dtype=dtype,
     )
+    if getattr(config, "zero_mask_latent", False):
+        vae_mask = torch.zeros_like(vae_mask)
 
     # 3. Fuse TME channels through TME (flat or multi-group) module
     channel_groups_cfg = getattr(config, "channel_groups", None)
