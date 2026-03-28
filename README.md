@@ -275,10 +275,13 @@ python stage3_inference.py \
 Generate H&E and full visualization figures for multiple patches (paired + unpaired style conditioning):
 
 ```bash
-python run_zero_out_mask_batch.py
+python tools/run_evaluation.py \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
+    --output-dir     inference_output/zero_out_mask_post \
+    --n-tiles        3
 ```
 
-Per patch, outputs under `inference_output/zero_out_mask_post/<tile_id>/{paired,unpaired}/`:
+Per patch, outputs under `{output_dir}/{tile_id}/{paired,unpaired}/`:
 
 | File | Contents |
 |------|----------|
@@ -287,7 +290,10 @@ Per patch, outputs under `inference_output/zero_out_mask_post/<tile_id>/{paired,
 | `ablation_grid.png` | 4-row: H&E+mask overlay \| Δpixel diff \| TME channel composites |
 | `residuals.png` | Per-group conditioning latent residual magnitudes |
 
-Paired = UNI + H&E from same tile; unpaired = UNI + H&E from a different tile (cross-patch style test).
+Paired = same tile's UNI + TME; unpaired = next tile's UNI + this tile's TME (cross-patch style test).
+Also writes `metrics.json` with per-tile UNI cosine similarity scores.
+
+Add `--no-metrics` to skip cosine similarity computation (faster, no UNI extractor needed).
 
 For raw batch generation without visualizations:
 

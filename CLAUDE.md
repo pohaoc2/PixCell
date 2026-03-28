@@ -36,7 +36,7 @@
 - Training loop: `train_scripts/train_controlnet_exp.py`
 - Dataset: `diffusion/data/datasets/paired_exp_controlnet_dataset.py`
 - Group helpers: `tools/channel_group_utils.py`
-- Inference: `stage3_inference.py`; batch vis: `run_zero_out_mask_batch.py`
+- Inference: `stage3_inference.py`; batch vis: `tools/run_evaluation.py`
 - Visualization: `tools/stage3_figures.py` (figures), `tools/stage3_tile_pipeline.py` (inference helpers)
 - Color palette: `tools/color_constants.py`
 - Architecture notes: `MODEL_ARCHITECTURE.md`
