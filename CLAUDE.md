@@ -9,20 +9,17 @@
 1. `stage0_setup.py`: download PixCell-256, PixCell ControlNet init, UNI-2h, and SD3.5 VAE into `pretrained_models/`.
 2. `stage1_extract_features.py`: cache UNI embeddings and SD3.5 VAE latents for H&E and cell-mask images.
 3. `stage2_train.py`: train ControlNet + TME module using `configs/config_controlnet_exp.py`.
-4. `stage3_inference.py`: generate H&E from sim channels, optionally with a reference H&E for style conditioning.
+4. `stage3_inference.py`: generate H&E from exp channels, optionally with a reference H&E for style conditioning.
 
 ## Model
 
 - Frozen pieces: base PixCell-256 transformer, SD3.5 VAE, and UNI-2h encoder.
 - Trainable pieces: ControlNet + `MultiGroupTMEModule` in `diffusion/model/nets/multi_group_tme.py`.
-- Channel groups:
-  - `cell_identity`: healthy, cancer, immune
-  - `cell_state`: prolif, nonprolif, dead
-  - `vasculature`: vasculature
-  - `microenv`: oxygen, glucose
-- Each group has its own CNN encoder + cross-attention; outputs are zero-init additive residuals on the mask latent.
+- Channel groups: `cell_identity` (healthy/cancer/immune), `cell_state` (prolif/nonprolif/dead), `vasculature`, `microenv` (oxygen/glucose).
+- Each group has its own CNN encoder + cross-attention; outputs are zero-init additive residuals.
+- `zero_mask_latent=True` (post-TME): TME uses real mask latent for spatial Q, then subtracts — `fused = tme(vae_mask) - vae_mask`. Closes bypass path, preserves spatial structure. Must be applied post-TME in train, inference, and all pipeline helpers.
 - `cfg_dropout_prob=0.15` zeros UNI embeddings during training, enabling TME-only inference.
-- Per-group dropout is configured in `configs/config_controlnet_exp.py`.
+- Per-group dropout configured in `configs/config_controlnet_exp.py`.
 
 ## Data Contract
 
@@ -39,9 +36,10 @@
 - Training loop: `train_scripts/train_controlnet_exp.py`
 - Dataset: `diffusion/data/datasets/paired_exp_controlnet_dataset.py`
 - Group helpers: `tools/channel_group_utils.py`
-- Inference: `stage3_inference.py`
+- Inference: `stage3_inference.py`; batch vis: `run_zero_out_mask_batch.py`
+- Visualization: `tools/stage3_figures.py` (figures), `tools/stage3_tile_pipeline.py` (inference helpers)
+- Color palette: `tools/color_constants.py`
 - Architecture notes: `MODEL_ARCHITECTURE.md`
-- Analysis tools: `tools/visualize_group_attention.py`, `tools/visualize_group_residuals.py`, `tools/visualize_ablation_grid.py`
 
 ## Tests
 
@@ -56,4 +54,3 @@
 - Preserve `cell_masks`/`cell_mask` compatibility when touching datasets or inference.
 - If changing inference/training group logic, update both code and tests.
 - Read `README.md` only for full setup instructions; this file is the short agent handoff.
-

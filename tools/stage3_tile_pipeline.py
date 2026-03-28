@@ -316,7 +316,7 @@ def generate_ablation_images(
 
     for n in range(len(group_names) + 1):
         if n == 0:
-            label = "Mask only\n(no TME groups)"
+            label = "No conditioning\n(zero TME)" if _zero_mask else "Mask only\n(no TME groups)"
             active = set()
         else:
             active = set(group_names[:n])

@@ -10,8 +10,8 @@ Set exp_data_root to your actual paired dataset path before running.
 
 _base_ = ['./PixArt_xl2_internal.py']
 image_size = 256
-import os as _os
-root = _os.environ.get("PIXCELL_ROOT", "/home/ec2-user/PixCell")
+root = "./"
+#root = "/content/PixCell"
 
 # =====================================================================
 # Dataset — PairedExpControlNetData
