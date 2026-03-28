@@ -131,8 +131,6 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
 
 
 
-
-
 def load_vae(vae_folder, device="cuda"):
     from diffusers import AutoencoderKL
 
