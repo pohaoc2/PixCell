@@ -274,26 +274,6 @@ def train_controlnet_exp(models_dict):
                     for _gname, (_gnorm, _wmax) in _proj_grad_norms.items():
                         logger.info(f"  proj_grad[{_gname}]={_gnorm:.3e}  proj_wmax={_wmax:.3e}")
 
-                # Debug: on first 3 optimizer steps, verify TME optimizer
-                # is tracking live parameters (exp_avg must be non-zero).
-                if global_step <= 3 and accelerator.is_main_process and use_multi_group:
-                    _tme_state = optimizer_tme.state
-                    _any_nonzero = any(
-                        s.get("exp_avg", torch.tensor(0.0)).abs().max() > 0
-                        for s in _tme_state.values()
-                    )
-                    _proj_ids = optimizer_tme.param_groups[0]["params"]
-                    _proj_avg = max(
-                        (_tme_state[pid]["exp_avg"].abs().max().item()
-                         for pid in _proj_ids if pid in _tme_state),
-                        default=0.0,
-                    )
-                    logger.info(
-                        f"  [debug step {global_step}] "
-                        f"tme_any_nonzero_moment={_any_nonzero}  "
-                        f"proj_exp_avg_max={_proj_avg:.3e}  "
-                        f"(expect non-zero if optimizer fix is working)"
-                    )
                 if global_step % config.log_interval == 0:
                     time_cost       = time.time() - last_tic
                     samples_per_sec = config.log_interval * config.train_batch_size / time_cost

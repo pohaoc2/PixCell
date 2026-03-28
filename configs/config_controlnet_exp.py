@@ -56,7 +56,7 @@ channel_groups = [
 tme_model   = "MultiGroupTMEModule"
 tme_base_ch = 32
 tme_lr          = 1e-4   # encoder CNN + Q/K/V
-tme_proj_lr     = 3e-3   # cross_attn.proj only — zero-init, needs boost
+tme_proj_lr     = 3e-3   # cross_attn.proj only — higher LR to converge proj faster
 # Zero the VAE-encoded mask latent so ControlNet must use TME residuals (no bypass path).
 zero_mask_latent    = True
 # Reset optimizer when resuming: old single-path state is incompatible with zero_mask_latent.
@@ -109,7 +109,7 @@ fp32_attention   = True
 # =====================================================================
 # Training
 # =====================================================================
-# test-orion-crc33: 128 tiles, bs=16 → 8 steps/epoch, 800 steps over 100 epochs.
+# orion-crc33: ~10k tiles, bs=80 → ~125 steps/epoch, ~3750 steps over 30 epochs.
 num_workers                 = 4
 train_batch_size            = 80
 num_epochs                  = 30
@@ -129,7 +129,7 @@ lr_schedule_args = dict(num_warmup_steps=500)   # ~6% of 800 total steps
 auto_lr          = None
 
 log_interval       = 50    # log every epoch
-save_model_epochs  = 30
+save_model_epochs  = 10    # save at epoch 10, 20, 30 to allow early evaluation
 save_model_steps   = 10000
 work_dir           = f"{root}/checkpoints/pixcell_controlnet_exp"
 
