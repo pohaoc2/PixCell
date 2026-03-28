@@ -55,20 +55,6 @@ def encode_ctrl_mask_latent(
     return (lat - vae_shift) * vae_scale
 
 
-def load_controlnet_model(module_name, file_path, checkpoints_folder, device="cuda"):
-    import importlib.util
-    import sys
-
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    controlnet_mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = controlnet_mod
-    spec.loader.exec_module(controlnet_mod)
-    PixCellControlNet = controlnet_mod.PixCellControlNet
-    model = PixCellControlNet.from_pretrained(checkpoints_folder)
-    model.to(device)
-    model.eval()
-    return model
-
 
 def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path):
     from diffusion.utils.misc import read_config
@@ -107,20 +93,6 @@ def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_p
     return pixcell_controlnet
 
 
-def load_base_model_checkpoint(base_model, checkpoint_path):
-    finetuned = torch.load(checkpoint_path, map_location="cpu")
-    finetuned_sd = finetuned["state_dict"] if "state_dict" in finetuned else finetuned
-
-    # NO remapping needed — both checkpoint and model use 'blocks.' naming
-    missing, unexpected = base_model.load_state_dict(finetuned_sd, strict=False)
-
-    print(f"Total missing: {len(missing)}, Total unexpected: {len(unexpected)}")
-    if missing:
-        print(f"Missing examples: {missing[:3]}")
-    if unexpected:
-        print(f"Unexpected examples: {unexpected[:3]}")
-    return base_model
-
 
 def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device="cuda"):
     from diffusion.utils.misc import read_config
@@ -158,83 +130,7 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
     return controlnet
 
 
-def save_keys_comparison_controlnet(controlnet, state_file_path, device="cuda"):
-    from safetensors.torch import load_file
-    import pandas as pd
 
-    sd = load_file(state_file_path)
-    controlnet_sd = controlnet.state_dict()
-    sd_keys = list(sd.keys())
-    controlnet_keys = list(controlnet_sd.keys())
-
-    # Check counts first
-    print(f"Pretrained keys: {len(sd_keys)}")
-    print(f"ControlNet keys: {len(controlnet_keys)}")
-
-    # Build comparison df by position
-    max_len = max(len(sd_keys), len(controlnet_keys))
-    df = pd.DataFrame(
-        {
-            "sd_key": sd_keys + [None] * (max_len - len(sd_keys)),
-            "controlnet_key": controlnet_keys + [None] * (max_len - len(controlnet_keys)),
-            "sd_shape": [
-                str(sd[k].shape) if k else None for k in sd_keys + [None] * (max_len - len(sd_keys))
-            ],
-            "controlnet_shape": [
-                str(controlnet_sd[k].shape) if k else None
-                for k in controlnet_keys + [None] * (max_len - len(controlnet_keys))
-            ],
-            "shape_match": [
-                (
-                    str(sd[sd_keys[i]].shape) == str(controlnet_sd[controlnet_keys[i]].shape)
-                    if i < len(sd_keys) and i < len(controlnet_keys)
-                    else False
-                )
-                for i in range(max_len)
-            ],
-        }
-    )
-
-    df.to_csv("keys.csv", index=False)
-
-    # Quick summary
-    print(f"Shape mismatches: {(~df['shape_match']).sum()}")
-    print(f"Missing in sd: {df['sd_key'].isna().sum()}")
-    print(f"Missing in controlnet: {df['controlnet_key'].isna().sum()}")
-
-
-def test_load_controlnet(controlnet, state_file_path, device="cuda"):
-    mapped = torch.load(state_file_path)
-    controlnet_sd = controlnet.state_dict()
-    not_loaded = [k for k in controlnet_sd.keys() if k not in mapped]
-    print(f"Not loaded ({len(not_loaded)} keys):")
-    for k in not_loaded:
-        print(f"  {k:60s} {tuple(controlnet_sd[k].shape)}")
-    missing, unexpected = controlnet.load_state_dict(mapped, strict=False)
-
-    print(f"MISSING (random init): {len(missing)}")
-    print(f"UNEXPECTED (dropped): {len(unexpected)}")
-    controlnet.to(device)
-    controlnet.eval()
-    return controlnet
-
-
-def load_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device="cuda"):
-    import importlib.util
-    import sys
-
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    pixcell_mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = pixcell_mod
-    spec.loader.exec_module(pixcell_mod)
-    PixCellTransformer2DModelControlNet = pixcell_mod.PixCellTransformer2DModelControlNet
-    model = PixCellTransformer2DModelControlNet.from_pretrained(
-        checkpoints_folder,
-        # subfolder="transformer"
-    )
-    model.to(device)
-    model.eval()
-    return model
 
 
 def load_vae(vae_folder, device="cuda"):
@@ -251,43 +147,6 @@ def load_vae(vae_folder, device="cuda"):
     return vae
 
 
-def initialize_pixcell_controlnet_model(module_name, file_path, checkpoints_folder, device="cuda"):
-    import importlib.util
-    import sys
-
-    # Standard dynamic import logic
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    pixcell_mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = pixcell_mod
-    spec.loader.exec_module(pixcell_mod)
-
-    PixCellTransformer2DModelControlNet = pixcell_mod.PixCellTransformer2DModelControlNet
-
-    # 1. Load only the configuration dictionary
-    config = PixCellTransformer2DModelControlNet.load_config(checkpoints_folder)
-
-    # 2. Initialize the model with random weights based on that config
-    model = PixCellTransformer2DModelControlNet.from_config(config)
-
-    model.to(device)
-    model.eval()
-    return model
-
-
-def initialize_controlnet_model(module_name, file_path, checkpoints_folder, device="cuda"):
-    import importlib.util
-    import sys
-
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    controlnet_mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = controlnet_mod
-    spec.loader.exec_module(controlnet_mod)
-    PixCellControlNet = controlnet_mod.PixCellControlNet
-    config = PixCellControlNet.load_config(checkpoints_folder)
-    model = PixCellControlNet.from_config(config)
-    model.to(device)
-    model.eval()
-    return model
 
 
 def denoise(
@@ -384,89 +243,6 @@ def denoise(
     return latents
 
 
-def prepare_controlnet_input(idx):
-
-    latent_shape = (1, 16, 32, 32)
-    latents = torch.randn(latent_shape, device=device, dtype=torch.float32).to(device)
-    latents = latents * scheduler.init_noise_sigma
-
-    uni_embeds = torch.from_numpy(np.load(f"../features_consep/sample_{idx}_uni.npy"))
-    # uni_embeds = torch.from_numpy(np.load(f"uni_emb_control.npy"))
-    uni_embeds = torch.from_numpy(np.load(f"../data/features_tcga_3660/0_{idx}_uni.npy"))
-    uni_embeds = uni_embeds.view(1, 1, 1, 1536).to(device)
-    mask_path = "../test_mask.png"
-    mask_path = f"../consep_masks/sample_{idx}_mask.png"
-    # mask_path = f"../data/tcga_3660_masks/0_{idx}_mask.png"
-    controlnet_input = np.asarray(Image.open(mask_path).convert("RGB").resize((256, 256)))
-    # controlnet_input = Image.open(mask_path).convert('L')
-    # controlnet_input = np.array(controlnet_input)
-    # controlnet_input = torch.from_numpy(controlnet_input > 0).float()
-    # resize to 256x256
-    # import torchvision.transforms as T
-    # controlnet_input = T.Resize((256, 256))(controlnet_input)
-    # controlnet_input = np.array(Image.open(f"../masks/sample_{idx}_mask.png"))
-    # controlnet_input = np.repeat(controlnet_input[..., None], 3, axis=-1)
-
-    controlnet_input_torch = torch.from_numpy(controlnet_input.copy() / 255.0).float().to(device)
-    controlnet_input_torch = controlnet_input_torch.permute(2, 0, 1).unsqueeze(0)
-    controlnet_input_torch = 2 * (controlnet_input_torch - 0.5)
-    vae_scale = vae.config.scaling_factor
-    vae_shift = getattr(vae.config, "shift_factor", 0)
-    controlnet_input_latent = vae.encode(controlnet_input_torch).latent_dist.mean
-    controlnet_input_latent = (controlnet_input_latent - vae_shift) * vae_scale
-    # controlnet_input_latent, _ = torch.from_numpy(np.load(f"../features_consep_masks/sample_{idx}_mask_sd3_vae.npy")).chunk(2)
-    # controlnet_input_latent = (controlnet_input_latent-vae_shift)*vae_scale
-
-    return latents, uni_embeds, controlnet_input_latent, controlnet_input
-
-
-def decode_latents(vae, latents, hist_image, mask_image, save_path):
-    import cv2
-    import matplotlib.pyplot as plt
-
-    vae_scale = vae.config.scaling_factor
-    vae_shift = getattr(vae.config, "shift_factor", 0)
-    latents_for_decode = latents.float()
-
-    with torch.no_grad():
-        generated_image = vae.decode(
-            (latents_for_decode / vae_scale) + vae_shift, return_dict=False
-        )[0]
-    generated_image = (generated_image / 2 + 0.5).clamp(0, 1)
-    generated_image = generated_image.cpu().permute(0, 2, 3, 1).numpy()
-    generated_image = (generated_image * 255).round().astype(np.uint8)
-
-    # Apply mask to generated image
-    gen_img = generated_image[0].copy()  # (H, W, 3), uint8
-
-    # --- Get contours of each cell in the mask ---
-    # mask_image expected shape: (H, W, 3) or (H, W), values 0 or 1
-    if mask_image.ndim == 3:
-        mask_gray = mask_image[..., 0].astype(np.uint8)  # (H, W), 0 or 1
-    else:
-        mask_gray = mask_image.astype(np.uint8)
-
-    # Label connected components so each cell gets its own contour
-    num_labels, labeled = cv2.connectedComponents(mask_gray)
-
-    contour_overlay = gen_img.copy()
-    for label_id in range(1, num_labels):  # skip background (0)
-        cell_mask = (labeled == label_id).astype(np.uint8)
-        contours, _ = cv2.findContours(cell_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(contour_overlay, contours, -1, color=(255, 0, 0), thickness=1)
-    # --- Plot ---
-    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-    ax[0].imshow(hist_image)
-    ax[0].set_title("Original Image (TCGA)")
-    ax[1].imshow(mask_image)
-    ax[1].set_title("Mask Image")
-    ax[2].imshow(contour_overlay)
-    ax[2].set_title("Generated Image")
-
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.show()
-    return gen_img
 
 
 # %%
