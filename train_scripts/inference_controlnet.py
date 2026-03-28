@@ -93,7 +93,6 @@ def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_p
     return pixcell_controlnet
 
 
-
 def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device="cuda"):
     from diffusion.utils.misc import read_config
     from diffusion.model.builder import build_model
@@ -130,7 +129,6 @@ def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, dev
     return controlnet
 
 
-
 def load_vae(vae_folder, device="cuda"):
     from diffusers import AutoencoderKL
 
@@ -143,8 +141,6 @@ def load_vae(vae_folder, device="cuda"):
     vae.to(device)
     vae.eval()
     return vae
-
-
 
 
 def denoise(
