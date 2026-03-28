@@ -1,5 +1,5 @@
 """
-run_stage3_full.py — Comprehensive Stage 3 inference + validation + visualizations.
+tools/run_evaluation.py — Comprehensive Stage 3 inference + validation + visualizations.
 
 Uses experimental channel data (ORION-CRC33) as inference input:
   - 20 random "inference" tiles (paired: channels → generate H&E, compare vs paired UNI)
@@ -13,6 +13,7 @@ Generates for each set:
   - Ablation grid (progressive group addition)
   - Summary metrics JSON
 """
+import argparse
 import json
 import os
 import random
@@ -24,23 +25,8 @@ import torch
 from diffusers import DDPMScheduler
 from PIL import Image
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT        = Path(__file__).parent
-CONFIG_PATH = ROOT / "configs/config_controlnet_exp.py"
-CKPT_DIR    = ROOT / "checkpoints/pixcell_controlnet_exp/checkpoints"
-EXP_ROOT    = ROOT / "data/orion-crc33"
-EXP_CH_DIR  = EXP_ROOT / "exp_channels"
-FEAT_DIR    = EXP_ROOT / "features"
-HE_DIR      = EXP_ROOT / "he"
-OUT_DIR     = ROOT / "inference_output/stage3_full"
-
-N_INFERENCE  = 20
-N_VALIDATION = 20
-N_VIS_TILES  =  5   # tiles with full visualization (attention + residuals + ablation)
-GUIDANCE_SCALE = 2.5
-NUM_STEPS      = 20
-SEED           = 42
-DEVICE         = "cuda" if torch.cuda.is_available() else "cpu"
+# ── Module-level root ─────────────────────────────────────────────────────────
+ROOT = Path(__file__).resolve().parent.parent
 
 # Channel that holds the cell mask in exp data
 MASK_CHANNEL = "cell_masks"
@@ -76,6 +62,35 @@ def get_uni_extractor(config, device: str):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser(description="Stage 3 inference + validation evaluation")
+    parser.add_argument("--config", default="configs/config_controlnet_exp.py")
+    parser.add_argument("--checkpoint-dir", default="checkpoints/pixcell_controlnet_exp/checkpoints")
+    parser.add_argument("--data-root", default="data/orion-crc33")
+    parser.add_argument("--output-dir", default="inference_output/evaluation")
+    parser.add_argument("--n-inference", type=int, default=20)
+    parser.add_argument("--n-validation", type=int, default=20)
+    parser.add_argument("--n-vis-tiles", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--guidance-scale", type=float, default=2.5)
+    parser.add_argument("--num-steps", type=int, default=20)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    args = parser.parse_args()
+
+    CONFIG_PATH    = ROOT / args.config
+    CKPT_DIR       = ROOT / args.checkpoint_dir
+    EXP_ROOT       = ROOT / args.data_root
+    EXP_CH_DIR     = EXP_ROOT / "exp_channels"
+    FEAT_DIR       = EXP_ROOT / "features"
+    HE_DIR         = EXP_ROOT / "he"
+    OUT_DIR        = ROOT / args.output_dir
+    N_INFERENCE    = args.n_inference
+    N_VALIDATION   = args.n_validation
+    N_VIS_TILES    = args.n_vis_tiles
+    GUIDANCE_SCALE = args.guidance_scale
+    NUM_STEPS      = args.num_steps
+    SEED           = args.seed
+    DEVICE         = args.device
+
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
