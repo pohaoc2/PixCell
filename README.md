@@ -160,11 +160,13 @@ Train ControlNet + Multi-Group TME module on paired experimental data.
 
 ### TME Architecture
 
-The TME conditioning uses a **Multi-Group architecture** where each channel group gets its own CNN encoder and cross-attention module. Groups produce additive, zero-initialized residuals to the VAE mask latent, enabling:
+The TME conditioning uses a **Multi-Group architecture** where each channel group gets its own CNN encoder and cross-attention module. Groups produce additive, zero-initialized residuals, enabling:
 
 - **Disentangled control** — independently include/exclude channel groups at inference
-- **Interpretability** — per-group attention heatmaps and residual magnitude maps
+- **Interpretability** — per-group residual magnitude maps and ablation diff maps
 - **Graceful degradation** — missing groups contribute zero (no special handling needed)
+
+**`zero_mask_latent=True`** (enabled by default): the TME module receives the real VAE mask latent as spatial query keys, then subtracts it from its output — `fused = tme(vae_mask) − vae_mask`. This closes the direct mask→ControlNet bypass path and forces the ControlNet to rely on TME residuals, while preserving the spatial structure needed for cell-layout-aware cross-attention.
 
 | Group | Channels | Nature |
 |-------|----------|--------|
@@ -231,9 +233,8 @@ At every `save_model_steps` checkpoint, the training loop generates validation v
 
 ```
 checkpoints/pixcell_controlnet_exp/vis/step_XXXXXXX/
-├── attention_heatmaps.png     # per-group attention maps over cell mask
-├── residual_magnitudes.png    # per-group ‖Δ‖ spatial magnitude maps
-└── ablation_grid.png          # progressive composition showing group contributions
+├── residuals.png              # per-group ‖Δ_group‖ conditioning latent residuals
+└── ablation_grid.png          # 4-row: generated H&E + mask overlay | diff maps | TME composites
 ```
 
 ---
@@ -269,7 +270,26 @@ python stage3_inference.py \
     --output           generated_he.png
 ```
 
-### Batch generation
+### Batch generation with visualizations
+
+Generate H&E and full visualization figures for multiple patches (paired + unpaired style conditioning):
+
+```bash
+python run_zero_out_mask_batch.py
+```
+
+Per patch, outputs under `inference_output/zero_out_mask_post/<tile_id>/{paired,unpaired}/`:
+
+| File | Contents |
+|------|----------|
+| `generated_he.png` | Generated H&E image |
+| `overview.png` | TME input channels → generated H&E |
+| `ablation_grid.png` | 4-row: H&E+mask overlay \| Δpixel diff \| TME channel composites |
+| `residuals.png` | Per-group conditioning latent residual magnitudes |
+
+Paired = UNI + H&E from same tile; unpaired = UNI + H&E from a different tile (cross-patch style test).
+
+For raw batch generation without visualizations:
 
 ```bash
 python stage3_inference.py \
@@ -449,41 +469,38 @@ exp_data_root/
 
 ## 🔍 Analysis Tools
 
-Standalone tools for interpreting how each channel group influences H&E generation.
-
-### Per-group attention heatmaps
-
-Visualize where each group's encoder output attends on the cell mask:
-
-```python
-from tools.visualize_group_attention import save_attention_heatmap_figure
-
-# attn_maps from module(..., return_attn_weights=True)
-save_attention_heatmap_figure(mask_image, gen_image, attn_maps, "attention.png")
-```
-
-### Per-group residual magnitudes
-
-Spatial L2 norm of each group's additive residual — "how much does each group change the conditioning at each location?"
-
-```python
-from tools.visualize_group_residuals import save_residual_magnitude_figure
-
-# residuals from module(..., return_residuals=True)
-save_residual_magnitude_figure(mask_image, gen_image, residuals, "residuals.png")
-```
+All visualization functions live in `tools/stage3_figures.py`. The inference pipeline helpers (channel loading, model generation, ablation sweeps) are in `tools/stage3_tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
 
 ### Ablation grid
 
-Progressive composition showing incremental group contributions:
+4-row figure: generated H&E with input cell mask contour overlay | per-step Δpixel diff maps | TME channel composites for each newly-added group.
 
 ```python
-from tools.visualize_ablation_grid import save_ablation_grid
+from tools.stage3_figures import save_enhanced_ablation_grid
+from tools.stage3_tile_pipeline import generate_ablation_images
 
-save_ablation_grid(
-    [("Mask only", img0), ("+ Cell ID", img1), ("+ State", img2), ("All", img3)],
-    "ablation.png",
+ablation_imgs = generate_ablation_images(tile_id, models, config, scheduler,
+                                          uni_embeds, device, exp_channels_dir,
+                                          guidance_scale, seed)
+save_enhanced_ablation_grid(
+    ablation_images=ablation_imgs,
+    refs=[("style_ref", "H&E (style)", ref_he)],
+    ctrl_full=vis_data["ctrl_full"],
+    active_channels=vis_data["active_channels"],
+    channel_groups=config.channel_groups,
+    save_path="ablation_grid.png",
 )
+```
+
+TME composites use semantic colors matching `CELL_TYPE_COLORS` / `CELL_STATE_COLORS`: cancer=red, immune=blue, healthy=green; prolif=yellow, nonprolif=grey, dead=brown; microenv uses additive cyan (O₂) + yellow (glucose) blend.
+
+### Per-group residual magnitudes
+
+```python
+from tools.stage3_figures import save_enhanced_attention_figure
+# residuals from tme_module(..., return_residuals=True, return_attn_weights=True)
+save_enhanced_attention_figure(ctrl_full, active_channels, gen_np,
+                                attn_maps, residuals, save_path="residuals.png")
 ```
 
 ---

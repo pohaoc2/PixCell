@@ -25,14 +25,14 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 CONFIG_PATH = ROOT / "configs/config_controlnet_exp.py"
-CKPT_DIR    = ROOT / "checkpoints/pixcell_controlnet_exp/zero_out_mask"
+CKPT_DIR    = ROOT / "checkpoints/pixcell_controlnet_exp/zero_out_mask_post"
 EXP_ROOT    = ROOT / "data/orion-crc33"
 EXP_CH_DIR  = EXP_ROOT / "exp_channels"
 FEAT_DIR    = EXP_ROOT / "features"
 HE_DIR      = EXP_ROOT / "he"
-OUT_DIR     = ROOT / "inference_output/zero_out_mask"
+OUT_DIR     = ROOT / "inference_output/zero_out_mask_post"
 
-N_PATCHES      = 3
+N_PATCHES      = 2
 GUIDANCE_SCALE = 2.5
 NUM_STEPS      = 20
 SEED           = 42
@@ -88,7 +88,7 @@ def run_one(tid, mode, uni_embeds, ref_he, models, config, scheduler, out_base):
         attn_maps=vis_data["attn_maps"],
         residuals=vis_data["residuals"],
         style_inputs=style_inp,
-        save_path=tile_out / "attn_heatmaps.png",
+        save_path=tile_out / "residuals.png",
     )
 
     ablation_imgs = generate_ablation_images(
@@ -107,6 +107,9 @@ def run_one(tid, mode, uni_embeds, ref_he, models, config, scheduler, out_base):
         ablation_images=ablation_imgs,
         refs=refs,
         save_path=tile_out / "ablation_grid.png",
+        ctrl_full=vis_data["ctrl_full"],
+        active_channels=vis_data["active_channels"],
+        channel_groups=config.channel_groups,
     )
     print(f"    Saved {mode}/")
 
