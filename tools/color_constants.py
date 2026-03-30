@@ -47,14 +47,14 @@ CELL_TYPE_COLORS: dict[str, tuple[int, int, int, int]] = {
     "cancer":  (220, 50,  50,  200),
     "immune":  (50,  100, 220, 200),
     "healthy": (50,  180, 50,  200),
-    "other":   (150, 150, 150, 150),
+    "other":   (150, 150, 150, 120),
 }
 
 CELL_STATE_COLORS: dict[str, tuple[int, int, int, int]] = {
-    "proliferative": (240, 190, 0,   200),
-    "quiescent":     (120, 120, 120, 200),
-    "dead":          (110, 60,  20,  200),
-    "other":         (80,  80,  80,  150),
+    "proliferative": (230, 50,  180, 200),  # magenta
+    "nonprolif":     (240, 140, 30,  200),  # amber
+    "dead":          (110, 40,  160, 200),  # purple
+    "other":         (160, 160, 160, 120),
 }
 
 # ── Per-channel matplotlib colormap names ─────────────────────────────────────
@@ -73,9 +73,9 @@ CHANNEL_CMAP: dict = {
     "cell_type_cancer":     _bk_cmap(220, 50,  50,  "cmap_cancer"),  # black → red
     "cell_type_immune":     _bk_cmap(50,  100, 220, "cmap_immune"),  # black → blue
     "cell_type_healthy":    _bk_cmap(50,  180, 50,  "cmap_healthy"), # black → green
-    "cell_state_prolif":    _bk_cmap(240, 190, 0,   "cmap_prolif"),  # black → yellow
-    "cell_state_nonprolif": _bk_cmap(120, 120, 120, "cmap_nonprolif"), # black → grey
-    "cell_state_dead":      _bk_cmap(110, 60,  20,  "cmap_dead"),    # black → brown
+    "cell_state_prolif":    _bk_cmap(230, 50,  180, "cmap_prolif"),  # black → magenta
+    "cell_state_nonprolif": _bk_cmap(240, 140, 30,  "cmap_nonprolif"), # black → amber
+    "cell_state_dead":      _bk_cmap(110, 40,  160, "cmap_dead"),    # black → purple
     # Continuous channels: keep standard colormaps
     "vasculature":          "Reds",
     "oxygen":               OXYGEN_PROXY_CMAP,
