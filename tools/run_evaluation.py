@@ -134,6 +134,9 @@ def run_one(
         save_path=tile_out / "residuals.png",
     )
 
+    # debug: save raw overview H&E for MSE comparison
+    Image.fromarray(gen_np).save(tile_out / "debug_he_overview.png")
+
     # ablation_grid.png
     ablation_imgs = generate_ablation_images(
         tile_id=tile_id,
@@ -154,6 +157,13 @@ def run_one(
         channel_groups=config.channel_groups,
         save_path=tile_out / "ablation_grid.png",
     )
+
+    # debug: save ablation all-groups H&E + compute MSE vs overview
+    ablation_all_np = ablation_imgs[-1][1]
+    Image.fromarray(ablation_all_np).save(tile_out / "debug_he_ablation_allgroups.png")
+    mse = float(np.mean((gen_np.astype(np.float32) - ablation_all_np.astype(np.float32)) ** 2))
+    print(f"    [{mode}] MSE(overview_he, ablation_all_groups_he) = {mse:.6f}"
+          + (" ✓ MATCH" if mse == 0.0 else " ✗ MISMATCH"))
 
     print(f"    [{mode}] saved → {tile_out}"
           + (f"  cos_sim={sim:.4f}" if sim is not None else ""))
