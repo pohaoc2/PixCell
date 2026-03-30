@@ -15,6 +15,14 @@ def _write_gray_png(path, value: int, size: int = 32):
     Image.fromarray(arr, mode="L").save(path)
 
 
+def _write_npy(path, value, size: int = 32):
+    if np.isscalar(value):
+        arr = np.full((size, size), value, dtype=np.float32)
+    else:
+        arr = np.asarray(value, dtype=np.float32)
+    np.save(path, arr)
+
+
 def _make_sim_channels_dir(tmp_path, channels: list[str], pixel_value: int = 200, size: int = 32):
     for ch in channels:
         d = tmp_path / ch
@@ -26,7 +34,7 @@ def _make_sim_channels_dir(tmp_path, channels: list[str], pixel_value: int = 200
 # --- load_sim_channels ---
 
 def test_load_sim_channels_binary_thresholding(tmp_path):
-    """cell_masks channel is thresholded to {0.0, 1.0}; vasculature is not."""
+    """cell_masks and vasculature channels are thresholded to {0.0, 1.0}."""
     _make_sim_channels_dir(tmp_path, ["cell_masks", "vasculature"], pixel_value=200)
 
     from stage3_inference import load_sim_channels
@@ -44,8 +52,31 @@ def test_load_sim_channels_binary_thresholding(tmp_path):
     binary_vals = result[0].unique().tolist()
     assert all(v in (0.0, 1.0) for v in binary_vals), f"Binary channel has non-binary values: {binary_vals}"
 
-    cont_vals = result[1].unique()
-    assert not all(v.item() in (0.0, 1.0) for v in cont_vals), "Continuous channel was unexpectedly binarized"
+    vasc_vals = result[1].unique().tolist()
+    assert all(v in (0.0, 1.0) for v in vasc_vals), f"Vasculature channel has non-binary values: {vasc_vals}"
+
+
+def test_load_sim_channels_prefers_npy_for_oxygen_and_preserves_scale(tmp_path):
+    """Oxygen should prefer .npy over .png and keep global [0,1] values."""
+    _make_sim_channels_dir(tmp_path, ["cell_masks"], pixel_value=255)
+    oxygen_dir = tmp_path / "oxygen"
+    oxygen_dir.mkdir(parents=True, exist_ok=True)
+    _write_gray_png(oxygen_dir / "t.png", value=255, size=32)
+    arr = np.linspace(0.2, 0.4, 32 * 32, dtype=np.float32).reshape(32, 32)
+    _write_npy(oxygen_dir / "t.npy", arr)
+
+    from stage3_inference import load_sim_channels
+
+    result = load_sim_channels(
+        sim_channels_dir=tmp_path,
+        sim_id="t",
+        active_channels=["cell_masks", "oxygen"],
+        resolution=32,
+    )
+
+    oxygen = result[1].numpy()
+    assert oxygen.min() == pytest.approx(0.2, abs=1e-6)
+    assert oxygen.max() == pytest.approx(0.4, abs=1e-6)
 
 
 def test_load_sim_channels_cell_mask_alias(tmp_path):

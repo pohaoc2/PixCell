@@ -71,8 +71,12 @@ from PIL import Image
 
 from diffusion.model.builder import build_model
 from diffusion.utils.misc import read_config
-from diffusion.data.datasets.sim_controlnet_dataset import _find_file, _load_spatial_file, _BINARY_CHANNELS
-from diffusion.data.datasets.paired_exp_controlnet_dataset import _BINARY_CHANNELS as EXP_BINARY
+from diffusion.data.datasets.sim_controlnet_dataset import (
+    _find_file,
+    _load_spatial_file,
+    get_channel_load_config,
+    resolve_channel_dir,
+)
 from train_scripts.inference_controlnet import (
     load_vae,
     null_uni_embed,
@@ -83,15 +87,7 @@ from train_scripts.inference_controlnet import (
 )
 from train_scripts.training_utils import load_tme_checkpoint
 
-_ALL_BINARY = _BINARY_CHANNELS | EXP_BINARY
-
-
 # ── Channel loading ───────────────────────────────────────────────────────────
-
-_CHANNEL_DIR_ALIASES: dict[str, str] = {
-    # Experimental dataset uses "cell_masks" (plural); sim dirs use "cell_mask" (singular)
-    "cell_masks": "cell_mask",
-}
 
 
 def load_sim_channels(sim_channels_dir: Path, sim_id: str,
@@ -110,12 +106,15 @@ def load_sim_channels(sim_channels_dir: Path, sim_id: str,
     """
     planes = []
     for ch in active_channels:
-        ch_dir = sim_channels_dir / ch
-        if not ch_dir.exists() and ch in _CHANNEL_DIR_ALIASES:
-            ch_dir = sim_channels_dir / _CHANNEL_DIR_ALIASES[ch]
-        fpath  = _find_file(ch_dir, sim_id)
-        arr    = _load_spatial_file(fpath, resolution=resolution,
-                                    binary=(ch in _ALL_BINARY))
+        load_cfg = get_channel_load_config(ch)
+        ch_dir = resolve_channel_dir(sim_channels_dir, ch)
+        fpath = _find_file(ch_dir, sim_id, exts=load_cfg["preferred_exts"])
+        arr = _load_spatial_file(
+            fpath,
+            resolution=resolution,
+            binary=load_cfg["binary"],
+            normalization=load_cfg["normalization"],
+        )
         planes.append(arr)
     return torch.from_numpy(np.stack(planes, axis=0))
 

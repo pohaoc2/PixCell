@@ -18,6 +18,8 @@ import numpy as np
 _RESIDUAL_CMAP = mcolors.LinearSegmentedColormap.from_list("black_red", ["black", "red"])
 
 from tools.color_constants import (
+    CELL_STATE_COLORS,
+    CELL_TYPE_COLORS,
     CHANNEL_CMAP,
     CHANNEL_LABEL,
     SECTION_BG,
@@ -391,21 +393,22 @@ def _group_rgb_composite(
     Colored RGB composite for a TME group, using per-channel colors from color_constants.
 
     - cell types:  cancer=red, immune=blue, healthy=green  (matches CELL_TYPE_COLORS)
-    - cell states: prolif=yellow, nonprolif=grey, dead=brown (matches CELL_STATE_COLORS)
+    - cell states: prolif=magenta, nonprolif=amber, dead=purple (matches CELL_STATE_COLORS)
     - vasculature: red
     - microenv:    oxygen=cyan, glucose=yellow — additive blend (both=white, absent=black)
     """
-    # (R, G, B) in [0, 1] per channel name
+    # (R, G, B) in [0, 1] per channel name — derived from color_constants to stay in sync
+    def _c(rgba): return (rgba[0]/255, rgba[1]/255, rgba[2]/255)
     _CH_COLOR: dict[str, tuple[float, float, float]] = {
-        "cell_type_cancer":     (220/255, 50/255,  50/255),
-        "cell_type_immune":     (50/255,  100/255, 220/255),
-        "cell_type_healthy":    (50/255,  180/255, 50/255),
-        "cell_state_prolif":    (240/255, 190/255, 0.0),
-        "cell_state_nonprolif": (120/255, 120/255, 120/255),
-        "cell_state_dead":      (110/255, 60/255,  20/255),
-        "vasculature":          (200/255, 0.0,     0.0),
-        "oxygen":               (0.0,     1.0,     1.0),    # cyan
-        "glucose":              (1.0,     0.95,    0.12),   # yellow
+        "cell_type_cancer":     _c(CELL_TYPE_COLORS["cancer"]),
+        "cell_type_immune":     _c(CELL_TYPE_COLORS["immune"]),
+        "cell_type_healthy":    _c(CELL_TYPE_COLORS["healthy"]),
+        "cell_state_prolif":    _c(CELL_STATE_COLORS["proliferative"]),
+        "cell_state_nonprolif": _c(CELL_STATE_COLORS["nonprolif"]),
+        "cell_state_dead":      _c(CELL_STATE_COLORS["dead"]),
+        "vasculature":          (200/255, 0.0,  0.0),
+        "oxygen":               (0.0,     1.0,  1.0),   # cyan
+        "glucose":              (1.0,     0.95, 0.12),  # yellow
     }
     H, W = ctrl_full.shape[1], ctrl_full.shape[2]
     rgb = np.zeros((H, W, 3), dtype=np.float32)

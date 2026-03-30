@@ -14,8 +14,9 @@ BINARY_CHANNELS = [
     "cell_masks",
     "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
     "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
+    "vasculature",
 ]
-FLOAT_CHANNELS = ["vasculature", "oxygen", "glucose"]
+FLOAT_CHANNELS = ["oxygen", "glucose"]
 ALL_TME_CHANNELS = BINARY_CHANNELS + FLOAT_CHANNELS  # cell_masks first
 
 ACTIVE_CHANNELS = ALL_TME_CHANNELS
@@ -31,6 +32,10 @@ def _write_png(path: Path, binary: bool):
     cv2.imwrite(str(path), arr)
 
 
+def _write_npy(path: Path, arr: np.ndarray):
+    np.save(path, np.asarray(arr, dtype=np.float32))
+
+
 @pytest.fixture()
 def exp_root(tmp_path):
     """Build a minimal paired-exp dataset directory in tmp_path."""
@@ -39,7 +44,21 @@ def exp_root(tmp_path):
         ch_dir = tmp_path / "exp_channels" / ch
         ch_dir.mkdir(parents=True)
         for tid in TILE_IDS:
-            _write_png(ch_dir / f"{tid}.png", binary=(ch in BINARY_CHANNELS))
+            if ch in {"oxygen", "glucose"}:
+                base = 0.2 if ch == "oxygen" else 0.6
+                arr = np.linspace(
+                    base,
+                    base + 0.2,
+                    RESOLUTION * RESOLUTION,
+                    dtype=np.float32,
+                ).reshape(RESOLUTION, RESOLUTION)
+                _write_npy(ch_dir / f"{tid}.npy", arr)
+            elif ch == "vasculature":
+                arr = np.zeros((RESOLUTION, RESOLUTION), dtype=np.float32)
+                arr[10:50, 10:50] = 1.0
+                np.save(ch_dir / f"{tid}.npy", arr.astype(bool))
+            else:
+                _write_png(ch_dir / f"{tid}.png", binary=(ch in BINARY_CHANNELS))
 
     # --- features (UNI embeddings) — 1536-dim to match UNI-2h embed_dim ---
     feat_dir = tmp_path / "features"
@@ -73,7 +92,8 @@ def test_fixture_structure(exp_root):
     assert (exp_root / "metadata" / "exp_index.hdf5").exists()
     for ch in ALL_TME_CHANNELS:
         for tid in TILE_IDS:
-            assert (exp_root / "exp_channels" / ch / f"{tid}.png").exists()
+            ext = ".npy" if ch in {"vasculature", "oxygen", "glucose"} else ".png"
+            assert (exp_root / "exp_channels" / ch / f"{tid}{ext}").exists()
     for tid in TILE_IDS:
         assert (exp_root / "features" / f"{tid}_uni.npy").exists()
         assert (exp_root / "vae_features" / f"{tid}_sd3_vae.npy").exists()
@@ -130,7 +150,7 @@ def test_dataset_is_paired(exp_root):
 
 
 def test_binary_channels_are_binary(exp_root):
-    """One-hot cell type/state channels must contain only 0.0 and 1.0."""
+    """Binary channels, including vasculature, must contain only 0.0 and 1.0."""
     from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
     ds = PairedExpControlNetData(
         root=str(exp_root),
@@ -143,6 +163,42 @@ def test_binary_channels_are_binary(exp_root):
             vals = ctrl_tensor[i].unique()
             assert set(vals.tolist()).issubset({0.0, 1.0}), \
                 f"Channel '{ch}' is not binary: unique values = {vals.tolist()}"
+
+
+def test_oxygen_and_glucose_npy_preserve_global_scale(exp_root):
+    """Continuous nutrient .npy channels should keep raw [0,1] values."""
+    from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
+
+    ds = PairedExpControlNetData(
+        root=str(exp_root),
+        resolution=RESOLUTION,
+        active_channels=ACTIVE_CHANNELS,
+    )
+    _, _, ctrl_tensor, _, _ = ds[0]
+
+    oxygen = ctrl_tensor[ACTIVE_CHANNELS.index("oxygen")]
+    glucose = ctrl_tensor[ACTIVE_CHANNELS.index("glucose")]
+
+    assert float(oxygen.min()) == pytest.approx(0.2, abs=1e-6)
+    assert float(oxygen.max()) == pytest.approx(0.4, abs=1e-6)
+    assert float(glucose.min()) == pytest.approx(0.6, abs=1e-6)
+    assert float(glucose.max()) == pytest.approx(0.8, abs=1e-6)
+
+
+def test_dataset_supports_legacy_npy_channel_directories(exp_root):
+    """Legacy oxygen_npy/glucose_npy/vasculature_npy folders should still load."""
+    from diffusion.data.datasets.paired_exp_controlnet_dataset import PairedExpControlNetData
+
+    for ch in ("oxygen", "glucose", "vasculature"):
+        (exp_root / "exp_channels" / ch).rename(exp_root / "exp_channels" / f"{ch}_npy")
+
+    ds = PairedExpControlNetData(
+        root=str(exp_root),
+        resolution=RESOLUTION,
+        active_channels=ACTIVE_CHANNELS,
+    )
+    _, _, ctrl_tensor, _, _ = ds[0]
+    assert ctrl_tensor.shape == (len(ACTIVE_CHANNELS), RESOLUTION, RESOLUTION)
 
 
 def test_missing_vae_mask_returns_zeros(exp_root):

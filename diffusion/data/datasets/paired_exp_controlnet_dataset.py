@@ -45,6 +45,8 @@ from diffusion.data.datasets.sim_controlnet_dataset import (
     _find_file,
     _load_spatial_file,
     _write_h5_index,
+    get_channel_load_config,
+    resolve_channel_dir,
 )
 
 # ── Channel registry ──────────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ _BINARY_CHANNELS: frozenset[str] = frozenset({
     "cell_masks",
     "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
     "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
+    "vasculature",
 })
 _CHANNEL_ALIASES: dict[str, str] = {
     "cell_mask": "cell_masks",
@@ -176,14 +179,21 @@ class PairedExpControlNetData(Dataset):
     def _build_ctrl_tensor(self, tile_id: str) -> torch.Tensor:
         planes: list[np.ndarray] = []
         for ch in self.active_channels:
-            ch_dir = self.exp_channels_dir / ch
-            fpath  = _find_file(ch_dir, tile_id)
-            is_binary = ch in _BINARY_CHANNELS
+            load_cfg = get_channel_load_config(ch)
+            ch_dir = resolve_channel_dir(self.exp_channels_dir, ch)
+            fpath  = _find_file(
+                ch_dir,
+                tile_id,
+                exts=load_cfg["preferred_exts"],
+            )
+            is_binary = bool(load_cfg["binary"])
+            normalization = str(load_cfg["normalization"])
             arr    = _load_spatial_file(
                 fpath,
                 resolution=self.resolution,
                 binary=is_binary,
-                mirror_border_px=0 if is_binary else _MIRROR_BORDER_PX,
+                mirror_border_px=0 if is_binary or normalization == "clip01" else _MIRROR_BORDER_PX,
+                normalization=normalization,
             )
             planes.append(arr)
         ctrl = torch.from_numpy(np.stack(planes, axis=0))
