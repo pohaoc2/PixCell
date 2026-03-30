@@ -171,7 +171,7 @@ class AttentionKVCompress(Attention_):
             x = F.scaled_dot_product_attention(q_, k_, v_, attn_mask=attn_mask, dropout_p=0.0)
             x = x.transpose(1, 2)
 
-        x = x.view(B, N, C)
+        x = x.reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

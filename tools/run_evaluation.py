@@ -97,6 +97,7 @@ def run_one(
         exp_channels_dir=exp_ch_dir,
         guidance_scale=guidance_scale,
         return_vis_data=True,
+        seed=seed,
     )
     Image.fromarray(gen_np).save(tile_out / "generated_he.png")
 

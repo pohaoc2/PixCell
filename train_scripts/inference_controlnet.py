@@ -163,9 +163,8 @@ def denoise(
     controlnet_input_latent = controlnet_input_latent.to(device, dtype=dtype)
     controlnet_model = controlnet_model.to(device, dtype=dtype)
     # 2. Create Unconditional Embeddings
-    # Using zeros or random is standard, but must match dtype/device
-    uncond_uni_embeds = torch.randn(1, 1, 1, 1536).to(device, dtype=dtype)
-    uncond_uni_embeds /= 1536**0.5
+    # Must be zeros to match CFG dropout training (y[b] = zeros_like when dropped).
+    uncond_uni_embeds = torch.zeros(1, 1, 1, 1536, device=device, dtype=dtype)
 
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps

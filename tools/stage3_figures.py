@@ -184,14 +184,18 @@ def save_overview_figure(
     )
     ax_arr.axis("off")
 
+    ax_out = fig.add_subplot(gs[1:3, n_row1 + 1])
     _image_ax(
-        fig.add_subplot(gs[1:3, n_row1 + 1]),
+        ax_out,
         gen_np,
         "Generated H&E",
         "output",
         fontsize=9,
         cosine_sim_val=cosine_sim_val,
     )
+    if "cell_masks" in active_channels:
+        cell_mask = ctrl_full[active_channels.index("cell_masks")]
+        ax_out.contour(cell_mask, levels=[0.5], colors=["lime"], linewidths=0.7, alpha=0.85)
 
     plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close()

@@ -112,7 +112,7 @@ fp32_attention   = True
 # orion-crc33: ~10k tiles, bs=80 → ~125 steps/epoch, ~3750 steps over 30 epochs.
 num_workers                 = 4
 train_batch_size            = 80
-num_epochs                  = 30
+num_epochs                  = 20
 gradient_accumulation_steps = 1
 grad_checkpointing          = True
 gradient_clip               = 1.0
@@ -125,11 +125,11 @@ optimizer = dict(
     eps=1e-8,
 )
 
-lr_schedule_args = dict(num_warmup_steps=500)   # ~6% of 800 total steps
+lr_schedule_args = dict(num_warmup_steps=200)   # ~5% of ~3750 total steps
 auto_lr          = None
 
 log_interval       = 50    # log every epoch
-save_model_epochs  = 10    # save at epoch 10, 20, 30 to allow early evaluation
+save_model_epochs  = 20    # save at epoch 10, 20, 30 to allow early evaluation
 save_model_steps   = 10000
 work_dir           = f"{root}/checkpoints/pixcell_controlnet_exp"
 

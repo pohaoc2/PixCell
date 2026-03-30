@@ -192,6 +192,7 @@ def train_controlnet_exp(models_dict):
 
             tme_dtype = next(tme_module.parameters()).dtype
 
+            # Prepare TME inputs (no learnable ops here — pure data shaping).
             if use_multi_group:
                 active_channels = resolve_exp_active_channels(config)
                 tme_channel_dict = split_channels_to_groups(
@@ -206,30 +207,33 @@ def train_controlnet_exp(models_dict):
                         gname = g["name"]
                         if gname not in active_groups_per_sample[b_idx] and gname in tme_channel_dict:
                             tme_channel_dict[gname][b_idx] = 0.0
-                fused, _tme_residuals = tme_module(
-                    vae_mask.to(dtype=tme_dtype), tme_channel_dict, return_residuals=True,
-                )
-                if getattr(config, "zero_mask_latent", False):
-                    fused = fused - vae_mask.to(dtype=tme_dtype)
-                vae_mask = fused
             else:
                 tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
-                channel_weights = getattr(config, "channel_reliability_weights", None)
                 if channel_weights is not None:
                     w = torch.tensor(
                         channel_weights, device=tme_channels.device, dtype=tme_channels.dtype
                     ).view(1, -1, 1, 1)
                     tme_channels = tme_channels * w
-                vae_mask = tme_module(vae_mask.to(dtype=tme_dtype), tme_channels)
-            vae_mask = vae_mask.float()
 
-            # 3. Training step
+            # 3. Training step — TME forward is inside accumulate so its gradient
+            # graph is always built after zero_grad(), guaranteeing that
+            # optimizer_tme.step() sees non-None gradients on every step.
             with accelerator.accumulate(controlnet, tme_module):
                 optimizer.zero_grad()
                 optimizer_tme.zero_grad()
 
+                if use_multi_group:
+                    fused, _tme_residuals = tme_module(
+                        vae_mask.to(dtype=tme_dtype), tme_channel_dict, return_residuals=True,
+                    )
+                    if getattr(config, "zero_mask_latent", False):
+                        fused = fused - vae_mask.to(dtype=tme_dtype)
+                    ctrl_latent = fused.float()
+                else:
+                    ctrl_latent = tme_module(vae_mask.to(dtype=tme_dtype), tme_channels).float()
+
                 model_kwargs = dict(
-                    y=y, mask=None, data_info=data_info, control_input=vae_mask,
+                    y=y, mask=None, data_info=data_info, control_input=ctrl_latent,
                 )
                 loss_term = training_losses_controlnet(
                     diffusion=train_diffusion,
@@ -460,6 +464,9 @@ def main():
         _tme_optcfg = deepcopy(config.optimizer)
         _tme_optcfg["lr"] = getattr(config, "tme_lr", config.optimizer.get("lr", 1e-4))
         optimizer_tme = build_optimizer(_tme, _tme_optcfg)
+    # Re-prepare the rebuilt optimizer so Accelerate tracks it correctly
+    # (handles bf16/fp16 gradient scaling and distributed gradient sync).
+    optimizer_tme = accelerator.prepare(optimizer_tme)
     lr_scheduler_tme = build_lr_scheduler(config, optimizer_tme, train_dataloader, lr_scale_ratio=1)
 
     state_data = setup_training_state(
