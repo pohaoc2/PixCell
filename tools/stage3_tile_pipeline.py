@@ -178,6 +178,7 @@ def generate_tile(
     exp_channels_dir: Path,
     guidance_scale: float,
     return_vis_data: bool = False,
+    seed: int | None = None,
 ):
     """
     Generate H&E for one tile from its exp channels.
@@ -219,7 +220,14 @@ def generate_tile(
 
     with torch.no_grad():
         if return_vis_data:
-            fused, residuals, attn_maps = tme_module(
+            # Pass 1: xformers path (no return_attn_weights) — same path as generate_ablation_images
+            fused, residuals = tme_module(
+                vae_mask,
+                tme_dict,
+                return_residuals=True,
+            )
+            # Pass 2: manual path for attn_maps only (visualization, does not affect generation)
+            _, _, attn_maps = tme_module(
                 vae_mask,
                 tme_dict,
                 return_residuals=True,
@@ -232,8 +240,12 @@ def generate_tile(
         fused = fused - vae_mask
 
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
+    if seed is not None:
+        torch.manual_seed(seed)
     latents = torch.randn(latent_shape, device=device, dtype=dtype)
     latents = latents * scheduler.init_noise_sigma
+    if seed is not None:
+        torch.manual_seed(seed)  # reset again so scheduler-step noise matches ablation
     denoised = denoise(
         latents=latents,
         uni_embeds=uni_embeds.to(device, dtype=dtype),
@@ -330,6 +342,7 @@ def generate_ablation_images(
             else:
                 fused = torch.zeros_like(vae_mask) if _zero_mask else vae_mask.clone()
 
+        torch.manual_seed(seed)  # identical scheduler-step noise across all ablation steps
         denoised = denoise(
             latents=fixed_noise.clone(),
             uni_embeds=uni_embeds.to(device, dtype=dtype),
