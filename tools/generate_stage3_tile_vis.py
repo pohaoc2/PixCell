@@ -120,6 +120,7 @@ def run_vis_suite(
         exp_channels_dir=exp_channels_dir,
         guidance_scale=guidance_scale,
         return_vis_data=True,
+        seed=seed,
     )
     if vis_data is None:
         raise RuntimeError("vis_data missing")
@@ -149,6 +150,8 @@ def run_vis_suite(
     ctrl_full_np = vis_data["ctrl_full"]
     active_channels = vis_data["active_channels"]
 
+    # 1. Add green contour to overview.png — save_overview_figure already draws it when
+    #    "cell_masks" is in active_channels; this is always true for the exp config.
     save_overview_figure(
         ctrl_full=ctrl_full_np,
         active_channels=active_channels,
@@ -176,6 +179,10 @@ def run_vis_suite(
         save_path=out_dir / "residual_magnitudes.png",
     )
 
+    # 2. Debug: save the overview H&E (raw array before figure layout)
+    Image.fromarray(gen_np).save(out_dir / "debug_he_overview.png")
+    print(f"  Debug overview H&E saved → {out_dir / 'debug_he_overview.png'}")
+
     print("  Generating ablation grid...")
     ablation_imgs = generate_ablation_images(
         tile_id=layout_tile_id,
@@ -188,11 +195,25 @@ def run_vis_suite(
         guidance_scale=guidance_scale,
         seed=seed,
     )
+    # Pass ctrl_full so the ablation grid also gets the green cell-mask contour overlay.
     save_enhanced_ablation_grid(
         ablation_images=ablation_imgs,
         refs=[(ablation_ref_section, ablation_ref_label, ref_he)] if ref_he is not None else [],
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+        channel_groups=config.channel_groups,
         save_path=out_dir / "ablation_grid.png",
     )
+
+    # 3. Debug: save the ablation "all groups" H&E (last entry = all groups active)
+    ablation_all_groups_np = ablation_imgs[-1][1]
+    Image.fromarray(ablation_all_groups_np).save(out_dir / "debug_he_ablation_allgroups.png")
+    print(f"  Debug ablation all-groups H&E saved → {out_dir / 'debug_he_ablation_allgroups.png'}")
+
+    # 4. MSE between overview H&E and ablation all-groups H&E
+    mse = float(np.mean((gen_np.astype(np.float32) - ablation_all_groups_np.astype(np.float32)) ** 2))
+    print(f"  MSE(overview_he, ablation_all_groups_he) = {mse:.6f}"
+          + (" ✓ MATCH" if mse == 0.0 else " ✗ MISMATCH — seed/generation path differs"))
 
     print("  Generating LOO ablation...")
     loo_imgs = generate_loo_ablation(
