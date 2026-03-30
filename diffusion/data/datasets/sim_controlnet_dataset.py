@@ -65,10 +65,39 @@ OPTIONAL_CHANNELS: list[str] = ["glucose", "tgf"]
 ALL_CHANNELS:      list[str] = REQUIRED_CHANNELS + OPTIONAL_CHANNELS
 
 # Channels that should be thresholded to {0, 1} rather than normalized
-_BINARY_CHANNELS: frozenset[str] = frozenset({"cell_mask"})
+_BINARY_CHANNELS: frozenset[str] = frozenset(
+    {
+        "cell_mask",
+        "cell_masks",
+        "cell_type_healthy",
+        "cell_type_cancer",
+        "cell_type_immune",
+        "cell_state_prolif",
+        "cell_state_nonprolif",
+        "cell_state_dead",
+        "vasculature",
+    }
+)
+
+# Continuous channels that already carry globally normalized scalar values.
+_CLIP01_CHANNELS: frozenset[str] = frozenset({"oxygen", "glucose"})
 
 # Supported file extensions in search priority order
 _EXTS = (".png", ".npy", ".jpg", ".tif")
+
+_PREFERRED_EXTS: dict[str, tuple[str, ...]] = {
+    "oxygen": (".npy", ".png", ".jpg", ".tif"),
+    "glucose": (".npy", ".png", ".jpg", ".tif"),
+    "vasculature": (".npy", ".png", ".jpg", ".tif"),
+}
+
+_CHANNEL_DIR_ALIASES: dict[str, tuple[str, ...]] = {
+    "cell_masks": ("cell_mask",),
+    "cell_mask": ("cell_masks",),
+    "oxygen": ("oxygen_npy",),
+    "glucose": ("glucose_npy",),
+    "vasculature": ("vasculature_npy",),
+}
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
@@ -92,18 +121,43 @@ def _validate_channels(active: list[str]) -> list[str]:
 
 # ── File I/O ──────────────────────────────────────────────────────────────────
 
-def _find_file(directory: Path, stem: str) -> Path:
+def get_channel_load_config(channel_name: str) -> dict[str, object]:
+    """Return load policy for a channel name."""
+    binary = channel_name in _BINARY_CHANNELS
+    normalization = "binary" if binary else (
+        "clip01" if channel_name in _CLIP01_CHANNELS else "minmax"
+    )
+    preferred_exts = _PREFERRED_EXTS.get(channel_name, _EXTS)
+    return {
+        "binary": binary,
+        "normalization": normalization,
+        "preferred_exts": preferred_exts,
+    }
+
+
+def resolve_channel_dir(root_dir: Path, channel_name: str) -> Path:
+    """Resolve a channel directory, allowing a small set of legacy aliases."""
+    candidates = (channel_name, *_CHANNEL_DIR_ALIASES.get(channel_name, ()))
+    for candidate in candidates:
+        candidate_dir = root_dir / candidate
+        if candidate_dir.exists():
+            return candidate_dir
+    return root_dir / channel_name
+
+
+def _find_file(directory: Path, stem: str, exts: tuple[str, ...] | None = None) -> Path:
     """
     Find a file in `directory` named `{stem}{ext}` for ext in _EXTS.
     Raises FileNotFoundError if none found.
     """
-    for ext in _EXTS:
+    search_exts = _EXTS if exts is None else exts
+    for ext in search_exts:
         p = directory / f"{stem}{ext}"
         if p.exists():
             return p
     raise FileNotFoundError(
         f"No file found for '{stem}' in {directory}. "
-        f"Tried: {[stem + e for e in _EXTS]}"
+        f"Tried: {[stem + e for e in search_exts]}"
     )
 
 
@@ -112,6 +166,7 @@ def _load_spatial_file(
     resolution: int,
     binary: bool = False,
     mirror_border_px: int = 0,
+    normalization: str = "minmax",
 ) -> np.ndarray:
     """
     Load a 2D spatial field from PNG or NPY and return a float32 [H, W] array.
@@ -121,7 +176,8 @@ def _load_spatial_file(
         - NPY of shape (H,W), (1,H,W), (1,1,H,W), or (C,H,W) → first channel used
         - Any input resolution             → bilinear resize to (resolution, resolution)
         - binary=True                      → threshold at 0.5 → {0.0, 1.0}
-        - binary=False                     → min-max normalize to [0, 1]
+        - normalization="minmax"          → min-max normalize to [0, 1]
+        - normalization="clip01"          → preserve global values, only clip to [0, 1]
         - mirror_border_px > 0             → reflect-pad the raw image before resize
           to suppress simulation boundary artifacts (e.g. oxygen/glucose Dirichlet BCs).
           Only applied when binary=False.
@@ -131,6 +187,7 @@ def _load_spatial_file(
         resolution:       Target spatial resolution.
         binary:           Whether to binarize (True for cell_mask).
         mirror_border_px: Pixels of reflect-padding added before resize (default 0).
+        normalization:    Continuous-channel normalization mode.
 
     Returns:
         np.ndarray, shape (resolution, resolution), dtype float32.
@@ -180,6 +237,8 @@ def _load_spatial_file(
     # ── Normalize or binarize ─────────────────────────────────────────────────
     if binary:
         arr = (arr > 0.5).astype(np.float32)
+    elif normalization == "clip01":
+        arr = np.clip(arr, 0.0, 1.0).astype(np.float32)
     else:
         vmin, vmax = arr.min(), arr.max()
         if vmax > vmin:
@@ -307,12 +366,18 @@ class SimControlNetData(Dataset):
         """
         planes: list[np.ndarray] = []
         for ch in self.active_channels:
-            ch_dir = self.sim_channels_dir / ch
-            fpath  = _find_file(ch_dir, sim_id)
+            load_cfg = get_channel_load_config(ch)
+            ch_dir = resolve_channel_dir(self.sim_channels_dir, ch)
+            fpath = _find_file(
+                ch_dir,
+                sim_id,
+                exts=load_cfg["preferred_exts"],
+            )
             arr    = _load_spatial_file(
                 fpath,
                 resolution=self.resolution,
-                binary=(ch in _BINARY_CHANNELS),
+                binary=load_cfg["binary"],
+                normalization=load_cfg["normalization"],
             )
             planes.append(arr)
 

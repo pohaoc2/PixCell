@@ -11,11 +11,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
-# Canonical exp names → on-disk folder names (e.g. sim layouts use cell_mask/)
-_CHANNEL_DIR_ALIASES: dict[str, str] = {
-    "cell_masks": "cell_mask",
-}
+from diffusion.data.datasets.sim_controlnet_dataset import (
+    _find_file,
+    _load_spatial_file,
+    get_channel_load_config,
+    resolve_channel_dir as resolve_channel_dir_shared,
+)
 
 # Binary channels (thresholded to {0,1})
 _BINARY: frozenset[str] = frozenset(
@@ -27,6 +28,7 @@ _BINARY: frozenset[str] = frozenset(
         "cell_state_prolif",
         "cell_state_nonprolif",
         "cell_state_dead",
+        "vasculature",
     }
 )
 
@@ -40,27 +42,16 @@ def load_channel(ch_dir: Path, tile_id: str, resolution: int, binary: bool) -> n
     Non-binary (continuous) channels are reflect-padded by _MIRROR_BORDER_PX pixels
     before resize to suppress simulation boundary artifacts.
     """
-    fpath = ch_dir / f"{tile_id}.png"
-    if not fpath.exists():
-        fpath = ch_dir / f"{tile_id}.npy"
-    if not fpath.exists():
-        raise FileNotFoundError(f"Channel file not found: {ch_dir / tile_id}.*")
-    if fpath.suffix == ".npy":
-        arr = np.load(fpath).astype(np.float32)
-    else:
-        import cv2
-
-        img = cv2.imread(str(fpath), cv2.IMREAD_GRAYSCALE)
-        arr = img.astype(np.float32) / 255.0
-    if not binary and _MIRROR_BORDER_PX > 0:
-        arr = np.pad(arr, _MIRROR_BORDER_PX, mode="reflect")
-    if arr.shape != (resolution, resolution):
-        import cv2
-
-        arr = cv2.resize(arr, (resolution, resolution), interpolation=cv2.INTER_LINEAR)
-    if binary:
-        arr = (arr > 0.5).astype(np.float32)
-    return arr
+    load_cfg = get_channel_load_config(ch_dir.name)
+    fpath = _find_file(ch_dir, tile_id, exts=load_cfg["preferred_exts"])
+    normalization = str(load_cfg["normalization"])
+    return _load_spatial_file(
+        fpath,
+        resolution=resolution,
+        binary=binary,
+        mirror_border_px=0 if binary or normalization == "clip01" else _MIRROR_BORDER_PX,
+        normalization=normalization,
+    )
 
 
 def resolve_data_layout(data_root: Path) -> tuple[Path, Path, Path]:
@@ -82,15 +73,7 @@ def resolve_data_layout(data_root: Path) -> tuple[Path, Path, Path]:
 
 def resolve_channel_dir(exp_channels_dir: Path, channel_name: str) -> Path:
     """Prefer config name; fall back to alias dirs (cell_masks → cell_mask)."""
-    d = exp_channels_dir / channel_name
-    if d.is_dir():
-        return d
-    alt = _CHANNEL_DIR_ALIASES.get(channel_name)
-    if alt:
-        d2 = exp_channels_dir / alt
-        if d2.is_dir():
-            return d2
-    return exp_channels_dir / channel_name
+    return resolve_channel_dir_shared(exp_channels_dir, channel_name)
 
 
 def load_exp_channels(
