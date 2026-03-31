@@ -576,6 +576,55 @@ def save_enhanced_ablation_grid(
     print(f"Ablation grid saved → {save_path}")
 
 
+def save_condition_ablation_grid(
+    ablation_images: list,
+    save_path: str | Path,
+    refs: list | None = None,
+    ctrl_full: np.ndarray | None = None,
+    active_channels: list | None = None,
+):
+    """Simple grid for arbitrary standalone ablation conditions."""
+    refs = refs or []
+
+    cell_mask = None
+    if ctrl_full is not None and active_channels is not None and "cell_masks" in active_channels:
+        cell_mask = ctrl_full[active_channels.index("cell_masks")]
+
+    panels = list(refs)
+    for label, img in ablation_images:
+        panels.append(("output", label, img))
+
+    n = len(panels)
+    fig = plt.figure(figsize=(n * 2.5, 5.0), facecolor="white")
+    gs = gridspec.GridSpec(
+        2, n, figure=fig,
+        height_ratios=[0.13, 0.87],
+        wspace=0.05, hspace=0.08,
+        left=0.01, right=0.99, top=0.97, bottom=0.02,
+    )
+
+    n_refs = len(refs)
+    for j, (section_key, label, img) in enumerate(panels):
+        _header_ax(fig.add_subplot(gs[0, j]), label, section_key)
+        ax = fig.add_subplot(gs[1, j])
+        ax.set_facecolor(SECTION_BG[section_key])
+        ax.imshow(img, vmin=0, vmax=None if img.dtype == np.uint8 else 1.0)
+        if cell_mask is not None and j >= n_refs:
+            ax.contour(cell_mask, levels=[0.5], colors=["lime"], linewidths=0.7, alpha=0.85)
+        ax.axis("off")
+
+    if n_refs > 0 and n_refs < n:
+        x_sep = (fig.axes[n_refs * 2 - 1].get_position().x1 +
+                 fig.axes[n_refs * 2 + 1].get_position().x0) / 2
+        fig.add_artist(plt.Line2D([x_sep, x_sep], [0.02, 0.98],
+                                  transform=fig.transFigure, color="#aaaaaa",
+                                  linewidth=1.5, linestyle="--"))
+
+    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close()
+    print(f"Condition ablation grid saved → {save_path}")
+
+
 def save_loo_ablation_grid(
     ablation_images: list,
     save_path: str | Path,
@@ -618,45 +667,3 @@ def save_loo_ablation_grid(
     plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close()
     print(f"LOO ablation grid saved → {save_path}")
-
-
-def save_pairwise_ablation_grid(
-    ablation_images: list,
-    save_path: str | Path,
-    refs: list | None = None,
-):
-    """Pairwise ablation grid: mask_only + mask+single_group for each group.
-
-    ablation_images: [(label, gen_np), ...] first = 'Mask only', rest = '+G'.
-    refs: optional list of (section_key, label, img) reference panels.
-    """
-    refs = refs or []
-    panels = list(refs)
-    for i, (label, img) in enumerate(ablation_images):
-        sk = "input" if i == 0 else "output"
-        panels.append((sk, label, img))
-
-    n = len(panels)
-    fig = plt.figure(figsize=(n * 2.5, 5.0), facecolor="white")
-    gs = gridspec.GridSpec(2, n, figure=fig, height_ratios=[0.13, 0.87],
-                           wspace=0.05, hspace=0.08,
-                           left=0.01, right=0.99, top=0.97, bottom=0.02)
-
-    for j, (sk, lbl, img) in enumerate(panels):
-        _header_ax(fig.add_subplot(gs[0, j]), lbl, sk)
-        ax = fig.add_subplot(gs[1, j])
-        ax.set_facecolor(SECTION_BG[sk])
-        ax.imshow(img, vmin=0, vmax=None if img.dtype == np.uint8 else 1.0)
-        ax.axis("off")
-
-    n_refs = len(refs)
-    if n_refs > 0 and n_refs < n:
-        x_sep = (fig.axes[n_refs * 2 - 1].get_position().x1 +
-                 fig.axes[n_refs * 2 + 1].get_position().x0) / 2
-        fig.add_artist(plt.Line2D([x_sep, x_sep], [0.02, 0.98],
-                                  transform=fig.transFigure, color="#aaaaaa",
-                                  linewidth=1.5, linestyle="--"))
-
-    plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close()
-    print(f"Pairwise ablation grid saved → {save_path}")

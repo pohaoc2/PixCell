@@ -107,6 +107,36 @@ def _make_config(zero_mask_latent: bool):
     )
 
 
+def _make_four_group_config(zero_mask_latent: bool = False):
+    return SimpleNamespace(
+        data=SimpleNamespace(
+            active_channels=[
+                "cell_masks",
+                "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
+                "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
+                "vasculature",
+                "oxygen", "glucose",
+            ]
+        ),
+        scale_factor=1.0,
+        shift_factor=0.0,
+        image_size=32,
+        channel_groups=[
+            {
+                "name": "cell_identity",
+                "channels": ["cell_type_healthy", "cell_type_cancer", "cell_type_immune"],
+            },
+            {
+                "name": "cell_state",
+                "channels": ["cell_state_prolif", "cell_state_nonprolif", "cell_state_dead"],
+            },
+            {"name": "vasculature", "channels": ["vasculature"]},
+            {"name": "microenv", "channels": ["oxygen", "glucose"]},
+        ],
+        zero_mask_latent=zero_mask_latent,
+    )
+
+
 def test_generate_tile_zero_mask_latent_applied(tmp_path):
     """zero_mask_latent=True: controlnet receives tme_out - vae_mask."""
     from unittest.mock import patch
@@ -188,3 +218,93 @@ def test_generate_tile_zero_mask_latent_off(tmp_path):
         )
 
     assert torch.allclose(captured["cil"].float(), tme_out.float())
+
+
+def test_group_ablation_plan_counts_cover_requested_full_suite():
+    from tools.stage3_ablation import build_progressive_order_conditions, build_subset_conditions
+
+    group_names = ("cell_identity", "cell_state", "vasculature", "microenv")
+
+    singles = build_subset_conditions(group_names, subset_size=1)
+    pairs = build_subset_conditions(group_names, subset_size=2)
+    triples = build_subset_conditions(group_names, subset_size=3)
+    order_sweeps = build_progressive_order_conditions(group_names, zero_mask_latent=False)
+
+    assert len(singles) == 4
+    assert len(pairs) == 6
+    assert len(triples) == 4
+    assert len(order_sweeps) == 24
+    assert any("nutrient" in cond.label for cond in singles)
+    assert all(len(conditions) == 5 for _, conditions in order_sweeps)
+
+
+def test_generate_ablation_images_respects_requested_group_conditions(tmp_path):
+    from unittest.mock import patch
+
+    from tools.stage3_ablation import AblationCondition
+    from tools.stage3_tile_pipeline import generate_ablation_images
+
+    config = _make_four_group_config()
+    fake_vae = MagicMock()
+    fake_vae.to.return_value = fake_vae
+    fake_vae.eval.return_value = fake_vae
+    fake_vae.decode = MagicMock(return_value=[torch.zeros(1, 3, 32, 32)])
+
+    class FakeTME:
+        def __init__(self):
+            self.active_groups_seen = []
+
+        def __call__(self, vae_mask, tme_dict, active_groups=None):
+            self.active_groups_seen.append(tuple(sorted(active_groups or ())))
+            return torch.full_like(vae_mask, float(len(active_groups or ())))
+
+    fake_tme = FakeTME()
+    models = dict(
+        vae=fake_vae,
+        controlnet=MagicMock(),
+        base_model=MagicMock(),
+        tme_module=fake_tme,
+    )
+    scheduler = MagicMock()
+    scheduler.init_noise_sigma = 1.0
+    scheduler.timesteps = []
+
+    captured = []
+
+    def fake_denoise(**kwargs):
+        captured.append(kwargs["controlnet_input_latent"].clone())
+        return torch.zeros(1, 16, 4, 4)
+
+    fake_ctrl_full = torch.zeros(len(config.data.active_channels), 32, 32)
+    fake_tme_dict = {
+        group["name"]: torch.zeros(1, len(group["channels"]), 32, 32)
+        for group in config.channel_groups
+    }
+    conditions = [
+        AblationCondition(label="identity only", active_groups=("cell_identity",)),
+        AblationCondition(label="state + nutrient", active_groups=("cell_state", "microenv")),
+    ]
+
+    with patch("tools.stage3_tile_pipeline.load_exp_channels", return_value=fake_ctrl_full), \
+         patch("train_scripts.inference_controlnet.encode_ctrl_mask_latent", return_value=torch.ones(1, 16, 4, 4)), \
+         patch("tools.channel_group_utils.split_channels_to_groups", return_value=fake_tme_dict), \
+         patch("train_scripts.inference_controlnet.denoise", side_effect=fake_denoise):
+        results = generate_ablation_images(
+            tile_id="t",
+            models=models,
+            config=config,
+            scheduler=scheduler,
+            uni_embeds=torch.zeros(1, 1, 1, 1536),
+            device="cpu",
+            exp_channels_dir=tmp_path,
+            guidance_scale=1.0,
+            seed=123,
+            conditions=conditions,
+        )
+
+    assert [label for label, _ in results] == ["identity only", "state + nutrient"]
+    assert fake_tme.active_groups_seen == [
+        ("cell_identity",),
+        ("cell_state", "microenv"),
+    ]
+    assert len(captured) == 2

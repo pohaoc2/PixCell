@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate the three Stage 3 visualization PNGs for one experimental tile:
+Generate Stage 3 visualization PNGs for one experimental tile:
 
   - overview.png
-  - attention_heatmaps.png
   - ablation_grid.png
+  - ablation_single_groups.png
+  - ablation_group_pairs.png
+  - ablation_group_triples.png
+  - ablation_orders/*.png
 
 Uses the latest controlnet_*.pth (by mtime) under --checkpoint-dir by default.
 
@@ -12,7 +15,7 @@ Default input layout: ``inference_data/sample`` (flat sim-style: ``cell_mask/``,
 ORION-style trees with ``exp_channels/``, ``features/``, ``he/`` are also supported;
 see ``tools.stage3_tile_pipeline.resolve_data_layout``.
 
-**Reference H&E in figures:** The overview/attention “style” column uses a PNG from
+**Reference H&E in figures:** The overview “style” column uses a PNG from
 ``--reference-he``, or else ``{he_dir}/{tile_id}.png`` when ``he/`` exists (ORION), or
 ``{data-root}/{tile_id}.png`` for flat layouts. If that file is missing, the style
 column is omitted (common for ``inference_data/sample`` without paired H&E tiles).
@@ -64,7 +67,7 @@ def run_vis_suite(
     ablation_ref_label: str = "H&E (style)",
 ) -> None:
     """
-    Run one generation + save overview / attention / ablation.
+    Run one generation + save overview / ablation outputs.
 
     - ``layout_tile_id``: TME channels loaded from ``exp_channels_dir`` for this tile.
     - ``uni_embeds``: Style conditioning (paired: same tile's UNI; unpaired: style tile B).
@@ -76,17 +79,17 @@ def run_vis_suite(
     from pipeline.extract_features import UNI2hExtractor
 
     from tools.stage3_figures import (
+        save_condition_ablation_grid,
         save_enhanced_ablation_grid,
-        save_enhanced_attention_figure,
-        save_enhanced_residual_figure,
         save_loo_ablation_grid,
         save_overview_figure,
-        save_pairwise_ablation_grid,
     )
+    from tools.stage3_ablation import order_slug, reorder_channel_groups
     from tools.stage3_tile_pipeline import (
+        generate_all_progressive_order_ablation_images,
         generate_ablation_images,
+        generate_group_combination_ablation_images,
         generate_loo_ablation,
-        generate_pairwise_ablation,
         generate_tile,
     )
 
@@ -126,6 +129,7 @@ def run_vis_suite(
         raise RuntimeError("vis_data missing")
 
     style_inp = ([(overview_style_label, ref_he)] if ref_he is not None else [])
+    ablation_refs = ([(ablation_ref_section, ablation_ref_label, ref_he)] if ref_he is not None else [])
 
     sim = None
     if disable_cosine:
@@ -160,29 +164,6 @@ def run_vis_suite(
         style_inputs=style_inp,
         cosine_sim_val=sim,
     )
-    save_enhanced_attention_figure(
-        ctrl_full=ctrl_full_np,
-        active_channels=active_channels,
-        gen_np=gen_np,
-        attn_maps=vis_data["attn_maps"],
-        save_path=out_dir / "attention_heatmaps.png",
-        style_inputs=style_inp,
-        residuals=vis_data["residuals"],
-    )
-
-    save_enhanced_residual_figure(
-        ctrl_full=ctrl_full_np,
-        active_channels=active_channels,
-        gen_np=gen_np,
-        residuals=vis_data["residuals"],
-        refs=[],
-        save_path=out_dir / "residual_magnitudes.png",
-    )
-
-    # 2. Debug: save the overview H&E (raw array before figure layout)
-    Image.fromarray(gen_np).save(out_dir / "debug_he_overview.png")
-    print(f"  Debug overview H&E saved → {out_dir / 'debug_he_overview.png'}")
-
     print("  Generating ablation grid...")
     ablation_imgs = generate_ablation_images(
         tile_id=layout_tile_id,
@@ -198,19 +179,16 @@ def run_vis_suite(
     # Pass ctrl_full so the ablation grid also gets the green cell-mask contour overlay.
     save_enhanced_ablation_grid(
         ablation_images=ablation_imgs,
-        refs=[(ablation_ref_section, ablation_ref_label, ref_he)] if ref_he is not None else [],
+        refs=ablation_refs,
         ctrl_full=ctrl_full_np,
         active_channels=active_channels,
         channel_groups=config.channel_groups,
         save_path=out_dir / "ablation_grid.png",
     )
 
-    # 3. Debug: save the ablation "all groups" H&E (last entry = all groups active)
     ablation_all_groups_np = ablation_imgs[-1][1]
-    Image.fromarray(ablation_all_groups_np).save(out_dir / "debug_he_ablation_allgroups.png")
-    print(f"  Debug ablation all-groups H&E saved → {out_dir / 'debug_he_ablation_allgroups.png'}")
 
-    # 4. MSE between overview H&E and ablation all-groups H&E
+    # MSE between overview H&E and ablation all-groups H&E
     mse = float(np.mean((gen_np.astype(np.float32) - ablation_all_groups_np.astype(np.float32)) ** 2))
     print(f"  MSE(overview_he, ablation_all_groups_he) = {mse:.6f}"
           + (" ✓ MATCH" if mse == 0.0 else " ✗ MISMATCH — seed/generation path differs"))
@@ -229,8 +207,73 @@ def run_vis_suite(
     )
     save_loo_ablation_grid(loo_imgs, out_dir / "ablation_loo.png")
 
-    print("  Generating pairwise ablation...")
-    pw_imgs = generate_pairwise_ablation(
+    print("  Generating single-group ablations...")
+    single_group_imgs = generate_group_combination_ablation_images(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        subset_size=1,
+    )
+    save_condition_ablation_grid(
+        single_group_imgs,
+        out_dir / "ablation_single_groups.png",
+        refs=ablation_refs,
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+    )
+
+    print("  Generating group-pair ablations...")
+    pair_group_imgs = generate_group_combination_ablation_images(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        subset_size=2,
+    )
+    save_condition_ablation_grid(
+        pair_group_imgs,
+        out_dir / "ablation_group_pairs.png",
+        refs=ablation_refs,
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+    )
+
+    print("  Generating group-triple ablations...")
+    triple_group_imgs = generate_group_combination_ablation_images(
+        tile_id=layout_tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        subset_size=3,
+    )
+    save_condition_ablation_grid(
+        triple_group_imgs,
+        out_dir / "ablation_group_triples.png",
+        refs=ablation_refs,
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+    )
+
+    print("  Generating progressive order ablations (24 orders)...")
+    order_dir = out_dir / "ablation_orders"
+    order_dir.mkdir(parents=True, exist_ok=True)
+    progressive_orders = generate_all_progressive_order_ablation_images(
         tile_id=layout_tile_id,
         models=models,
         config=config,
@@ -241,7 +284,15 @@ def run_vis_suite(
         guidance_scale=guidance_scale,
         seed=seed,
     )
-    save_pairwise_ablation_grid(pw_imgs, out_dir / "ablation_pairwise.png")
+    for idx, (group_order, order_imgs) in enumerate(progressive_orders, start=1):
+        save_enhanced_ablation_grid(
+            ablation_images=order_imgs,
+            refs=ablation_refs,
+            ctrl_full=ctrl_full_np,
+            active_channels=active_channels,
+            channel_groups=reorder_channel_groups(config.channel_groups, group_order),
+            save_path=order_dir / f"{idx:02d}_{order_slug(group_order)}.png",
+        )
 
     Image.fromarray(gen_np).save(out_dir / "generated_he.png")
     print(f"  Done → {out_dir}")
