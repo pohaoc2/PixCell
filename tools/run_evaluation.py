@@ -38,6 +38,7 @@ from tools.stage3_figures import (
 )
 from tools.stage3_tile_pipeline import (
     generate_ablation_images,
+    generate_channel_ablation_images,
     generate_tile,
     load_all_models,
 )
@@ -134,9 +135,6 @@ def run_one(
         save_path=tile_out / "residuals.png",
     )
 
-    # debug: save raw overview H&E for MSE comparison
-    Image.fromarray(gen_np).save(tile_out / "debug_he_overview.png")
-
     # ablation_grid.png
     ablation_imgs = generate_ablation_images(
         tile_id=tile_id,
@@ -158,12 +156,34 @@ def run_one(
         save_path=tile_out / "ablation_grid.png",
     )
 
-    # debug: save ablation all-groups H&E + compute MSE vs overview
-    ablation_all_np = ablation_imgs[-1][1]
-    Image.fromarray(ablation_all_np).save(tile_out / "debug_he_ablation_allgroups.png")
-    mse = float(np.mean((gen_np.astype(np.float32) - ablation_all_np.astype(np.float32)) ** 2))
-    print(f"    [{mode}] MSE(overview_he, ablation_all_groups_he) = {mse:.6f}"
-          + (" ✓ MATCH" if mse == 0.0 else " ✗ MISMATCH"))
+    # ablation_grid_channels.png (progressive per-channel addition)
+    channel_ablation_imgs = generate_channel_ablation_images(
+        tile_id=tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_ch_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+    )
+    channel_groups_for_plot = [
+        {
+            "name": ch.replace("cell_type_", "").replace("cell_state_", ""),
+            "channels": [ch],
+        }
+        for ch in active_channels
+        if ch != "cell_masks"
+    ]
+    save_enhanced_ablation_grid(
+        ablation_images=channel_ablation_imgs,
+        refs=refs,
+        ctrl_full=ctrl_full,
+        active_channels=active_channels,
+        channel_groups=channel_groups_for_plot,
+        save_path=tile_out / "ablation_grid_channels.png",
+    )
 
     print(f"    [{mode}] saved → {tile_out}"
           + (f"  cos_sim={sim:.4f}" if sim is not None else ""))

@@ -295,6 +295,35 @@ Also writes `metrics.json` with per-tile UNI cosine similarity scores.
 
 Add `--no-metrics` to skip cosine similarity computation (faster, no UNI extractor needed).
 
+### Single-tile visualization + ablation test suite
+
+Generate the full Stage 3 visualization bundle for one tile, including the exhaustive group ablation tests:
+
+```bash
+python tools/generate_stage3_tile_vis.py \
+    --config         configs/config_controlnet_exp.py \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
+    --data-root      data/orion-crc33 \
+    --tile-id        YOUR_TILE_ID \
+    --output-dir     inference_output/YOUR_TILE_ID
+```
+
+Add `--null-uni` for TME-only generation, or pass `--uni-npy /path/to/{tile_id}_uni.npy` and `--reference-he /path/to/reference.png` to override the default style inputs.
+
+Outputs under `{output_dir}/`:
+
+| File | Contents |
+|------|----------|
+| `overview.png` | Input channels, reference style H&E, and generated H&E |
+| `ablation_grid.png` | Default progressive group-addition sweep |
+| `ablation_loo.png` | Leave-one-out group ablation |
+| `ablation_single_groups.png` | 4 standalone single-group tests: cell identity, cell state, vasculature, nutrient |
+| `ablation_group_pairs.png` | All 6 two-group combinations |
+| `ablation_group_triples.png` | All 4 three-group combinations |
+| `ablation_orders/` | 24 progressive addition orders; each figure contains baseline + cumulative additions for one group order |
+
+The exhaustive ablation suite is built from the four Stage 3 groups: `cell_identity`, `cell_state`, `vasculature`, and `microenv` (`nutrient` in figure labels).
+
 For raw batch generation without visualizations:
 
 ```bash
@@ -477,7 +506,7 @@ exp_data_root/
 
 All visualization functions live in `tools/stage3_figures.py`. The inference pipeline helpers (channel loading, model generation, ablation sweeps) are in `tools/stage3_tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
 
-### Ablation grid
+### Ablation tests
 
 4-row figure: generated H&E with input cell mask contour overlay | per-step Δpixel diff maps | TME channel composites for each newly-added group.
 
@@ -499,6 +528,47 @@ save_enhanced_ablation_grid(
 ```
 
 TME composites use semantic colors matching `CELL_TYPE_COLORS` / `CELL_STATE_COLORS`: cancer=red, immune=blue, healthy=green; prolif=yellow, nonprolif=grey, dead=brown; microenv uses additive cyan (O₂) + yellow (glucose) blend.
+
+For the full ablation test suite, the shared generator accepts arbitrary group-condition plans and is reused for single-group, pair, triple, and all-order sweeps:
+
+```python
+from tools.stage3_figures import save_condition_ablation_grid, save_enhanced_ablation_grid
+from tools.stage3_ablation import order_slug, reorder_channel_groups
+from tools.stage3_tile_pipeline import (
+    generate_all_progressive_order_ablation_images,
+    generate_group_combination_ablation_images,
+)
+
+# 4 single-group conditions
+single_group_imgs = generate_group_combination_ablation_images(
+    tile_id, models, config, scheduler, uni_embeds, device, exp_channels_dir,
+    guidance_scale, seed, subset_size=1,
+)
+save_condition_ablation_grid(single_group_imgs, "ablation_single_groups.png")
+
+# 24 progressive addition orders
+for idx, (group_order, order_imgs) in enumerate(
+    generate_all_progressive_order_ablation_images(
+        tile_id, models, config, scheduler, uni_embeds, device, exp_channels_dir,
+        guidance_scale, seed,
+    ),
+    start=1,
+):
+    save_enhanced_ablation_grid(
+        ablation_images=order_imgs,
+        channel_groups=reorder_channel_groups(config.channel_groups, group_order),
+        save_path=f"ablation_orders/{idx:02d}_{order_slug(group_order)}.png",
+    )
+```
+
+Available exhaustive group tests:
+
+| Output | Count | Description |
+|--------|-------|-------------|
+| `ablation_single_groups.png` | `4` | Only one group active at a time |
+| `ablation_group_pairs.png` | `6` | All `4 choose 2` two-group combinations |
+| `ablation_group_triples.png` | `4` | All `4 choose 3` three-group combinations |
+| `ablation_orders/*.png` | `24` | All `4!` progressive addition orders |
 
 ### Per-group residual magnitudes
 
