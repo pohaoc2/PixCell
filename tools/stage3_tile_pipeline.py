@@ -20,7 +20,6 @@ from diffusion.data.datasets.sim_controlnet_dataset import (
 )
 from tools.stage3_ablation import (
     AblationCondition,
-    build_loo_conditions,
     build_progressive_conditions,
     build_progressive_order_conditions,
     build_subset_conditions,
@@ -656,35 +655,6 @@ def generate_channel_ablation_images(
         ablation_images.append((label, gen_np))
 
     return ablation_images
-
-
-def generate_loo_ablation(
-    tile_id: str,
-    models: dict,
-    config,
-    scheduler,
-    uni_embeds: torch.Tensor,
-    device: str,
-    exp_channels_dir: Path,
-    guidance_scale: float,
-    seed: int,
-) -> list[tuple[str, np.ndarray]]:
-    """Leave-one-out ablation: all_groups then all_minus_G for each group G.
-
-    Returns [(label, gen_np), ...] with len = 1 + n_groups, fixed noise seed.
-    """
-    return generate_ablation_images(
-        tile_id=tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=guidance_scale,
-        seed=seed,
-        conditions=build_loo_conditions(group_names_from_channel_groups(config.channel_groups)),
-    )
 
 
 def find_latest_checkpoint_dir(checkpoints_parent: Path) -> Path:

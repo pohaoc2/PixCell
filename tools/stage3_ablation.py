@@ -9,7 +9,7 @@ from itertools import combinations, permutations
 
 
 _GROUP_DISPLAY_NAMES = {
-    "cell_identity": "cell identity",
+    "cell_identity": "cell types",
     "cell_state": "cell state",
     "microenv": "nutrient",
 }
@@ -116,17 +116,4 @@ def build_progressive_order_conditions(
             ),
         )
         for group_order in permutations(group_names)
-    ]
-
-
-def build_loo_conditions(group_names: Sequence[str]) -> list[AblationCondition]:
-    """All-groups reference plus leave-one-out variants."""
-    group_names = tuple(group_names)
-    all_groups = tuple(group_names)
-    return [AblationCondition(label="All groups", active_groups=all_groups)] + [
-        AblationCondition(
-            label=f"-{group_display_name(group_name)}",
-            active_groups=tuple(name for name in group_names if name != group_name),
-        )
-        for group_name in group_names
     ]
