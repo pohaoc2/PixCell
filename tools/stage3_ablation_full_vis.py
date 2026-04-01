@@ -7,6 +7,7 @@ while we iterate on the publication-style design.
 from __future__ import annotations
 
 import argparse
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ if str(ROOT) not in sys.path:
 
 from tools.color_constants import SECTION_BG, SECTION_TEXT
 from tools.stage3_ablation import AblationCondition, build_subset_conditions, group_display_name
+from tools.stage3_ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
 
 _ACTIVE_DOT = "#2b6f52"
 _INACTIVE_EDGE = "#c3ccd3"
@@ -314,21 +316,79 @@ def main() -> None:
         "--cache-dir",
         type=str,
         required=True,
-        help="Directory containing manifest.json and singles/pairs/triples PNG subfolders",
+        help="Single-tile cache (contains manifest.json) or parent of per-tile subdirs "
+        "(each subdir with manifest.json)",
+    )
+    parser.add_argument(
+        "--n-tiles",
+        "--n-tile",
+        type=int,
+        default=None,
+        metavar="N",
+        dest="n_tiles",
+        help="When --cache-dir is a parent: randomly sample N cached tiles (omit to render all)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="RNG seed for --n-tiles sampling (default: 42)",
     )
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Output PNG path (default: {cache-dir}/ablation_group_combinations.png)",
+        help="Output PNG path (single-tile mode only; default: {cache-dir}/ablation_group_combinations.png)",
     )
     args = parser.parse_args()
 
-    save_path = render_cached_subset_ablation_figure(
-        args.cache_dir,
-        save_path=args.output,
+    cache_path = Path(args.cache_dir)
+
+    if is_per_tile_cache_manifest_dir(cache_path):
+        if args.n_tiles is not None:
+            parser.error("--n-tiles only applies when --cache-dir is a parent of per-tile caches")
+        save_path = render_cached_subset_ablation_figure(
+            cache_path,
+            save_path=args.output,
+        )
+        print(f"Rendered combined subset figure → {save_path}")
+        return
+
+    if args.output is not None:
+        parser.error("--output only applies in single-tile mode (manifest directly under --cache-dir)")
+
+    try:
+        cached_ids = list_cached_tile_ids(cache_path)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    if not cached_ids:
+        parser.error(
+            f"no per-tile caches with manifest.json under {cache_path} "
+            f"(expected subdirs like {cache_path}/<tile_id>/manifest.json)"
+        )
+
+    if args.n_tiles is not None:
+        if args.n_tiles < 1:
+            parser.error("--n-tiles must be >= 1")
+        if len(cached_ids) < args.n_tiles:
+            parser.error(
+                f"need at least {args.n_tiles} cached tiles under {cache_path}, found {len(cached_ids)}"
+            )
+        random.seed(args.seed)
+        to_render = random.sample(cached_ids, args.n_tiles)
+    else:
+        to_render = cached_ids
+
+    for tile_id in to_render:
+        tile_cache = cache_path / tile_id
+        save_path = render_cached_subset_ablation_figure(tile_cache)
+        print(f"Rendered combined subset figure → {save_path}")
+    suffix = (
+        f" (sampled {args.n_tiles} of {len(cached_ids)} cached, seed={args.seed})"
+        if args.n_tiles is not None
+        else ""
     )
-    print(f"Rendered combined subset figure → {save_path}")
+    print(f"Done: {len(to_render)} tiles rendered{suffix}.")
 
 
 if __name__ == "__main__":

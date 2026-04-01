@@ -4,11 +4,15 @@ Generate the 14 single/pair/triple Stage 3 ablation images once and cache them a
 
 This is intended for rapid iteration on the combined manuscript-style layout in
 ``tools/stage3_ablation_full_vis.py`` without rerunning diffusion every time.
+
+Default output: ``inference_output/cache/{tile_id}``. Use ``--n-tiles`` to randomly
+sample many tiles from ``--data-root`` (models load once).
 """
 from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -19,9 +23,123 @@ from diffusers import DDPMScheduler
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _list_tile_ids(exp_channels_dir: Path) -> list[str]:
+    mask = exp_channels_dir / "cell_masks"
+    if not mask.is_dir():
+        mask = exp_channels_dir / "cell_mask"
+    if not mask.is_dir():
+        raise FileNotFoundError(
+            f"No cell_masks/ or cell_mask/ under {exp_channels_dir}"
+        )
+    return sorted(p.stem for p in mask.glob("*.png"))
+
+
+def generate_subset_cache_for_tile(
+    tile_id: str,
+    *,
+    cache_dir: Path,
+    models: dict,
+    config,
+    scheduler,
+    exp_channels_dir: Path,
+    feat_dir: Path,
+    device: str,
+    guidance_scale: float,
+    seed: int,
+    null_uni: bool,
+    uni_npy: Path | None,
+) -> Path:
+    from train_scripts.inference_controlnet import null_uni_embed
+
+    from tools.stage3_ablation import group_names_from_channel_groups
+    from tools.stage3_ablation_cache import save_subset_condition_cache
+    from tools.stage3_ablation_full_vis import build_subset_ablation_sections
+    from tools.stage3_tile_pipeline import generate_group_combination_ablation_images, load_exp_channels
+
+    feat_path = Path(uni_npy) if uni_npy is not None else feat_dir / f"{tile_id}_uni.npy"
+    if null_uni or not feat_path.exists():
+        uni_embeds = null_uni_embed(device="cpu", dtype=torch.float32)
+        if not null_uni:
+            print(f"Warning: missing {feat_path}, using null UNI")
+    else:
+        uni_embeds = torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[{tile_id}] Generating single-group cache images...")
+    single_group_imgs = generate_group_combination_ablation_images(
+        tile_id=tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        subset_size=1,
+    )
+
+    print(f"[{tile_id}] Generating pair-group cache images...")
+    pair_group_imgs = generate_group_combination_ablation_images(
+        tile_id=tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        subset_size=2,
+    )
+
+    print(f"[{tile_id}] Generating triple-group cache images...")
+    triple_group_imgs = generate_group_combination_ablation_images(
+        tile_id=tile_id,
+        models=models,
+        config=config,
+        scheduler=scheduler,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        subset_size=3,
+    )
+
+    group_names = group_names_from_channel_groups(config.channel_groups)
+    subset_sections = build_subset_ablation_sections(
+        group_names,
+        single_images=single_group_imgs,
+        pair_images=pair_group_imgs,
+        triple_images=triple_group_imgs,
+    )
+
+    ctrl_full = load_exp_channels(
+        tile_id,
+        config.data.active_channels,
+        config.image_size,
+        exp_channels_dir,
+    )
+    cell_mask = None
+    if "cell_masks" in config.data.active_channels:
+        cell_mask = ctrl_full[config.data.active_channels.index("cell_masks")].numpy()
+
+    manifest_path = save_subset_condition_cache(
+        cache_dir,
+        tile_id=tile_id,
+        group_names=group_names,
+        sections=subset_sections,
+        cell_mask=cell_mask,
+    )
+    print(f"[{tile_id}] Saved subset ablation cache → {manifest_path}")
+    return manifest_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate and cache single/pair/triple Stage 3 ablation PNGs for one tile",
+        description="Generate and cache single/pair/triple Stage 3 ablation PNGs for one or many tiles",
     )
     parser.add_argument("--config", type=str, default=str(ROOT / "configs/config_controlnet_exp.py"))
     parser.add_argument(
@@ -42,17 +160,34 @@ def main() -> None:
         default=None,
         help="Deprecated alias for --data-root (overrides --data-root if set)",
     )
-    parser.add_argument("--tile-id", type=str, required=True)
+    tile_group = parser.add_mutually_exclusive_group(required=True)
+    tile_group.add_argument("--tile-id", type=str, default=None, help="One tile ID from exp_channels")
+    tile_group.add_argument(
+        "--n-tiles",
+        "--n-tile",
+        type=int,
+        default=None,
+        dest="n_tiles",
+        metavar="N",
+        help="Randomly sample N tiles from --data-root and write each under --cache-dir/{tile_id}",
+    )
     parser.add_argument(
         "--cache-dir",
         type=str,
         default=None,
-        help="Cache output directory (default: inference_output/test_combinations/{tile_id})",
+        help="With --tile-id: output dir for that tile (default: inference_output/cache/{tile_id}). "
+        "With --n-tiles: parent directory (default: inference_output/cache).",
     )
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--guidance-scale", type=float, default=2.5)
     parser.add_argument("--num-steps", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42, help="Diffusion / generation seed (per tile)")
+    parser.add_argument(
+        "--tile-sample-seed",
+        type=int,
+        default=42,
+        help="RNG seed when choosing tiles with --n-tiles (default: 42)",
+    )
     parser.add_argument(
         "--null-uni",
         action="store_true",
@@ -62,25 +197,22 @@ def main() -> None:
         "--uni-npy",
         type=str,
         default=None,
-        help="Explicit path to UNI embedding .npy (overrides {feat_dir}/{tile_id}_uni.npy)",
+        help="Explicit path to UNI embedding .npy (single-tile mode only; overrides {feat_dir}/{tile_id}_uni.npy)",
     )
     args = parser.parse_args()
+
+    if args.n_tiles is not None and args.uni_npy is not None:
+        parser.error("--uni-npy is only supported with --tile-id (single tile)")
 
     os.chdir(ROOT)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
     from diffusion.utils.misc import read_config
-    from train_scripts.inference_controlnet import null_uni_embed
 
-    from tools.stage3_ablation import group_names_from_channel_groups
-    from tools.stage3_ablation_cache import save_subset_condition_cache
-    from tools.stage3_ablation_full_vis import build_subset_ablation_sections
     from tools.stage3_tile_pipeline import (
         find_latest_checkpoint_dir,
-        generate_group_combination_ablation_images,
         load_all_models,
-        load_exp_channels,
         resolve_data_layout,
     )
 
@@ -111,89 +243,64 @@ def main() -> None:
     )
     scheduler.set_timesteps(args.num_steps, device=device)
 
-    feat_path = Path(args.uni_npy) if args.uni_npy else feat_dir / f"{args.tile_id}_uni.npy"
-    if args.null_uni or not feat_path.exists():
-        uni_embeds = null_uni_embed(device="cpu", dtype=torch.float32)
-        if not args.null_uni:
-            print(f"Warning: missing {feat_path}, using null UNI")
-    else:
-        uni_embeds = torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
+    cache_parent_default = ROOT / "inference_output" / "cache"
 
-    cache_dir = (
-        Path(args.cache_dir)
-        if args.cache_dir is not None
-        else ROOT / "inference_output" / "test_combinations" / args.tile_id
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    if args.tile_id is not None:
+        cache_dir = (
+            Path(args.cache_dir)
+            if args.cache_dir is not None
+            else cache_parent_default / args.tile_id
+        )
+        uni_override = Path(args.uni_npy) if args.uni_npy else None
+        generate_subset_cache_for_tile(
+            args.tile_id,
+            cache_dir=cache_dir,
+            models=models,
+            config=config,
+            scheduler=scheduler,
+            exp_channels_dir=exp_channels_dir,
+            feat_dir=feat_dir,
+            device=device,
+            guidance_scale=args.guidance_scale,
+            seed=args.seed,
+            null_uni=args.null_uni,
+            uni_npy=uni_override,
+        )
+        return
 
-    print("Generating single-group cache images...")
-    single_group_imgs = generate_group_combination_ablation_images(
-        tile_id=args.tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=args.guidance_scale,
-        seed=args.seed,
-        subset_size=1,
-    )
+    # --n-tiles batch
+    if args.n_tiles < 1:
+        parser.error("--n-tiles must be >= 1")
 
-    print("Generating pair-group cache images...")
-    pair_group_imgs = generate_group_combination_ablation_images(
-        tile_id=args.tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=args.guidance_scale,
-        seed=args.seed,
-        subset_size=2,
-    )
+    all_ids = _list_tile_ids(exp_channels_dir)
+    if len(all_ids) < args.n_tiles:
+        parser.error(
+            f"need at least {args.n_tiles} tiles under {exp_channels_dir}, found {len(all_ids)}"
+        )
 
-    print("Generating triple-group cache images...")
-    triple_group_imgs = generate_group_combination_ablation_images(
-        tile_id=args.tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=args.guidance_scale,
-        seed=args.seed,
-        subset_size=3,
+    random.seed(args.tile_sample_seed)
+    selected = random.sample(all_ids, args.n_tiles)
+    cache_parent = Path(args.cache_dir) if args.cache_dir is not None else cache_parent_default
+    print(
+        f"Sampled {args.n_tiles} tiles (tile_sample_seed={args.tile_sample_seed}): {selected}"
     )
 
-    group_names = group_names_from_channel_groups(config.channel_groups)
-    subset_sections = build_subset_ablation_sections(
-        group_names,
-        single_images=single_group_imgs,
-        pair_images=pair_group_imgs,
-        triple_images=triple_group_imgs,
-    )
-
-    ctrl_full = load_exp_channels(
-        args.tile_id,
-        config.data.active_channels,
-        config.image_size,
-        exp_channels_dir,
-    )
-    cell_mask = None
-    if "cell_masks" in config.data.active_channels:
-        cell_mask = ctrl_full[config.data.active_channels.index("cell_masks")].numpy()
-
-    manifest_path = save_subset_condition_cache(
-        cache_dir,
-        tile_id=args.tile_id,
-        group_names=group_names,
-        sections=subset_sections,
-        cell_mask=cell_mask,
-    )
-    print(f"Saved subset ablation cache → {manifest_path}")
+    for tile_id in selected:
+        cache_dir = cache_parent / tile_id
+        generate_subset_cache_for_tile(
+            tile_id,
+            cache_dir=cache_dir,
+            models=models,
+            config=config,
+            scheduler=scheduler,
+            exp_channels_dir=exp_channels_dir,
+            feat_dir=feat_dir,
+            device=device,
+            guidance_scale=args.guidance_scale,
+            seed=args.seed,
+            null_uni=args.null_uni,
+            uni_npy=None,
+        )
 
 
 if __name__ == "__main__":
