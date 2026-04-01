@@ -214,7 +214,7 @@ Cell mask latent  [B, 16, 32, 32]
         │    TME Channel Groups (per group, independently):
         │
         │    ┌─────────────────────────────────────────────────────────┐
-        │    │  GROUP: cell_identity   [B, 3, 256, 256]                │
+        │    │  GROUP: cell_types   [B, 3, 256, 256]                │
         │    │  (cell_type_healthy, cell_type_cancer, cell_type_immune) │
         │    │          │                                               │
         │    │          ▼                                               │
@@ -227,7 +227,7 @@ Cell mask latent  [B, 16, 32, 32]
         │    │  CrossAttentionWithWeights                               │
         │    │    Q (mask) × K,V (group)  ──►  delta [B, 1024, 16]    │
         │    │                                                          │
-        │    │  Δ_cell_identity  [B, 16, 32, 32]                       │
+        │    │  Δ_cell_types  [B, 16, 32, 32]                       │
         │    └─────────────────────────────────────────────────────────┘
         │
         │    ┌─────────────────────────────────────────────────────────┐
@@ -258,7 +258,7 @@ Cell mask latent  [B, 16, 32, 32]
   ──► ControlNet conditioning input
 
 Group dropout during training (prevents collapse):
-  cell_identity: 10%   cell_state: 10%
+  cell_types: 10%   cell_state: 10%
   vasculature:   15%   microenv:   20%
 ```
 
@@ -373,7 +373,7 @@ Inference (cfg_scale=2.5, 20 DDPM steps):
 
 ```bash
 # Use only cell identity + vasculature
-python stage3_inference.py --active-groups cell_identity vasculature
+python stage3_inference.py --active-groups cell_types vasculature
 
 # Drop microenvironment channels
 python stage3_inference.py --drop-groups microenv

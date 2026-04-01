@@ -103,7 +103,7 @@ def test_cfg_dropout_batch_independence():
 def _make_tme_module():
     from diffusion.model.nets.multi_group_tme import MultiGroupTMEModule
     channel_groups = [
-        dict(name="cell_identity", n_channels=3),
+        dict(name="cell_types", n_channels=3),
         dict(name="cell_state",    n_channels=3),
         dict(name="vasculature",   n_channels=1),
         dict(name="microenv",      n_channels=2),
@@ -155,7 +155,7 @@ def test_build_tme_creates_split_optimizer_when_proj_lr_set():
         tme_proj_lr=3e-4,
         tme_lr=1e-5,
         channel_groups=[
-            dict(name="cell_identity", channels=["a", "b", "c"]),
+            dict(name="cell_types", channels=["a", "b", "c"]),
             dict(name="microenv",      channels=["x", "y"]),
         ],
         optimizer={"type": "AdamW", "lr": 5e-6, "weight_decay": 0.0,

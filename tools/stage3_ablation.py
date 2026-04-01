@@ -9,7 +9,7 @@ from itertools import combinations, permutations
 
 
 _GROUP_DISPLAY_NAMES = {
-    "cell_identity": "cell types",
+    "cell_types": "cell types",
     "cell_state": "cell state",
     "microenv": "nutrient",
 }
