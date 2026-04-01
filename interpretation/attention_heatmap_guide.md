@@ -2,7 +2,7 @@
 
 ## What the heatmaps show
 
-Each heatmap corresponds to one TME group (cell_identity, cell_state, vasculature, microenv).
+Each heatmap corresponds to one TME group (cell_types, cell_state, vasculature, microenv).
 They are generated from the `MultiGroupTMEModule` cross-attention weights at inference time.
 
 ### Architecture recap
@@ -30,7 +30,7 @@ by the cell mask as a whole?"
 
 ## Per-group biological interpretation
 
-### `cell_identity` (healthy / cancer / immune)
+### `cell_types` (healthy / cancer / immune)
 - Attention concentrates where cells exist in the mask — correct behavior.
 - Clean, spatially coherent blobs matching cell positions.
 - Healthiest signal of all four groups.

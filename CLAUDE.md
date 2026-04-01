@@ -15,7 +15,7 @@
 
 - Frozen pieces: base PixCell-256 transformer, SD3.5 VAE, and UNI-2h encoder.
 - Trainable pieces: ControlNet + `MultiGroupTMEModule` in `diffusion/model/nets/multi_group_tme.py`.
-- Channel groups: `cell_identity` (healthy/cancer/immune), `cell_state` (prolif/nonprolif/dead), `vasculature`, `microenv` (oxygen/glucose).
+- Channel groups: `cell_types` (healthy/cancer/immune), `cell_state` (prolif/nonprolif/dead), `vasculature`, `microenv` (oxygen/glucose).
 - Each group has its own CNN encoder + cross-attention; outputs are zero-init additive residuals.
 - `zero_mask_latent=True` (post-TME): TME uses real mask latent for spatial Q, then subtracts — `fused = tme(vae_mask) - vae_mask`. Closes bypass path, preserves spatial structure. Must be applied post-TME in train, inference, and all pipeline helpers.
 - `cfg_dropout_prob=0.15` zeros UNI embeddings during training, enabling TME-only inference.

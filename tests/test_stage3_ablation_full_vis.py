@@ -13,7 +13,7 @@ def _fake_images(count: int) -> list[tuple[str, np.ndarray]]:
 def test_build_subset_ablation_sections_matches_expected_counts():
     from tools.stage3_ablation_full_vis import build_subset_ablation_sections
 
-    group_names = ("cell_identity", "cell_state", "vasculature", "microenv")
+    group_names = ("cell_types", "cell_state", "vasculature", "microenv")
     sections = build_subset_ablation_sections(
         group_names,
         single_images=_fake_images(4),
@@ -28,7 +28,7 @@ def test_build_subset_ablation_sections_matches_expected_counts():
     ]
     assert [len(section.conditions) for section in sections] == [4, 6, 4]
     assert [len(section.images) for section in sections] == [4, 6, 4]
-    assert sections[0].conditions[0].active_groups == ("cell_identity",)
+    assert sections[0].conditions[0].active_groups == ("cell_types",)
     assert sections[1].conditions[-1].active_groups == ("vasculature", "microenv")
 
 
@@ -38,7 +38,7 @@ def test_save_condition_matrix_ablation_grid_writes_png(tmp_path):
         save_condition_matrix_ablation_grid,
     )
 
-    group_names = ("cell_identity", "cell_state", "vasculature", "microenv")
+    group_names = ("cell_types", "cell_state", "vasculature", "microenv")
     sections = build_subset_ablation_sections(
         group_names,
         single_images=_fake_images(4),
@@ -70,7 +70,7 @@ def test_cached_subset_roundtrip_renders_combined_figure(tmp_path):
         render_cached_subset_ablation_figure,
     )
 
-    group_names = ("cell_identity", "cell_state", "vasculature", "microenv")
+    group_names = ("cell_types", "cell_state", "vasculature", "microenv")
     sections = build_subset_ablation_sections(
         group_names,
         single_images=_fake_images(4),

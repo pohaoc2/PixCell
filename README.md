@@ -170,7 +170,7 @@ The TME conditioning uses a **Multi-Group architecture** where each channel grou
 
 | Group | Channels | Nature |
 |-------|----------|--------|
-| `cell_identity` | `cell_type_healthy`, `cell_type_cancer`, `cell_type_immune` | One-hot (CODEX) |
+| `cell_types` | `cell_type_healthy`, `cell_type_cancer`, `cell_type_immune` | One-hot (CODEX) |
 | `cell_state` | `cell_state_prolif`, `cell_state_nonprolif`, `cell_state_dead` | One-hot (CODEX) |
 | `vasculature` | `vasculature` | Continuous (CD31) |
 | `microenv` | `oxygen`, `glucose` | Continuous (PDE-derived) |
@@ -204,7 +204,7 @@ Key training knobs:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `cfg_dropout_prob` | `0.15` | Fraction of steps where UNI embedding is zeroed (enables TME-only inference) |
-| `group_dropout_probs` | `{cell_identity: 0.10, cell_state: 0.10, vasculature: 0.15, microenv: 0.20}` | Per-group dropout rates during training |
+| `group_dropout_probs` | `{cell_types: 0.10, cell_state: 0.10, vasculature: 0.15, microenv: 0.20}` | Per-group dropout rates during training |
 | `tme_lr` | `1e-5` | TME module learning rate |
 | `num_epochs` | `200` | Training epochs |
 | `save_model_steps` | `10000` | Checkpoint every N steps |
@@ -321,7 +321,7 @@ Outputs under `{output_dir}/`:
 | `ablation_group_triples.png` | All 4 three-group combinations |
 | `ablation_orders/` | 24 progressive addition orders; each figure contains baseline + cumulative additions for one group order |
 
-The exhaustive ablation suite is built from the four Stage 3 groups: `cell_identity`, `cell_state`, `vasculature`, and `microenv` (`nutrient` in figure labels).
+The exhaustive ablation suite is built from the four Stage 3 groups: `cell_types`, `cell_state`, `vasculature`, and `microenv` (`nutrient` in figure labels).
 
 For fast iteration on the combined manuscript-style subset layout, use the separate cache-based workflow:
 
@@ -360,7 +360,7 @@ python stage3_inference.py \
     --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/step_XXXXXXX \
     --sim-channels-dir /path/to/sim_channels \
     --sim-id sim_0001 \
-    --active-groups cell_identity vasculature \
+    --active-groups cell_types vasculature \
     --output generated_he.png
 
 # Exclude microenvironment channels (O₂/glucose)
@@ -381,7 +381,7 @@ python stage3_inference.py \
 | `--n-tiles` | all | Max tiles in batch mode |
 | `--reference-he` | — | Reference H&E image for style conditioning |
 | `--reference-uni` | — | Precomputed UNI `.npy` (skips extraction) |
-| `--active-groups` | all | TME groups to include (e.g., `cell_identity vasculature`) |
+| `--active-groups` | all | TME groups to include (e.g., `cell_types vasculature`) |
 | `--drop-groups` | none | TME groups to exclude (e.g., `microenv`) |
 | `--guidance-scale` | `2.5` | CFG guidance scale |
 | `--num-steps` | `20` | Denoising steps |
@@ -475,9 +475,9 @@ Std cosine sim:   0.032
 | Channel | Group | Source | Type |
 |---------|-------|--------|------|
 | `cell_mask` | *(always present)* | Cell segmentation | Binary |
-| `cell_type_healthy` | `cell_identity` | CODEX multi-protein panel | Binary one-hot |
-| `cell_type_cancer` | `cell_identity` | CODEX multi-protein panel | Binary one-hot |
-| `cell_type_immune` | `cell_identity` | CODEX multi-protein panel | Binary one-hot |
+| `cell_type_healthy` | `cell_types` | CODEX multi-protein panel | Binary one-hot |
+| `cell_type_cancer` | `cell_types` | CODEX multi-protein panel | Binary one-hot |
+| `cell_type_immune` | `cell_types` | CODEX multi-protein panel | Binary one-hot |
 | `cell_state_prolif` | `cell_state` | CODEX multi-protein panel | Binary one-hot |
 | `cell_state_nonprolif` | `cell_state` | CODEX multi-protein panel | Binary one-hot |
 | `cell_state_dead` | `cell_state` | CODEX multi-protein panel | Binary one-hot |

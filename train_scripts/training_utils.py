@@ -11,6 +11,9 @@ Used by stage2_train.py (paired experimental training).
 from copy import deepcopy
 
 import torch
+from diffusion.utils.tme_checkpoint_key_remap import (
+    remap_tme_state_dict_cell_identity_to_cell_types,
+)
 from diffusion.model.builder import build_model
 from diffusion.utils.checkpoint import save_checkpoint
 from diffusion.utils.lr_scheduler import build_lr_scheduler
@@ -195,7 +198,8 @@ def load_tme_checkpoint(ckpt_dir, tme_module, optimizer_tme=None,
                         lr_scheduler_tme=None, device="cpu"):
     """Load TME module weights (+ optionally optimizer/scheduler) from checkpoint."""
     ckpt = torch.load(os.path.join(ckpt_dir, "tme_module.pth"), map_location=device)
-    tme_module.load_state_dict(ckpt["model_state"])
+    model_state = remap_tme_state_dict_cell_identity_to_cell_types(ckpt["model_state"])
+    tme_module.load_state_dict(model_state)
     if optimizer_tme is not None:
         optimizer_tme.load_state_dict(ckpt["optim_state"])
     if lr_scheduler_tme is not None:
