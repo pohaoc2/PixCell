@@ -44,7 +44,7 @@ exp_data_root = f"{root}/data/orion-crc33"
 # Channel Groups — per-group TME encoder + cross-attention
 # =====================================================================
 channel_groups = [
-    dict(name="cell_identity", channels=["cell_type_healthy", "cell_type_cancer", "cell_type_immune"]),
+    dict(name="cell_types", channels=["cell_type_healthy", "cell_type_cancer", "cell_type_immune"]),
     dict(name="cell_state",    channels=["cell_state_prolif", "cell_state_nonprolif", "cell_state_dead"]),
     dict(name="vasculature",   channels=["vasculature"]),
     dict(name="microenv",      channels=["oxygen", "glucose"]),
@@ -68,7 +68,7 @@ reset_tme_optimizer = True
 cfg_dropout_prob = 0.15
 
 group_dropout_probs = dict(
-    cell_identity=0.10,
+    cell_types=0.10,
     cell_state=0.10,
     vasculature=0.15,
     microenv=0.20,

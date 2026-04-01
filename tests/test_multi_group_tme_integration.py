@@ -78,7 +78,7 @@ class TestMultiGroupIntegration(unittest.TestCase):
         self.assertEqual(fused.shape, (B, 16, 32, 32))
         self.assertEqual(len(residuals), 4)
         self.assertEqual(len(attn_maps), 4)
-        for name in ["cell_identity", "cell_state", "vasculature", "microenv"]:
+        for name in ["cell_types", "cell_state", "vasculature", "microenv"]:
             self.assertEqual(residuals[name].shape, (B, 16, 32, 32))
             self.assertEqual(attn_maps[name].shape, (B, 4, 1024, 1024))
 

@@ -341,7 +341,7 @@ def main():
         nargs="*",
         default=None,
         help="TME groups to include (default: all). "
-        "e.g., --active-groups cell_identity vasculature",
+        "e.g., --active-groups cell_types vasculature",
     )
     parser.add_argument(
         "--drop-groups",

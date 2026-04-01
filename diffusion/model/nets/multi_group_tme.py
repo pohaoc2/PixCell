@@ -1,7 +1,7 @@
 """
 multi_group_tme.py — Per-group TME conditioning with additive residuals.
 
-Each channel group (cell_identity, cell_state, vasculature, microenv) gets:
+Each channel group (cell_types, cell_state, vasculature, microenv) gets:
   1. Its own TMEEncoder CNN: [B, n_ch, 256, 256] → [B, 16, 32, 32]
   2. Its own CrossAttentionWithWeights: Q=mask_latent, KV=group_latent → Δ_group
 

@@ -123,7 +123,7 @@ def _make_four_group_config(zero_mask_latent: bool = False):
         image_size=32,
         channel_groups=[
             {
-                "name": "cell_identity",
+                "name": "cell_types",
                 "channels": ["cell_type_healthy", "cell_type_cancer", "cell_type_immune"],
             },
             {
@@ -223,7 +223,7 @@ def test_generate_tile_zero_mask_latent_off(tmp_path):
 def test_group_ablation_plan_counts_cover_requested_full_suite():
     from tools.stage3_ablation import build_progressive_order_conditions, build_subset_conditions
 
-    group_names = ("cell_identity", "cell_state", "vasculature", "microenv")
+    group_names = ("cell_types", "cell_state", "vasculature", "microenv")
 
     singles = build_subset_conditions(group_names, subset_size=1)
     pairs = build_subset_conditions(group_names, subset_size=2)
@@ -281,7 +281,7 @@ def test_generate_ablation_images_respects_requested_group_conditions(tmp_path):
         for group in config.channel_groups
     }
     conditions = [
-        AblationCondition(label="identity only", active_groups=("cell_identity",)),
+        AblationCondition(label="identity only", active_groups=("cell_types",)),
         AblationCondition(label="state + nutrient", active_groups=("cell_state", "microenv")),
     ]
 
@@ -304,7 +304,7 @@ def test_generate_ablation_images_respects_requested_group_conditions(tmp_path):
 
     assert [label for label, _ in results] == ["identity only", "state + nutrient"]
     assert fake_tme.active_groups_seen == [
-        ("cell_identity",),
+        ("cell_types",),
         ("cell_state", "microenv"),
     ]
     assert len(captured) == 2
