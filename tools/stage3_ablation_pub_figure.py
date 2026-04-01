@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.stage3_ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
 from tools.stage3_ablation_vis_utils import (
     FOUR_GROUP_ORDER,
     build_exp_channel_header_rgb,
@@ -472,9 +473,59 @@ def render_ablation_pub_figure(
     return out_png
 
 
+def _render_pub_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> None:
+    """Render PNG/PDF for one tile cache directory (manifest.json at this level)."""
+    cache_dir = cache_dir.resolve()
+    manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
+    tile_id = str(manifest["tile_id"])
+
+    orion_root = args.orion_root.resolve()
+    exp_channels_dir = args.exp_channels_dir
+    if exp_channels_dir is None:
+        exp_channels_dir = orion_root / "exp_channels"
+    else:
+        exp_channels_dir = Path(exp_channels_dir).resolve()
+
+    if not exp_channels_dir.is_dir():
+        print(
+            f"Warning: exp_channels not found: {exp_channels_dir} — header panels may be placeholders.",
+            file=sys.stderr,
+        )
+
+    out_png = cache_dir / f"{args.output_name}.png"
+    out_pdf = cache_dir / f"{args.output_name}.pdf"
+
+    render_ablation_pub_figure(
+        cache_dir,
+        exp_channels_dir=exp_channels_dir,
+        tile_id=tile_id,
+        orion_root=orion_root,
+        out_png=out_png,
+        out_pdf=out_pdf,
+        dpi=args.dpi,
+        header_thumbnail_res=args.header_res,
+        auto_cosine=not args.no_auto_cosine,
+        uni_model=args.uni_model,
+        device=args.device,
+        reference_uni=args.reference_uni,
+        reference_he=args.reference_he,
+    )
+    print(f"Wrote {out_png}")
+    print(f"Wrote {out_pdf}")
+    print(f"(Reference UNI cache: {default_orion_uni_npy_path(orion_root, tile_id)})")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render ablation publication figure from cache.")
-    parser.add_argument("--cache-dir", type=Path, required=True)
+    parser = argparse.ArgumentParser(
+        description="Render ablation publication figure from cache. "
+        "Pass a single-tile cache dir or a parent dir of per-tile caches.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        required=True,
+        help="Directory with manifest.json, or parent of per-tile subdirs (each with manifest.json)",
+    )
     parser.add_argument(
         "--orion-root",
         type=Path,
@@ -521,44 +572,23 @@ def main() -> None:
     parser.add_argument("--reference-he", type=Path, default=None, help="Reference H&E if no .npy")
     args = parser.parse_args()
 
-    cache_dir = args.cache_dir.resolve()
-    manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
-    tile_id = str(manifest["tile_id"])
+    cache_path = args.cache_dir.resolve()
+    if is_per_tile_cache_manifest_dir(cache_path):
+        _render_pub_for_cache_dir(cache_path, args)
+        return
 
-    orion_root = args.orion_root.resolve()
-    exp_channels_dir = args.exp_channels_dir
-    if exp_channels_dir is None:
-        exp_channels_dir = orion_root / "exp_channels"
-    else:
-        exp_channels_dir = Path(exp_channels_dir).resolve()
-
-    if not exp_channels_dir.is_dir():
-        print(
-            f"Warning: exp_channels not found: {exp_channels_dir} — header panels may be placeholders.",
-            file=sys.stderr,
+    try:
+        cached_ids = list_cached_tile_ids(cache_path)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    if not cached_ids:
+        parser.error(
+            f"no per-tile caches with manifest.json under {cache_path} "
+            f"(expected subdirs like {cache_path}/<tile_id>/manifest.json)"
         )
 
-    out_png = cache_dir / f"{args.output_name}.png"
-    out_pdf = cache_dir / f"{args.output_name}.pdf"
-
-    render_ablation_pub_figure(
-        cache_dir,
-        exp_channels_dir=exp_channels_dir,
-        tile_id=tile_id,
-        orion_root=orion_root,
-        out_png=out_png,
-        out_pdf=out_pdf,
-        dpi=args.dpi,
-        header_thumbnail_res=args.header_res,
-        auto_cosine=not args.no_auto_cosine,
-        uni_model=args.uni_model,
-        device=args.device,
-        reference_uni=args.reference_uni,
-        reference_he=args.reference_he,
-    )
-    print(f"Wrote {out_png}")
-    print(f"Wrote {out_pdf}")
-    print(f"(Reference UNI cache: {default_orion_uni_npy_path(orion_root, tile_id)})")
+    for tile_name in cached_ids:
+        _render_pub_for_cache_dir(cache_path / tile_name, args)
 
 
 if __name__ == "__main__":

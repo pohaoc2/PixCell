@@ -165,3 +165,20 @@ def load_subset_condition_cache(cache_dir: str | Path) -> dict:
         "sections": sections,
         "cell_mask": cell_mask,
     }
+
+
+def list_cached_tile_ids(cache_parent: Path) -> list[str]:
+    """Tile IDs: immediate subdirs of ``cache_parent`` that contain ``manifest.json``."""
+    cache_parent = Path(cache_parent)
+    if not cache_parent.is_dir():
+        raise FileNotFoundError(f"cache directory not found: {cache_parent}")
+    return sorted(
+        p.name
+        for p in cache_parent.iterdir()
+        if p.is_dir() and (p / "manifest.json").is_file()
+    )
+
+
+def is_per_tile_cache_manifest_dir(cache_dir: Path) -> bool:
+    """True if ``cache_dir`` is a single-tile cache (``manifest.json`` at this level)."""
+    return (Path(cache_dir) / "manifest.json").is_file()
