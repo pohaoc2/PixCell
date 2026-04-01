@@ -81,7 +81,6 @@ def run_vis_suite(
     from tools.stage3_figures import (
         save_condition_ablation_grid,
         save_enhanced_ablation_grid,
-        save_loo_ablation_grid,
         save_overview_figure,
     )
     from tools.stage3_ablation import order_slug, reorder_channel_groups
@@ -89,7 +88,6 @@ def run_vis_suite(
         generate_all_progressive_order_ablation_images,
         generate_ablation_images,
         generate_group_combination_ablation_images,
-        generate_loo_ablation,
         generate_tile,
     )
 
@@ -192,20 +190,6 @@ def run_vis_suite(
     mse = float(np.mean((gen_np.astype(np.float32) - ablation_all_groups_np.astype(np.float32)) ** 2))
     print(f"  MSE(overview_he, ablation_all_groups_he) = {mse:.6f}"
           + (" ✓ MATCH" if mse == 0.0 else " ✗ MISMATCH — seed/generation path differs"))
-
-    print("  Generating LOO ablation...")
-    loo_imgs = generate_loo_ablation(
-        tile_id=layout_tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=guidance_scale,
-        seed=seed,
-    )
-    save_loo_ablation_grid(loo_imgs, out_dir / "ablation_loo.png")
 
     print("  Generating single-group ablations...")
     single_group_imgs = generate_group_combination_ablation_images(
