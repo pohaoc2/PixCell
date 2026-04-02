@@ -20,6 +20,7 @@ _SUBSET_DIR_NAMES = {
     1: "singles",
     2: "pairs",
     3: "triples",
+    4: "all",
 }
 
 
