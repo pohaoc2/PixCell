@@ -32,6 +32,23 @@ def test_build_subset_ablation_sections_matches_expected_counts():
     assert sections[1].conditions[-1].active_groups == ("vasculature", "microenv")
 
 
+def test_build_subset_ablation_sections_includes_all_four_when_requested():
+    from tools.stage3_ablation_full_vis import build_subset_ablation_sections
+
+    group_names = ("cell_types", "cell_state", "vasculature", "microenv")
+    sections = build_subset_ablation_sections(
+        group_names,
+        single_images=_fake_images(4),
+        pair_images=_fake_images(6),
+        triple_images=_fake_images(4),
+        all_four_images=_fake_images(1),
+    )
+    assert len(sections) == 4
+    assert sections[-1].title == "4 active groups"
+    assert len(sections[-1].conditions) == 1
+    assert len(sections[-1].images) == 1
+
+
 def test_save_condition_matrix_ablation_grid_writes_png(tmp_path):
     from tools.stage3_ablation_full_vis import (
         build_subset_ablation_sections,
