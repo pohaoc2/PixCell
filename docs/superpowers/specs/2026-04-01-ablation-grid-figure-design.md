@@ -118,16 +118,24 @@ Each column in the GridSpec holds four row-slots: dots, image, cosine bar, label
 | Source | Path | Notes |
 |---|---|---|
 | Manifest | `<cache_dir>/manifest.json` | 14 ablation conditions + cell mask path |
-| Cosine scores | `<cache_dir>/uni_cosine_scores.json` | `per_condition` dict; falls back to RGB pixel cosine |
-| All-4-ch image | `<cache_dir>/all4ch/<tile_id>.png` **or** `<all4ch_dir>/<tile_id>.png` | Passed via `--all4ch-image` arg; **required** |
-| Real H&E | `<orion_root>/he/<tile_id>.png` | Falls back to `he_tiles/`; **required** |
+| All-4-ch image | `<cache_dir>/all/<tile_id>.png` | Fixed path inside cache dir; **required** |
+| Real H&E | `<orion_root>/he/<tile_id>.png` | **Required** |
+| Real H&E UNI features | `data/features/<tile_id>_uni.npy` | Cached reference embedding for cosine computation |
 | Cell mask | path from manifest `cell_mask_path` | Optional; lime contour overlay if present |
 
 ### All-4-ch condition
 
-The existing ablation cache only stores 14 subset conditions. All-4-ch must be run separately (all four channel groups active) and the generated PNG passed via CLI. The script inserts it into the sorted grid alongside the 14 ablation conditions. Its cosine score is read from `uni_cosine_scores.json` under key `"cell_types+cell_state+vasculature+microenv"` (canonical key via `condition_metric_key`).
+The ablation cache stores 14 subset conditions (1-ch through 3-ch). The All-4-ch run is saved separately at `<cache_dir>/all/<tile_id>.png`. The script loads it from that fixed path and inserts it into the sorted grid alongside the 14 ablation conditions.
 
-If `--all4ch-image` is not provided, the cell is skipped and only 15 cells are shown (grid becomes 3×5 or padded).
+### Cosine similarity computation
+
+For each generated image (14 ablation + All-4-ch = 15 total):
+1. Extract UNI-2h features from the generated H&E PNG using the UNI encoder.
+2. Compute cosine similarity against the cached real H&E UNI features at `data/features/<tile_id>_uni.npy`.
+
+Results are cached to `<cache_dir>/uni_cosine_scores.json` (`per_condition` dict keyed by `condition_metric_key`). On subsequent runs the script reads the JSON directly and skips re-extraction.
+
+Real H&E has no cosine score (it is the reference); its cell always occupies position [3, 3].
 
 ---
 
