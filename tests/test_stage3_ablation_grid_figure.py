@@ -24,8 +24,8 @@ def test_cardinality_color_all_four():
 def test_condition_label_single():
     assert _condition_label(("cell_types",)) == "CT"
     assert _condition_label(("cell_state",)) == "CS"
-    assert _condition_label(("vasculature",)) == "Va"
-    assert _condition_label(("microenv",)) == "Nu"
+    assert _condition_label(("vasculature",)) == "Vas"
+    assert _condition_label(("microenv",)) == "Env"
 
 
 def test_condition_label_multi_follows_four_group_order():
@@ -34,11 +34,11 @@ def test_condition_label_multi_follows_four_group_order():
 
 
 def test_condition_label_three():
-    assert _condition_label(("cell_types", "cell_state", "microenv")) == "CT+CS+Nu"
+    assert _condition_label(("cell_types", "cell_state", "microenv")) == "CT+CS+Env"
 
 
 def test_condition_label_all_four():
-    assert _condition_label(FOUR_GROUP_ORDER) == "CT+CS+Va+Nu"
+    assert _condition_label(FOUR_GROUP_ORDER) == "CT+CS+Vas+Env"
 
 
 from tools.stage3_ablation_grid_figure import _sort_conditions_by_cosine

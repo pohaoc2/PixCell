@@ -4,7 +4,7 @@
 Reads ``manifest.json`` (14 ablation conditions) plus a separately supplied All-4-ch image.
 Cosine scores are loaded from ``uni_cosine_scores.json`` or auto-computed via UNI-2h.
 
-Outputs ``<cache_dir>/ablation_grid.png`` (and optionally ``.pdf``).
+Outputs ``<cache_dir>/ablation_grid.png``.
 """
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ BEST_BG = "#FFFBE6"
 _GROUP_SHORT: dict[str, str] = {
     "cell_types": "CT",
     "cell_state": "CS",
-    "vasculature": "Va",
-    "microenv": "Nu",
+    "vasculature": "Vas",
+    "microenv": "Env",
 }
 
 ALL4CH_KEY: str = condition_metric_key(FOUR_GROUP_ORDER)
@@ -115,15 +115,34 @@ def _compute_image_cosine(
     ref_npy: Path,
     uni_model: Path,
     device: str,
+    *,
+    feat_cache_dir: Path | None = None,
 ) -> float:
-    """Extract UNI-2h embedding from one image and cosine-sim vs reference npy."""
-    from pipeline.extract_features import UNI2hExtractor
+    """Extract UNI-2h embedding from one image and cosine-sim vs reference npy.
+
+    If *feat_cache_dir* is given, the embedding is loaded from
+    ``<feat_cache_dir>/<img_path.stem>_uni.npy`` when present; otherwise it is
+    computed and saved there for future runs.
+    """
     from tools.uni_cosine_similarity import cosine_similarity_uni, flatten_uni_npy
 
-    extractor = UNI2hExtractor(model_path=str(uni_model), device=device)
     ref_emb = flatten_uni_npy(np.load(ref_npy))
-    img = Image.open(img_path).convert("RGB")
-    gen_emb = np.asarray(extractor.extract(img), dtype=np.float64).ravel()
+
+    feat_path: Path | None = None
+    if feat_cache_dir is not None:
+        feat_path = Path(feat_cache_dir) / f"{img_path.stem}_uni.npy"
+
+    if feat_path is not None and feat_path.is_file():
+        gen_emb = np.load(feat_path).astype(np.float64).ravel()
+    else:
+        from pipeline.extract_features import UNI2hExtractor
+        extractor = UNI2hExtractor(model_path=str(uni_model), device=device)
+        img = Image.open(img_path).convert("RGB")
+        gen_emb = np.asarray(extractor.extract(img), dtype=np.float64).ravel()
+        if feat_path is not None:
+            feat_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(feat_path, gen_emb)
+
     return float(cosine_similarity_uni(ref_emb, gen_emb))
 
 
@@ -166,24 +185,90 @@ def _load_grid_cosine_scores(
         ref_npy = orion_root / "features" / f"{tile_id}_uni.npy"
         if ref_npy.is_file():
             try:
-                scores[ALL4CH_KEY] = _compute_image_cosine(all4ch_image, ref_npy, uni_model, device)
+                scores[ALL4CH_KEY] = _compute_image_cosine(
+                    all4ch_image, ref_npy, uni_model, device,
+                    feat_cache_dir=cache_dir / "features" / "all",
+                )
             except Exception as exc:
                 print(f"Note: All-4-ch cosine failed ({exc})", file=sys.stderr)
+
+    if auto_cosine:
+        _cache_missing_manifest_features(cache_dir, uni_model=uni_model, device=device)
 
     return scores
 
 
-def _draw_dot_row(ax, cond: tuple[str, ...], color: str) -> None:
-    """Draw 4 channel indicator dots (filled = active, hollow = inactive)."""
-    ax.set_xlim(-0.5, 3.5)
-    ax.set_ylim(-0.5, 0.5)
+def _cache_missing_manifest_features(
+    cache_dir: Path,
+    *,
+    uni_model: Path,
+    device: str,
+) -> None:
+    """Ensure UNI embeddings exist for every manifest image under ``features/``.
+
+    Mirrors the image sub-path: ``singles/cell_types/generated_he.png`` →
+    ``features/singles/cell_types/generated_he_uni.npy``.  Loads the UNI
+    model only when at least one file is missing; does nothing otherwise.
+    """
+    manifest_path = cache_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    missing: list[tuple[Path, Path]] = []
+    for section in manifest.get("sections", []):
+        for entry in section.get("entries", []):
+            img_rel = Path(entry["image_path"])
+            feat_path = (
+                cache_dir / "features" / img_rel.parent / (img_rel.stem + "_uni.npy")
+            )
+            if not feat_path.is_file():
+                missing.append((cache_dir / img_rel, feat_path))
+    if not missing:
+        return
+    try:
+        from pipeline.extract_features import UNI2hExtractor
+        extractor = UNI2hExtractor(model_path=str(uni_model), device=device)
+        for img_path, feat_path in missing:
+            img = Image.open(img_path).convert("RGB")
+            emb = np.asarray(extractor.extract(img), dtype=np.float64).ravel()
+            feat_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(feat_path, emb)
+    except Exception as exc:
+        print(f"Note: manifest feature caching failed ({exc})", file=sys.stderr)
+
+
+def _draw_dot_row(
+    ax,
+    cond: tuple[str, ...],
+    color: str,
+    *,
+    show_labels: bool,
+) -> None:
+    """Draw 4 channel-indicator dots in a centered horizontal row."""
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
     ax.axis("off")
-    for x, g in enumerate(FOUR_GROUP_ORDER):
-        if g in cond:
-            ax.scatter(x, 0, s=25, c=color, zorder=3, linewidths=0)
-        else:
-            ax.scatter(x, 0, s=16, facecolors="none",
-                       edgecolors=COLOR_INACTIVE, linewidths=0.9, zorder=2)
+
+    xs = np.linspace(0.18, 0.82, 4)
+    dot_y = 0.32 if show_labels else 0.50
+    label_y = 0.78
+
+    for x, g in zip(xs, FOUR_GROUP_ORDER):
+        short = _GROUP_SHORT[g]
+        active = g in cond
+        face = color if active else "white"
+        edge = "black"
+        ax.scatter(
+            [x], [dot_y], s=100,
+            c=[face], edgecolors=[edge], linewidths=0.8,
+            zorder=3,
+        )
+        if show_labels:
+            ax.text(
+                x, label_y, short,
+                ha="center", va="center", fontsize=7.5,
+                color="black",
+            )
 
 
 def _draw_cell_border(ax, color: str, *, dashed: bool = False) -> None:
@@ -191,28 +276,79 @@ def _draw_cell_border(ax, color: str, *, dashed: bool = False) -> None:
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_linewidth(2.5)
-        spine.set_edgecolor(color)
+        spine.set_color(color)
         if dashed:
             spine.set_linestyle("--")
 
 
-def _draw_cosine_bar_cell(ax, score: float | None, color: str) -> None:
-    """Horizontal bar proportional to cosine on [-1, 1]; color at 50% alpha."""
+def _draw_cosine_bar_cell(ax, score: float | None) -> None:
+    """Centered cosine bar: 0 in the middle, ±1 at the edges, monochrome.
+
+    A light-grey track spans the full [-1, 1] range.  A thin vertical tick
+    marks 0.  The filled portion runs from 0 to *score* (left for negative,
+    right for positive) in dark grey/black.
+    """
     ax.set_xlim(-1.0, 1.0)
     ax.set_ylim(0.0, 1.0)
     ax.axis("off")
+    # Background track
+    ax.barh(0.5, 2.0, left=-1.0, height=0.50, color="#E6E6E6", linewidth=0)
+    # Centre tick
+    ax.axvline(0.0, ymin=0.15, ymax=0.85, color="#AAAAAA", linewidth=0.7, zorder=2)
     if score is not None:
-        ax.barh(0.5, score - (-1.0), left=-1.0, height=0.6,
-                color=color, alpha=0.5, linewidth=0)
+        ax.barh(
+            0.5, abs(score), left=min(0.0, score), height=0.50,
+            color="#111111", linewidth=0, zorder=3,
+        )
 
 
-def _draw_label_ax(ax, label: str, score_text: str) -> None:
-    """Two-line label: condition name on top, score text below."""
+def _draw_score_label_ax(
+    ax,
+    score: float | None,
+    *,
+    is_best: bool = False,
+    show_scale_extrema: bool = False,
+) -> None:
+    """Annotate the cosine row with endpoint score and optional -1/+1 labels."""
+    ax.set_xlim(-1.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
     ax.axis("off")
-    ax.text(0.5, 0.72, label, ha="center", va="center", fontsize=6,
-            transform=ax.transAxes, color="#222222")
-    ax.text(0.5, 0.22, score_text, ha="center", va="center", fontsize=6,
-            transform=ax.transAxes, color="#555555")
+    if show_scale_extrema:
+        ax.text(-1.0, 0.18, "-1", ha="left", va="center", fontsize=8.0, color="black")
+        ax.text(1.0, 0.18, "+1", ha="right", va="center", fontsize=8.0, color="black")
+    if score is None:
+        ax.text(0.0, 0.72, "\u2014", ha="center", va="center", fontsize=9.0, color="black")
+        return
+
+    score_text = f"{score:.3f}" + (" \u2605" if is_best else "")
+    score_x = float(np.clip(score, -0.95, 0.95))
+    if score >= 0.0:
+        score_x -= 0.02
+        ha = "right"
+    else:
+        score_x += 0.02
+        ha = "left"
+    ax.text(score_x, 0.72, score_text, ha=ha, va="center", fontsize=8.5, color="black")
+
+
+def _draw_reference_label_ax(ax, label_text: str, *, subtitle: str = "") -> None:
+    """Centered label row for the reference H&E cell."""
+    ax.axis("off")
+    if subtitle:
+        ax.text(0.5, 0.72, subtitle, ha="center", va="center", fontsize=7.5,
+                transform=ax.transAxes, color="black")
+        ax.text(0.5, 0.22, label_text, ha="center", va="center", fontsize=8.5,
+                transform=ax.transAxes, color="black")
+    else:
+        ax.text(0.5, 0.5, label_text, ha="center", va="center", fontsize=8.5,
+                transform=ax.transAxes, color="black")
+
+
+def _match_ax_width_to_image(ax, image_ax) -> None:
+    """Match an auxiliary axis width/x-position to the rendered square image."""
+    image_pos = image_ax.get_position()
+    ax_pos = ax.get_position()
+    ax.set_position([image_pos.x0, ax_pos.y0, image_pos.width, ax_pos.height])
 
 
 def _build_manifest_lookup(cache_dir: Path, manifest: dict) -> dict[str, dict]:
@@ -225,6 +361,36 @@ def _build_manifest_lookup(cache_dir: Path, manifest: dict) -> dict[str, dict]:
     return lookup
 
 
+def _load_cell_mask_array(cache_dir: Path, manifest: dict) -> np.ndarray | None:
+    """Load cached reference cell mask for contour overlay when available."""
+    rel = manifest.get("cell_mask_path")
+    if not rel:
+        return None
+    path = cache_dir / rel
+    if not path.is_file():
+        return None
+    return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
+
+
+def _maybe_contour_cell_mask(
+    ax,
+    cell_mask: np.ndarray | None,
+    image_hw: tuple[int, int],
+) -> None:
+    """Overlay the reference cell-mask contour on an H&E axes."""
+    if cell_mask is None:
+        return
+    img_h, img_w = image_hw
+    mask_h, mask_w = cell_mask.shape[:2]
+    if (mask_h, mask_w) != (img_h, img_w):
+        resized = Image.fromarray(
+            (np.clip(cell_mask, 0, 1) * 255).astype(np.uint8),
+            mode="L",
+        ).resize((img_w, img_h), Image.BILINEAR)
+        cell_mask = np.asarray(resized, dtype=np.float32) / 255.0
+    ax.contour(cell_mask, levels=[0.5], colors=["lime"], linewidths=0.7, alpha=0.85)
+
+
 def render_ablation_grid_figure(
     cache_dir: Path,
     *,
@@ -232,7 +398,6 @@ def render_ablation_grid_figure(
     orion_root: Path,
     tile_id: str,
     out_png: Path,
-    out_pdf: Path | None = None,
     dpi: int = 300,
     auto_cosine: bool = True,
     uni_model: Path | None = None,
@@ -246,6 +411,7 @@ def render_ablation_grid_figure(
 
     manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
     lookup = _build_manifest_lookup(cache_dir, manifest)
+    cell_mask = _load_cell_mask_array(cache_dir, manifest)
 
     all15 = ordered_subset_condition_tuples()  # 4+6+4+1 = 15 conditions
 
@@ -263,18 +429,27 @@ def render_ablation_grid_figure(
         print(f"Warning: Real H&E not found for tile {tile_id!r} — cell [3,3] will be blank.", file=sys.stderr)
 
     # GridSpec: 16 rows (4 sub-rows per grid row × 4 grid rows) × 4 columns
+    # Sub-rows: dot-row | image | cosine-bar | label
+    # layout="constrained" keeps each imshow square and aligns bar width to it.
     NROWS_PER_CELL = 4
-    height_ratios = [0.12, 1.0, 0.08, 0.12] * 4  # dot, image, bar, label × 4 rows
+    height_ratios = [0.20, 1.0, 0.09, 0.13] * 4
 
-    fig = plt.figure(figsize=(9.0, 10.0), facecolor="white")
+    grid_hspace = 0.04
+    grid_wspace = 0.03
+
+    fig = plt.figure(figsize=(9.0, 10.0), facecolor="white", layout="constrained")
+    layout_engine = fig.get_layout_engine()
+    if layout_engine is not None:
+        layout_engine.set(hspace=grid_hspace, wspace=grid_wspace, h_pad=0.01, w_pad=0.01)
     gs = gridspec.GridSpec(
         NROWS_PER_CELL * 4, 4,
         figure=fig,
         height_ratios=height_ratios,
-        hspace=0.10,
-        wspace=0.06,
-        left=0.03, right=0.97, top=0.97, bottom=0.02,
+        hspace=grid_hspace,
+        wspace=grid_wspace,
     )
+
+    aux_axes_by_image: list[tuple[plt.Axes, list[plt.Axes]]] = []
 
     # --- Draw 15 sorted conditions in cells [0,0] → [3,2] ---
     for cell_idx, cond in enumerate(sorted_conds):
@@ -287,7 +462,8 @@ def render_ablation_grid_figure(
         base = gr * NROWS_PER_CELL
 
         # Dot row
-        _draw_dot_row(fig.add_subplot(gs[base, gc]), cond, color)
+        dot_ax = fig.add_subplot(gs[base, gc])
+        _draw_dot_row(dot_ax, cond, color, show_labels=(cell_idx == 0))
 
         # H&E image
         if cond == tuple(FOUR_GROUP_ORDER):
@@ -299,22 +475,29 @@ def render_ablation_grid_figure(
             img_path = cache_dir / entry["image_path"]
 
         image_ax = fig.add_subplot(gs[base + 1, gc])
+        image_ax.set_box_aspect(1)
         if is_best:
             image_ax.set_facecolor(BEST_BG)
         img_arr = np.asarray(Image.open(img_path).convert("RGB"))
         image_ax.imshow(img_arr)
-        image_ax.axis("off")
+        _maybe_contour_cell_mask(image_ax, cell_mask, (img_arr.shape[0], img_arr.shape[1]))
+        image_ax.set_xticks([])
+        image_ax.set_yticks([])
         _draw_cell_border(image_ax, color)
 
         # Cosine bar
-        _draw_cosine_bar_cell(fig.add_subplot(gs[base + 2, gc]), score, color)
+        bar_ax = fig.add_subplot(gs[base + 2, gc])
+        _draw_cosine_bar_cell(bar_ax, score)
 
-        # Label
-        score_text = (
-            f"{score:.3f} \u2605" if is_best
-            else (f"{score:.3f}" if score is not None else "\u2014")
+        # Label (score only; channel identity is conveyed by the dot row)
+        label_ax = fig.add_subplot(gs[base + 3, gc])
+        _draw_score_label_ax(
+            label_ax,
+            score,
+            is_best=is_best,
+            show_scale_extrema=(cell_idx == 0),
         )
-        _draw_label_ax(fig.add_subplot(gs[base + 3, gc]), _condition_label(cond), score_text)
+        aux_axes_by_image.append((image_ax, [dot_ax, bar_ax, label_ax]))
 
     # --- Real H&E at cell [3, 3] ---
     gr, gc = 3, 3
@@ -325,22 +508,30 @@ def render_ablation_grid_figure(
 
     # Image
     image_ax = fig.add_subplot(gs[base + 1, gc])
+    image_ax.set_box_aspect(1)
     if real_he_path is not None:
         he_arr = np.asarray(Image.open(real_he_path).convert("RGB"))
         image_ax.imshow(he_arr)
-    image_ax.axis("off")
+        _maybe_contour_cell_mask(image_ax, cell_mask, (he_arr.shape[0], he_arr.shape[1]))
+    image_ax.set_xticks([])
+    image_ax.set_yticks([])
     _draw_cell_border(image_ax, COLOR_REF, dashed=True)
 
-    # Cosine bar: empty
+    # Cosine bar: empty spacer
     fig.add_subplot(gs[base + 2, gc]).axis("off")
 
     # Label
-    _draw_label_ax(fig.add_subplot(gs[base + 3, gc]), "Real H\u0026E", "reference")
+    ref_label_ax = fig.add_subplot(gs[base + 3, gc])
+    _draw_reference_label_ax(ref_label_ax, "reference", subtitle="Real H\u0026E")
+    aux_axes_by_image.append((image_ax, [ref_label_ax]))
 
     # --- Save ---
-    plt.savefig(out_png, dpi=dpi, bbox_inches="tight", facecolor="white", pad_inches=0.1)
-    if out_pdf is not None:
-        plt.savefig(out_pdf, bbox_inches="tight", facecolor="white", pad_inches=0.1)
+    fig.canvas.draw()
+    fig.set_layout_engine("none")
+    for image_ax, aux_axes in aux_axes_by_image:
+        for aux_ax in aux_axes:
+            _match_ax_width_to_image(aux_ax, image_ax)
+    plt.savefig(out_png, dpi=dpi, facecolor="white")
     plt.close()
     return out_png
 
@@ -353,28 +544,20 @@ def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> Non
 
     orion_root = args.orion_root.resolve()
 
-    all4ch_image = args.all4ch_image
-    if all4ch_image is None:
-        all4ch_image = cache_dir / "all" / f"{tile_id}.png"
-    else:
-        all4ch_image = Path(all4ch_image).resolve()
+    all4ch_image = cache_dir / "all" / "generated_he.png"
     if not all4ch_image.is_file():
-        print(
-            f"Warning: All-4-ch image not found: {all4ch_image} "
-            "— cell will be blank and cosine score unavailable.",
-            file=sys.stderr,
+        raise FileNotFoundError(
+            f"All-4-ch image not found: {all4ch_image}\n"
+            "Expected cache-dir to contain all/, pairs/, singles/, triples/ subdirs."
         )
 
     out_png = cache_dir / f"{args.output_name}.png"
-    out_pdf = cache_dir / f"{args.output_name}.pdf"
-
     render_ablation_grid_figure(
         cache_dir,
         all4ch_image=all4ch_image,
         orion_root=orion_root,
         tile_id=tile_id,
         out_png=out_png,
-        out_pdf=out_pdf,
         dpi=args.dpi,
         auto_cosine=not args.no_auto_cosine,
         uni_model=args.uni_model,
@@ -394,10 +577,6 @@ def main() -> None:
     parser.add_argument(
         "--orion-root", type=Path, default=ROOT / "data/orion-crc33",
         help="Dataset root (default: data/orion-crc33)",
-    )
-    parser.add_argument(
-        "--all4ch-image", type=Path, default=None,
-        help="Path to All-4-ch generated PNG (default: <cache-dir>/all/<tile_id>.png)",
     )
     parser.add_argument(
         "--output-name", type=str, default="ablation_grid",
