@@ -14,7 +14,7 @@ import json
 import numpy as np
 from PIL import Image
 
-from tools.stage3_ablation import AblationCondition
+from tools.stage3.ablation import AblationCondition
 
 _SUBSET_DIR_NAMES = {
     1: "singles",

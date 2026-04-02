@@ -21,15 +21,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.stage3_ablation_vis_utils import (
+from tools.stage3.ablation_vis_utils import (
     condition_metric_key,
     default_orion_uni_npy_path,
 )
-from tools.uni_cosine_similarity import cosine_similarity_uni, flatten_uni_npy
+from tools.stage3.uni_cosine_similarity import cosine_similarity_uni, flatten_uni_npy
 
 
 def resolve_reference_embedding(

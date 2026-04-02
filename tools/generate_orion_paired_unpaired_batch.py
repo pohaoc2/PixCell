@@ -32,17 +32,6 @@ from diffusers import DDPMScheduler
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _list_tile_ids(exp_channels_dir: Path) -> list[str]:
-    mask = exp_channels_dir / "cell_masks"
-    if not mask.is_dir():
-        mask = exp_channels_dir / "cell_mask"
-    if not mask.is_dir():
-        raise FileNotFoundError(
-            f"No cell_masks/ or cell_mask/ under {exp_channels_dir}"
-        )
-    return sorted(p.stem for p in mask.glob("*.png"))
-
-
 def main():
     parser = argparse.ArgumentParser(description="ORION paired + unpaired batch vis")
     parser.add_argument("--data-root", type=str, default=str(ROOT / "data/orion-crc33"))
@@ -71,15 +60,16 @@ def main():
     from diffusion.utils.misc import read_config
 
     from tools.generate_stage3_tile_vis import run_vis_suite
-    from tools.stage3_tile_pipeline import (
+    from tools.stage3.tile_pipeline import (
         find_latest_checkpoint_dir,
+        list_tile_ids_from_exp_channels,
         load_all_models,
         resolve_data_layout,
     )
 
     data_root = Path(args.data_root)
     exp_channels_dir, feat_dir, he_dir = resolve_data_layout(data_root)
-    all_ids = _list_tile_ids(exp_channels_dir)
+    all_ids = list_tile_ids_from_exp_channels(exp_channels_dir)
     if len(all_ids) < max(args.n_tiles, 2):
         raise RuntimeError(
             f"Need at least max(n_tiles, 2) tiles; got {len(all_ids)} under {exp_channels_dir}"

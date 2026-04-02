@@ -21,8 +21,8 @@ from diffusion.utils.checkpoint import load_checkpoint
 from pipeline.extract_features import UNI2hExtractor
 from train_scripts.inference_controlnet import load_vae, denoise
 from train_scripts.mapping_weights_helper import map_sd_to_controlnet
-from tools.cached_inference_features import load_or_compute_npy
-from tools.visualize_pretrained_inference import save_comparison_figure
+from tools.pretrained_verify.cached_inference_features import load_or_compute_npy
+from tools.pretrained_verify.visualize_pretrained_inference import save_comparison_figure
 
 
 def load_base_model(config_path, safetensors_path, device):

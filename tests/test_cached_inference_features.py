@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import numpy as np
 
-from tools.cached_inference_features import load_or_compute_npy
+from tools.pretrained_verify.cached_inference_features import load_or_compute_npy
 
 
 class CachedInferenceFeaturesTests(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""Tests for tools/stage3_tile_pipeline.py channel loading and generate_tile logic."""
+"""Tests for tools.stage3.tile_pipeline.py channel loading and generate_tile logic."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -19,7 +19,7 @@ def _write_gray_png(path, value: int, size: int = 32):
 
 def test_load_channel_binary_thresholding(tmp_path):
     """Binary=True: pixel 200 → 1.0, pixel 50 → 0.0."""
-    from tools.stage3_tile_pipeline import load_channel
+    from tools.stage3.tile_pipeline import load_channel
 
     _write_gray_png(tmp_path / "high.png", 200)
     _write_gray_png(tmp_path / "low.png",   50)
@@ -34,7 +34,7 @@ def test_load_channel_binary_thresholding(tmp_path):
 
 def test_load_channel_continuous_not_binarized(tmp_path):
     """Binary=False: pixel 128 → ~0.5, not snapped to {0,1}."""
-    from tools.stage3_tile_pipeline import load_channel
+    from tools.stage3.tile_pipeline import load_channel
 
     _write_gray_png(tmp_path / "cont.png", 128)
 
@@ -48,7 +48,7 @@ def test_load_channel_continuous_not_binarized(tmp_path):
 
 def test_load_channel_reflect_pad_output_size(tmp_path):
     """Non-binary channel is reflect-padded then resized back to requested resolution."""
-    from tools.stage3_tile_pipeline import load_channel
+    from tools.stage3.tile_pipeline import load_channel
 
     _write_gray_png(tmp_path / "pad.png", 100, size=32)
 
@@ -62,7 +62,7 @@ def test_load_channel_reflect_pad_output_size(tmp_path):
 
 def test_resolve_data_layout_orion(tmp_path):
     """ORION-style root: exp_channels/, features/, he/ all exist."""
-    from tools.stage3_tile_pipeline import resolve_data_layout
+    from tools.stage3.tile_pipeline import resolve_data_layout
 
     (tmp_path / "exp_channels").mkdir()
     (tmp_path / "features").mkdir()
@@ -77,13 +77,32 @@ def test_resolve_data_layout_orion(tmp_path):
 
 def test_resolve_data_layout_flat(tmp_path):
     """Flat sim-style root: no exp_channels/, features/, he/ — all fall back to data_root."""
-    from tools.stage3_tile_pipeline import resolve_data_layout
+    from tools.stage3.tile_pipeline import resolve_data_layout
 
     ch_dir, feat_dir, he_dir = resolve_data_layout(tmp_path)
 
     assert ch_dir   == tmp_path
     assert feat_dir == tmp_path
     assert he_dir   == tmp_path
+
+
+def test_list_tile_ids_from_exp_channels_supports_cell_mask_alias(tmp_path):
+    from tools.stage3.tile_pipeline import list_tile_ids_from_exp_channels
+
+    mask_dir = tmp_path / "cell_mask"
+    mask_dir.mkdir(parents=True)
+    _write_gray_png(mask_dir / "tile_b.png", 255)
+    _write_gray_png(mask_dir / "tile_a.png", 255)
+
+    tile_ids = list_tile_ids_from_exp_channels(tmp_path)
+    assert tile_ids == ["tile_a", "tile_b"]
+
+
+def test_list_tile_ids_from_exp_channels_raises_when_missing(tmp_path):
+    from tools.stage3.tile_pipeline import list_tile_ids_from_exp_channels
+
+    with pytest.raises(FileNotFoundError):
+        list_tile_ids_from_exp_channels(tmp_path)
 
 
 # --- generate_tile zero_mask_latent ---
@@ -140,7 +159,7 @@ def _make_four_group_config(zero_mask_latent: bool = False):
 def test_generate_tile_zero_mask_latent_applied(tmp_path):
     """zero_mask_latent=True: controlnet receives tme_out - vae_mask."""
     from unittest.mock import patch
-    from tools.stage3_tile_pipeline import generate_tile
+    from tools.stage3.tile_pipeline import generate_tile
 
     exp_ch_dir = _setup_exp_channels(tmp_path)
 
@@ -182,7 +201,7 @@ def test_generate_tile_zero_mask_latent_applied(tmp_path):
 def test_generate_tile_zero_mask_latent_off(tmp_path):
     """zero_mask_latent=False: controlnet receives raw tme_out."""
     from unittest.mock import patch
-    from tools.stage3_tile_pipeline import generate_tile
+    from tools.stage3.tile_pipeline import generate_tile
 
     exp_ch_dir = _setup_exp_channels(tmp_path)
 
@@ -221,7 +240,7 @@ def test_generate_tile_zero_mask_latent_off(tmp_path):
 
 
 def test_group_ablation_plan_counts_cover_requested_full_suite():
-    from tools.stage3_ablation import build_progressive_order_conditions, build_subset_conditions
+    from tools.stage3.ablation import build_progressive_order_conditions, build_subset_conditions
 
     group_names = ("cell_types", "cell_state", "vasculature", "microenv")
 
@@ -241,8 +260,8 @@ def test_group_ablation_plan_counts_cover_requested_full_suite():
 def test_generate_ablation_images_respects_requested_group_conditions(tmp_path):
     from unittest.mock import patch
 
-    from tools.stage3_ablation import AblationCondition
-    from tools.stage3_tile_pipeline import generate_ablation_images
+    from tools.stage3.ablation import AblationCondition
+    from tools.stage3.tile_pipeline import generate_ablation_images
 
     config = _make_four_group_config()
     fake_vae = MagicMock()
@@ -285,7 +304,7 @@ def test_generate_ablation_images_respects_requested_group_conditions(tmp_path):
         AblationCondition(label="state + nutrient", active_groups=("cell_state", "microenv")),
     ]
 
-    with patch("tools.stage3_tile_pipeline.load_exp_channels", return_value=fake_ctrl_full), \
+    with patch("tools.stage3.tile_pipeline.load_exp_channels", return_value=fake_ctrl_full), \
          patch("train_scripts.inference_controlnet.encode_ctrl_mask_latent", return_value=torch.ones(1, 16, 4, 4)), \
          patch("tools.channel_group_utils.split_channels_to_groups", return_value=fake_tme_dict), \
          patch("train_scripts.inference_controlnet.denoise", side_effect=fake_denoise):

@@ -7,11 +7,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.stage3_ablation_grid_figure import (
+from tools.stage3.ablation_grid_figure import (
     _cardinality_color,
     _condition_label,
 )
-from tools.stage3_ablation_vis_utils import FOUR_GROUP_ORDER
+from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER
 
 
 def test_cardinality_color_all_four():
@@ -41,9 +41,9 @@ def test_condition_label_all_four():
     assert _condition_label(FOUR_GROUP_ORDER) == "CT+CS+Vas+Env"
 
 
-from tools.stage3_ablation_grid_figure import _sort_conditions_by_cosine
-from tools.stage3_ablation_vis_utils import ordered_subset_condition_tuples, condition_metric_key
-from tools.stage3_ablation_grid_figure import ALL4CH_KEY
+from tools.stage3.ablation_grid_figure import _sort_conditions_by_cosine
+from tools.stage3.ablation_vis_utils import ordered_subset_condition_tuples, condition_metric_key
+from tools.stage3.ablation_grid_figure import ALL4CH_KEY
 
 
 def test_sort_descending_by_score():

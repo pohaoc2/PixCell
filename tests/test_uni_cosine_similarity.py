@@ -1,6 +1,6 @@
 import numpy as np
 
-from tools.uni_cosine_similarity import cosine_similarity_uni, flatten_uni_npy
+from tools.stage3.uni_cosine_similarity import cosine_similarity_uni, flatten_uni_npy
 
 
 def test_cosine_identical():

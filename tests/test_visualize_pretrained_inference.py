@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from tools.visualize_pretrained_inference import (
+from tools.pretrained_verify.visualize_pretrained_inference import (
     load_rgb_image,
     make_contour_overlay,
     save_comparison_figure,

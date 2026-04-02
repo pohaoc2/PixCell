@@ -1,7 +1,7 @@
 """
 Matplotlib figures for Stage 3 tile visualizations (overview, attention, residuals, ablation).
 
-Used by run_stage3_full.py and tools/generate_stage3_tile_vis.py.
+Used by tools/run_evaluation.py and tools/generate_stage3_tile_vis.py.
 """
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import matplotlib.colors as mcolors
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 _RESIDUAL_CMAP = mcolors.LinearSegmentedColormap.from_list("black_red", ["black", "red"])
 
@@ -25,6 +27,87 @@ from tools.color_constants import (
     SECTION_BG,
     SECTION_TEXT,
 )
+
+
+def _compute_residual_maps(
+    residuals: dict,
+    output_resolution: int = 256,
+) -> dict[str, np.ndarray]:
+    """Per-group residual L2 maps upsampled to output resolution."""
+    maps: dict[str, np.ndarray] = {}
+    for name, delta in residuals.items():
+        norm_map = delta[0].norm(dim=0)
+        norm_up = F.interpolate(
+            norm_map.unsqueeze(0).unsqueeze(0).float(),
+            size=(output_resolution, output_resolution),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze().cpu().numpy()
+        maps[name] = norm_up
+    return maps
+
+
+def _upsample_attention(hmap: np.ndarray, output_resolution: int) -> np.ndarray:
+    """Upsample a [H,W] attention map to output resolution."""
+    return F.interpolate(
+        torch.from_numpy(hmap).unsqueeze(0).unsqueeze(0).float(),
+        size=(output_resolution, output_resolution),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze().numpy()
+
+
+def _compute_attention_heatmaps(
+    attn_maps: dict[str, torch.Tensor],
+    spatial_size: tuple[int, int] = (32, 32),
+    output_resolution: int = 256,
+) -> dict[str, np.ndarray]:
+    """KV-space heatmap (sum over Q): which TME positions were consulted."""
+    h, w = spatial_size
+    heatmaps: dict[str, np.ndarray] = {}
+    for name, weights in attn_maps.items():
+        avg = weights.mean(dim=(0, 1))  # [Q_len, KV_len]
+        importance = avg.sum(dim=0)  # [KV_len]
+        hmap = importance.reshape(h, w).cpu().numpy()
+        hmap = (hmap - hmap.min()) / (hmap.max() - hmap.min() + 1e-8)
+        heatmaps[name] = _upsample_attention(hmap, output_resolution)
+    return heatmaps
+
+
+def save_attention_heatmap_figure(
+    mask_image: np.ndarray,
+    gen_image: np.ndarray,
+    attn_maps: dict[str, torch.Tensor],
+    save_path: str | Path,
+    spatial_size: tuple[int, int] = (32, 32),
+    output_resolution: int = 256,
+) -> None:
+    """Save mask/gen plus per-group attention-overlay panels."""
+    heatmaps = _compute_attention_heatmaps(attn_maps, spatial_size, output_resolution)
+    n_panels = 2 + len(heatmaps)
+    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels, 4))
+    if n_panels == 1:
+        axes = [axes]
+
+    axes[0].imshow(mask_image)
+    axes[0].set_title("Cell Mask", fontsize=10)
+    axes[0].axis("off")
+
+    axes[1].imshow(gen_image)
+    axes[1].set_title("Generated H&E", fontsize=10)
+    axes[1].axis("off")
+
+    for i, (name, hmap) in enumerate(heatmaps.items()):
+        ax = axes[2 + i]
+        ax.imshow(mask_image, alpha=0.3)
+        ax.imshow(hmap, cmap="jet", alpha=0.7, vmin=0, vmax=1)
+        ax.set_title(f"{name} attn", fontsize=10)
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Attention heatmaps saved → {save_path}")
 
 
 def _header_ax(ax, label, section_key):
@@ -219,11 +302,8 @@ def save_enhanced_attention_figure(
     Residual figure: ‖Δ_group‖ in conditioning latent space (32×32 upsampled).
     Shows what conditioning positions were modified upstream of ControlNet.
     """
-    from tools.visualize_group_attention import compute_attention_heatmaps
-    from tools.visualize_group_residuals import compute_residual_maps
-
-    tme_maps = compute_attention_heatmaps(attn_maps, spatial_size, output_resolution)
-    res_maps = compute_residual_maps(residuals, output_resolution) if residuals else {}
+    tme_maps = _compute_attention_heatmaps(attn_maps, spatial_size, output_resolution)
+    res_maps = _compute_residual_maps(residuals, output_resolution) if residuals else {}
     global_res_max = max(m.max() for m in res_maps.values()) if res_maps else 1.0
 
     style_inputs = style_inputs or []
@@ -316,9 +396,7 @@ def save_enhanced_residual_figure(
       Row 0 headers: INPUT | OUTPUT | REF(s) | ── | RESIDUALS (per group)
       Row 1 images:  mask  | gen H&E| ref(s) | ── | ‖Δ_group‖ maps
     """
-    from tools.visualize_group_residuals import compute_residual_maps
-
-    res_maps = compute_residual_maps(residuals, output_resolution)
+    res_maps = _compute_residual_maps(residuals, output_resolution)
     global_max = max(m.max() for m in res_maps.values()) if res_maps else 1.0
     refs = refs or []
 
@@ -623,4 +701,3 @@ def save_condition_ablation_grid(
     plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close()
     print(f"Condition ablation grid saved → {save_path}")
-
