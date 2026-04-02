@@ -83,7 +83,7 @@ def _sort_conditions_by_cosine(
     """
     def _key(cond: tuple[str, ...]) -> tuple[float, str]:
         k = condition_metric_key(cond)
-        return (-scores.get(k, float("inf")), k)
+        return (-scores.get(k, float("-inf")), k)
 
     return sorted(conditions, key=_key)
 
