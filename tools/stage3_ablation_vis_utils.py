@@ -43,10 +43,11 @@ def condition_metric_key(active_groups: tuple[str, ...]) -> str:
 
 
 def ordered_subset_condition_tuples() -> list[tuple[str, ...]]:
-    """The 14 subset conditions: cardinality 1, then 2, then 3; order matches ``combinations``."""
+    """The 15 subset conditions: cardinality 1, 2, 3, then all four groups (same order as cache)."""
     result: list[tuple[str, ...]] = []
     for k in (1, 2, 3):
         result.extend(tuple(c) for c in combinations(FOUR_GROUP_ORDER, k))
+    result.append(tuple(FOUR_GROUP_ORDER))
     return result
 
 
