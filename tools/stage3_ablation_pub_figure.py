@@ -12,7 +12,7 @@ generated image | UNI cosine. Optional dashed horizontal rules separate cardinal
 in the channel + gen region. Lime mask contour on generated panels when ``cell_mask.png``
 is present (same as ``stage3_ablation_full_vis``).
 
-Outputs PNG and PDF beside the cache directory (same folder as the manifest).
+Outputs PNG beside the cache directory (same folder as the manifest).
 """
 from __future__ import annotations
 
@@ -232,7 +232,6 @@ def render_ablation_pub_figure(
     tile_id: str,
     orion_root: Path,
     out_png: Path,
-    out_pdf: Path | None = None,
     dpi: int = 300,
     header_thumbnail_res: int = 384,
     auto_cosine: bool = True,
@@ -240,8 +239,13 @@ def render_ablation_pub_figure(
     device: str = "cuda",
     reference_uni: Path | None = None,
     reference_he: Path | None = None,
+    cardinality: int | None = None,
 ) -> Path:
-    """Render the figure; returns path to PNG."""
+    """Render the figure for one cardinality group; returns path to PNG.
+
+    ``cardinality`` filters conditions to 1-, 2-, or 3-channel subsets.
+    ``None`` renders all 14 conditions in a single figure (legacy mode).
+    """
     cache_dir = Path(cache_dir)
     orion_root = Path(orion_root).resolve()
     uni_model = Path(uni_model) if uni_model is not None else ROOT / "pretrained_models/uni-2h"
@@ -249,7 +253,12 @@ def render_ablation_pub_figure(
     manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
     cell_mask_full = _load_cell_mask_array(cache_dir, manifest)
 
-    ordered = ordered_subset_condition_tuples()
+    all_ordered = ordered_subset_condition_tuples()
+    if cardinality is not None:
+        ordered = [c for c in all_ordered if len(c) == cardinality]
+    else:
+        ordered = all_ordered
+
     lookup = _build_manifest_lookup(cache_dir)
     score_map, cosine_column_title = _load_or_compute_cosine_scores(
         cache_dir,
@@ -269,36 +278,34 @@ def render_ablation_pub_figure(
     )
 
     n_data = len(ordered)
-    # Columns: group | 4× dots | generated | cosine (UNI or RGB fallback)
-    ncols = 7
-    fig_w, fig_h = 9.2, 11.0
+    # Columns: 4× channel dots (narrow) | generated image (dominant) | cosine bar
+    ncols = 6
+    fig_w = 9.5
+    fig_h = 3.0 + n_data * 1.5  # ~1.4 in per data row after margins
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
     gs = gridspec.GridSpec(
         1 + n_data + 1,
         ncols,
         figure=fig,
-        height_ratios=[0.58] + [1.0] * n_data + [0.03],
-        width_ratios=[0.32, 0.78, 0.78, 0.78, 0.78, 1.02, 1.25],
-        wspace=0.22,
-        hspace=0.18,
-        left=0.05,
-        right=0.96,
-        top=0.93,
-        bottom=0.04,
+        height_ratios=[2.0] + [1.0] * n_data + [0.03],
+        width_ratios=[0.38, 0.38, 0.38, 0.38, 3.5, 0.90],
+        wspace=0.08,
+        hspace=0.06,
+        left=0.02,
+        right=0.98,
+        top=0.95,
+        bottom=0.02,
     )
 
-    fig.suptitle(
-        "Channel conditioning ablation",
-        fontsize=9,
-        fontweight="bold",
-        y=0.99,
-    )
+    _card_labels = {1: "1-channel", 2: "2-channel", 3: "3-channel"}
+    title = "Channel conditioning ablation"
+    if cardinality is not None:
+        title += f" \u2014 {_card_labels.get(cardinality, f'{cardinality}-ch')}"
+    fig.suptitle(title, fontsize=9, fontweight="bold", y=0.99)
 
-    # --- Header row: blank | 4 channel panels (image + text) | blank | UNI cosine ---
-    fig.add_subplot(gs[0, 0]).axis("off")
-
+    # --- Header row: 4 channel panels (image + label) | blank | cosine header ---
     for col_idx, g in enumerate(FOUR_GROUP_ORDER):
-        ax_h = fig.add_subplot(gs[0, 1 + col_idx])
+        ax_h = fig.add_subplot(gs[0, col_idx])
         ax_h.imshow(header_rgb[g])
         ax_h.axis("off")
         ax_h.set_title(
@@ -307,13 +314,10 @@ def render_ablation_pub_figure(
             pad=4,
             color="#222222",
         )
-        _draw_axes_bottom_rule(ax_h)
 
-    ax_sp = fig.add_subplot(gs[0, 5])
-    _draw_axes_bottom_rule(ax_sp)
-    ax_sp.axis("off")
+    fig.add_subplot(gs[0, 4]).axis("off")
 
-    ax_uni_h = fig.add_subplot(gs[0, 6])
+    ax_uni_h = fig.add_subplot(gs[0, 5])
     ax_uni_h.axis("off")
     ax_uni_h.text(
         0.5,
@@ -328,7 +332,7 @@ def render_ablation_pub_figure(
     ax_uni_h.text(
         0.5,
         0.18,
-        "→ better",
+        "\u2192 better",
         ha="center",
         va="top",
         fontsize=6,
@@ -336,12 +340,12 @@ def render_ablation_pub_figure(
         transform=ax_uni_h.transAxes,
     )
 
-    # Cosine bars only in column 6 (not under the generated image)
-    ax_bar = fig.add_subplot(gs[1:-1, 6])
+    # Cosine bar axes spanning all data rows
+    ax_bar = fig.add_subplot(gs[1:-1, 5])
     ax_bar.set_zorder(5)
     ax_bar.set_xlim(-1.0, 1.38)
-    ax_bar.set_ylim(-0.5, len(ordered) - 0.5)
-    ax_bar.set_yticks(range(len(ordered)))
+    ax_bar.set_ylim(-0.5, n_data - 0.5)
+    ax_bar.set_yticks(range(n_data))
     ax_bar.set_yticklabels([])
     ax_bar.set_xlabel("cosine", fontsize=6)
     ax_bar.tick_params(axis="x", labelsize=6)
@@ -360,42 +364,19 @@ def render_ablation_pub_figure(
 
     x_text = blended_transform_factory(ax_bar.transData, ax_bar.transData)
 
-    group_starts = {0: "1-ch", 4: "2-ch", 10: "3-ch"}
     for i, cond in enumerate(ordered):
         row_gs = 1 + i
         n = len(cond)
         c = _group_color(n)
 
-        ax_l = fig.add_subplot(gs[row_gs, 0])
-        ax_l.axis("off")
-        if i in group_starts:
-            ax_l.text(
-                0.5,
-                0.5,
-                group_starts[i],
-                rotation=90,
-                ha="center",
-                va="center",
-                fontsize=7,
-                fontweight="bold",
-                color="#333333",
-                transform=ax_l.transAxes,
-            )
-
-        # Dots + dotted guides (aligned with four channel columns); gen image is separate
-        ax_dots = fig.add_subplot(gs[row_gs, 1:5])
+        # Dot indicators aligned with the four channel header columns
+        ax_dots = fig.add_subplot(gs[row_gs, 0:4])
         ax_dots.set_xlim(-0.5, 3.5)
         ax_dots.set_ylim(-0.5, 0.5)
         ax_dots.axis("off")
         for x, g in enumerate(FOUR_GROUP_ORDER):
             if g in cond:
-                ax_dots.scatter(
-                    x,
-                    0,
-                    s=55,
-                    c=c,
-                    zorder=3,
-                )
+                ax_dots.scatter(x, 0, s=55, c=c, zorder=3)
             else:
                 ax_dots.scatter(
                     x,
@@ -413,7 +394,7 @@ def render_ablation_pub_figure(
             raise KeyError(f"No manifest entry for condition key {key!r}")
         gen_path = cache_dir / entry["image_path"]
 
-        ax_im = fig.add_subplot(gs[row_gs, 5])
+        ax_im = fig.add_subplot(gs[row_gs, 4])
         if best_idx == i:
             ax_im.set_facecolor(BEST_ROW_BG)
         gen_im = np.asarray(Image.open(gen_path).convert("RGB"))
@@ -421,12 +402,8 @@ def render_ablation_pub_figure(
         _maybe_contour_cell_mask(ax_im, cell_mask_full, (gen_im.shape[0], gen_im.shape[1]))
         ax_im.axis("off")
 
-        if i in (3, 9):
-            _draw_axes_bottom_rule(ax_dots)
-            _draw_axes_bottom_rule(ax_im)
-
         cos_val = score_map.get(key)
-        y_bar = len(ordered) - 1 - i
+        y_bar = n_data - 1 - i
         if cos_val is not None:
             ax_bar.barh(
                 y_bar,
@@ -438,7 +415,7 @@ def render_ablation_pub_figure(
                 linewidth=0,
                 zorder=4,
             )
-            mark = " ★" if i == best_idx else ""
+            mark = " \u2605" if i == best_idx else ""
             ax_bar.text(
                 1.12,
                 y_bar,
@@ -454,7 +431,7 @@ def render_ablation_pub_figure(
             ax_bar.text(
                 1.12,
                 y_bar,
-                "—",
+                "\u2014",
                 va="center",
                 ha="left",
                 fontsize=7,
@@ -463,18 +440,13 @@ def render_ablation_pub_figure(
                 zorder=6,
             )
 
-    for y_sep in (3.5, 9.5):
-        ax_bar.axhline(y_sep, color="#bbbbbb", linestyle="--", linewidth=0.6, zorder=0)
-
-    plt.savefig(out_png, dpi=dpi, bbox_inches="tight", facecolor="white", pad_inches=0.35)
-    if out_pdf is not None:
-        plt.savefig(out_pdf, bbox_inches="tight", facecolor="white", pad_inches=0.35)
+    plt.savefig(out_png, dpi=dpi, bbox_inches="tight", facecolor="white", pad_inches=0.08)
     plt.close()
     return out_png
 
 
 def _render_pub_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> None:
-    """Render PNG/PDF for one tile cache directory (manifest.json at this level)."""
+    """Render three PNG figures (1-ch, 2-ch, 3-ch) for one tile cache directory."""
     cache_dir = cache_dir.resolve()
     manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
     tile_id = str(manifest["tile_id"])
@@ -492,26 +464,25 @@ def _render_pub_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> None
             file=sys.stderr,
         )
 
-    out_png = cache_dir / f"{args.output_name}.png"
-    out_pdf = cache_dir / f"{args.output_name}.pdf"
+    for card in (1, 2, 3):
+        out_png = cache_dir / f"{args.output_name}_{card}ch.png"
+        render_ablation_pub_figure(
+            cache_dir,
+            exp_channels_dir=exp_channels_dir,
+            tile_id=tile_id,
+            orion_root=orion_root,
+            out_png=out_png,
+            dpi=args.dpi,
+            header_thumbnail_res=args.header_res,
+            auto_cosine=not args.no_auto_cosine,
+            uni_model=args.uni_model,
+            device=args.device,
+            reference_uni=args.reference_uni,
+            reference_he=args.reference_he,
+            cardinality=card,
+        )
+        print(f"Wrote {out_png}")
 
-    render_ablation_pub_figure(
-        cache_dir,
-        exp_channels_dir=exp_channels_dir,
-        tile_id=tile_id,
-        orion_root=orion_root,
-        out_png=out_png,
-        out_pdf=out_pdf,
-        dpi=args.dpi,
-        header_thumbnail_res=args.header_res,
-        auto_cosine=not args.no_auto_cosine,
-        uni_model=args.uni_model,
-        device=args.device,
-        reference_uni=args.reference_uni,
-        reference_he=args.reference_he,
-    )
-    print(f"Wrote {out_png}")
-    print(f"Wrote {out_pdf}")
     print(f"(Reference UNI cache: {default_orion_uni_npy_path(orion_root, tile_id)})")
 
 
@@ -543,7 +514,7 @@ def main() -> None:
         "--output-name",
         type=str,
         default="ablation_pub_figure",
-        help="Basename for PNG/PDF (default: ablation_pub_figure)",
+        help="Basename for PNG output (default: ablation_pub_figure)",
     )
     parser.add_argument(
         "--header-res",

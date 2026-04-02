@@ -1,0 +1,314 @@
+<h2>Ablation Figure Layout Options</h2>
+<p class="subtitle">How should 14 conditions (4×1-ch, 6×2-ch, 4×3-ch) be arranged? Each cell holds a generated H&amp;E thumbnail + cosine similarity.</p>
+
+<style>
+  .layout-grid { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; margin: 24px 0; }
+  .layout-card { background: #1a1a2e; border: 2px solid #333; border-radius: 10px; padding: 20px; width: 340px; cursor: pointer; transition: border-color 0.2s; }
+  .layout-card:hover { border-color: #666; }
+  .layout-card h3 { margin: 0 0 6px; font-size: 14px; color: #e0e0e0; }
+  .layout-card .tag { font-size: 11px; color: #888; margin-bottom: 14px; font-style: italic; }
+
+  /* Shared cell style */
+  .mc { border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #ccc; font-weight: 600; text-align: center; line-height: 1.2; }
+  .cell-1ch { background: #1a3a2a; border: 1.5px solid #009E73; }
+  .cell-2ch { background: #0d2a40; border: 1.5px solid #0072B2; }
+  .cell-3ch { background: #3a1a0d; border: 1.5px solid #D55E00; }
+  .cell-empty { background: transparent; border: none; }
+  .cell-label { background: transparent; border: none; font-size: 10px; color: #aaa; font-weight: 500; }
+  .cosine-bar { height: 4px; border-radius: 2px; margin-top: 3px; }
+
+  /* ── OPTION A: Triangle + appended 3-ch row ── */
+  .opt-a-wrap { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .opt-a-matrix { display: grid; grid-template-columns: 22px repeat(4, 44px); grid-template-rows: 22px repeat(4, 44px); gap: 3px; }
+  .opt-a-3ch-row { display: flex; gap: 3px; margin-top: 8px; align-items: center; }
+  .opt-a-3ch-label { font-size: 10px; color: #D55E00; width: 52px; text-align: right; padding-right: 6px; }
+
+  /* ── OPTION B: Full matrix, 3-ch as "anti-diagonal" overlay ── */
+  .opt-b-matrix { display: grid; grid-template-columns: 22px repeat(4, 44px); grid-template-rows: 22px repeat(4, 44px); gap: 3px; }
+
+  /* ── OPTION C: Compact strip layout ── */
+  .opt-c-wrap { display: flex; flex-direction: column; gap: 4px; }
+  .opt-c-row { display: flex; gap: 3px; align-items: center; }
+  .opt-c-section-label { font-size: 9px; color: #aaa; writing-mode: vertical-rl; text-orientation: mixed; transform: rotate(180deg); width: 14px; text-align: center; letter-spacing: 1px; }
+  .cosine-mini { width: 100%; height: 3px; border-radius: 2px; margin-top: 2px; opacity: 0.8; }
+</style>
+
+<div class="layout-grid">
+
+  <!-- OPTION A: Triangular matrix + 3-ch appended row -->
+  <div class="layout-card option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Triangle matrix + 3-ch strip</h3>
+      <div class="tag">Your original idea — 3-ch appended below</div>
+
+      <div class="opt-a-wrap">
+        <div class="opt-a-matrix">
+          <!-- header row -->
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-label">CT</div>
+          <div class="mc cell-label">CS</div>
+          <div class="mc cell-label">Va</div>
+          <div class="mc cell-label">Nu</div>
+          <!-- row CT -->
+          <div class="mc cell-label">CT</div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">CT<div class="cosine-mini" style="background:#009E73;width:65%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CT+CS<div class="cosine-mini" style="background:#0072B2;width:82%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CT+Va<div class="cosine-mini" style="background:#0072B2;width:71%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CT+Nu<div class="cosine-mini" style="background:#0072B2;width:75%"></div></div>
+          <!-- row CS -->
+          <div class="mc cell-label">CS</div>
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">CS<div class="cosine-mini" style="background:#009E73;width:58%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CS+Va<div class="cosine-mini" style="background:#0072B2;width:68%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CS+Nu<div class="cosine-mini" style="background:#0072B2;width:72%"></div></div>
+          <!-- row Va -->
+          <div class="mc cell-label">Va</div>
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">Va<div class="cosine-mini" style="background:#009E73;width:49%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">Va+Nu<div class="cosine-mini" style="background:#0072B2;width:64%"></div></div>
+          <!-- row Nu -->
+          <div class="mc cell-label">Nu</div>
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">Nu<div class="cosine-mini" style="background:#009E73;width:55%"></div></div>
+        </div>
+
+        <div class="opt-a-3ch-row">
+          <div class="opt-a-3ch-label" style="font-size:9px;color:#D55E00">3-ch strip</div>
+          <div class="mc cell-3ch" style="width:44px;height:44px">CT+CS+Va<div class="cosine-mini" style="background:#D55E00;width:88%"></div></div>
+          <div class="mc cell-3ch" style="width:44px;height:44px">CT+CS+Nu<div class="cosine-mini" style="background:#D55E00;width:91%"></div></div>
+          <div class="mc cell-3ch" style="width:44px;height:44px">CT+Va+Nu<div class="cosine-mini" style="background:#D55E00;width:85%"></div></div>
+          <div class="mc cell-3ch" style="width:44px;height:44px">CS+Va+Nu<div class="cosine-mini" style="background:#D55E00;width:87%"></div></div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;font-size:10px;color:#aaa">
+        ✓ Matrix preserves row/col alignment for pairs<br>
+        ✗ 3-ch row disconnected from matrix structure
+      </div>
+    </div>
+  </div>
+
+  <!-- OPTION B: Complement triangle — 3-ch as the lower triangle -->
+  <div class="layout-card option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Dual triangle — lower = 3-ch</h3>
+      <div class="tag">Upper triangle = pairs; lower = "drop one" 3-ch dual</div>
+
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <div class="opt-b-matrix">
+          <!-- header -->
+          <div class="mc cell-empty"></div>
+          <div class="mc cell-label">CT</div>
+          <div class="mc cell-label">CS</div>
+          <div class="mc cell-label">Va</div>
+          <div class="mc cell-label">Nu</div>
+          <!-- row CT -->
+          <div class="mc cell-label">CT</div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">CT<div class="cosine-mini" style="background:#009E73;width:65%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CT+CS<div class="cosine-mini" style="background:#0072B2;width:82%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CT+Va<div class="cosine-mini" style="background:#0072B2;width:71%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CT+Nu<div class="cosine-mini" style="background:#0072B2;width:75%"></div></div>
+          <!-- row CS: lower triangle = 3ch duals -->
+          <div class="mc cell-label">CS</div>
+          <div class="mc cell-3ch" style="width:44px;height:44px;font-size:8px">–CT<br>3ch<div class="cosine-mini" style="background:#D55E00;width:87%"></div></div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">CS<div class="cosine-mini" style="background:#009E73;width:58%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CS+Va<div class="cosine-mini" style="background:#0072B2;width:68%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">CS+Nu<div class="cosine-mini" style="background:#0072B2;width:72%"></div></div>
+          <!-- row Va -->
+          <div class="mc cell-label">Va</div>
+          <div class="mc cell-3ch" style="width:44px;height:44px;font-size:8px">–CS<br>3ch<div class="cosine-mini" style="background:#D55E00;width:85%"></div></div>
+          <div class="mc cell-3ch" style="width:44px;height:44px;font-size:8px">–CT<br>3ch<div class="cosine-mini" style="background:#D55E00;width:88%"></div></div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">Va<div class="cosine-mini" style="background:#009E73;width:49%"></div></div>
+          <div class="mc cell-2ch" style="width:44px;height:44px">Va+Nu<div class="cosine-mini" style="background:#0072B2;width:64%"></div></div>
+          <!-- row Nu -->
+          <div class="mc cell-label">Nu</div>
+          <div class="mc cell-3ch" style="width:44px;height:44px;font-size:8px">–Nu<br>3ch<div class="cosine-mini" style="background:#D55E00;width:91%"></div></div>
+          <div class="mc cell-3ch" style="width:44px;height:44px;font-size:8px">–Va<br>3ch<div class="cosine-mini" style="background:#D55E00;width:89%"></div></div>
+          <div class="mc cell-3ch" style="width:44px;height:44px;font-size:8px">–CS<br>3ch<div class="cosine-mini" style="background:#D55E00;width:86%"></div></div>
+          <div class="mc cell-1ch" style="width:44px;height:44px">Nu<div class="cosine-mini" style="background:#009E73;width:55%"></div></div>
+        </div>
+        <div style="margin-top:6px;font-size:9px;color:#888;text-align:center">Lower cell label = dropped channel</div>
+      </div>
+
+      <div style="margin-top:10px;font-size:10px;color:#aaa">
+        ✓ All 14 conditions in one matrix, compact<br>
+        ✓ Visual symmetry shows "add vs drop" duality<br>
+        ✗ Lower-triangle label convention is non-obvious
+      </div>
+    </div>
+  </div>
+
+  <!-- OPTION C: Layered strips by complexity -->
+  <div class="layout-card option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Stacked strips with dot matrix</h3>
+      <div class="tag">Current split approach, but channel indicators compact as dots above images</div>
+
+      <div class="opt-c-wrap">
+        <!-- 1-ch strip -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+          <div class="opt-c-section-label" style="color:#009E73">1-CH</div>
+          <div style="display:flex;gap:3px">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#009E73"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-1ch" style="width:48px;height:48px">CT<div class="cosine-mini" style="background:#009E73;width:65%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#009E73"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-1ch" style="width:48px;height:48px">CS<div class="cosine-mini" style="background:#009E73;width:58%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#009E73"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-1ch" style="width:48px;height:48px">Va<div class="cosine-mini" style="background:#009E73;width:49%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#009E73"></div>
+              </div>
+              <div class="mc cell-1ch" style="width:48px;height:48px">Nu<div class="cosine-mini" style="background:#009E73;width:55%"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2-ch strip (abbreviated) -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+          <div class="opt-c-section-label" style="color:#0072B2">2-CH</div>
+          <div style="display:flex;gap:3px">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-2ch" style="width:48px;height:48px">CT+CS<div class="cosine-mini" style="background:#0072B2;width:82%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-2ch" style="width:48px;height:48px">CT+Va<div class="cosine-mini" style="background:#0072B2;width:71%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+              </div>
+              <div class="mc cell-2ch" style="width:48px;height:48px">CT+Nu<div class="cosine-mini" style="background:#0072B2;width:75%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-2ch" style="width:48px;height:48px">CS+Va<div class="cosine-mini" style="background:#0072B2;width:68%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+              </div>
+              <div class="mc cell-2ch" style="width:48px;height:48px">CS+Nu<div class="cosine-mini" style="background:#0072B2;width:72%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#0072B2"></div>
+              </div>
+              <div class="mc cell-2ch" style="width:48px;height:48px">Va+Nu<div class="cosine-mini" style="background:#0072B2;width:64%"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3-ch strip -->
+        <div style="display:flex;align-items:center;gap:4px">
+          <div class="opt-c-section-label" style="color:#D55E00">3-CH</div>
+          <div style="display:flex;gap:3px">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+              </div>
+              <div class="mc cell-3ch" style="width:48px;height:48px;font-size:8px">CT+CS+Va<div class="cosine-mini" style="background:#D55E00;width:88%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+              </div>
+              <div class="mc cell-3ch" style="width:48px;height:48px;font-size:8px">CT+CS+Nu<div class="cosine-mini" style="background:#D55E00;width:91%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+              </div>
+              <div class="mc cell-3ch" style="width:48px;height:48px;font-size:8px">CT+Va+Nu<div class="cosine-mini" style="background:#D55E00;width:85%"></div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="display:flex;gap:2px">
+                <div style="width:6px;height:6px;border-radius:50%;border:1px solid #555"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+                <div style="width:6px;height:6px;border-radius:50%;background:#D55E00"></div>
+              </div>
+              <div class="mc cell-3ch" style="width:48px;height:48px;font-size:8px">CS+Va+Nu<div class="cosine-mini" style="background:#D55E00;width:87%"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;font-size:10px;color:#aaa">
+        ✓ All strips same scale, easy comparison<br>
+        ✓ Dot matrix above each image is intuitive<br>
+        ✗ No matrix structure — pairs not visually linked
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="text-align:center;margin-top:8px;font-size:11px;color:#888">
+  Color key: <span style="color:#009E73">■ 1-ch</span> &nbsp; <span style="color:#0072B2">■ 2-ch</span> &nbsp; <span style="color:#D55E00">■ 3-ch</span> &nbsp;|&nbsp; Mini-bar below each cell = cosine similarity (longer = better)
+</div>
