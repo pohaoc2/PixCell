@@ -79,6 +79,11 @@ def compute_scores_for_manifest(
     ref_emb: np.ndarray,
     extractor: UNI2hExtractor,
 ) -> dict[str, float]:
+    """Compute per-condition cosine scores.
+
+    UNI embeddings are cached under ``<cache_dir>/features/<subdir>/<stem>_uni.npy``
+    (mirroring the image sub-path) so subsequent runs skip model inference.
+    """
     manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
     per_condition: dict[str, float] = {}
 
@@ -89,8 +94,18 @@ def compute_scores_for_manifest(
             gen_path = cache_dir / entry["image_path"]
             if not gen_path.is_file():
                 raise FileNotFoundError(f"missing generated image: {gen_path}")
-            gen_img = Image.open(gen_path).convert("RGB")
-            gen_emb = np.asarray(extractor.extract(gen_img), dtype=np.float64).ravel()
+
+            img_rel = Path(entry["image_path"])
+            feat_path = cache_dir / "features" / img_rel.parent / (img_rel.stem + "_uni.npy")
+
+            if feat_path.is_file():
+                gen_emb = np.load(feat_path).astype(np.float64).ravel()
+            else:
+                gen_img = Image.open(gen_path).convert("RGB")
+                gen_emb = np.asarray(extractor.extract(gen_img), dtype=np.float64).ravel()
+                feat_path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(feat_path, gen_emb)
+
             per_condition[key] = cosine_similarity_uni(ref_emb, gen_emb)
 
     return per_condition
