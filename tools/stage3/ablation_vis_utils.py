@@ -103,6 +103,54 @@ def parse_uni_cosine_scores_json(
     return out, title
 
 
+def cache_manifest_uni_features(
+    cache_dir: str | Path,
+    *,
+    uni_model: str | Path,
+    device: str = "cuda",
+    force: bool = False,
+) -> int:
+    """Cache UNI embeddings for every image listed in ``manifest.json``.
+
+    Embeddings are stored under ``<cache_dir>/features/<section>/<stem>_uni.npy``.
+    Returns the number of feature files written.
+    """
+    from PIL import Image
+
+    cache_dir = Path(cache_dir)
+    manifest_path = cache_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"manifest not found: {manifest_path}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pending: list[tuple[Path, Path]] = []
+    for section in manifest.get("sections", []):
+        for entry in section.get("entries", []):
+            rel = Path(entry["image_path"])
+            img_path = cache_dir / rel
+            feat_path = cache_dir / "features" / rel.parent / f"{rel.stem}_uni.npy"
+            if not force and feat_path.is_file():
+                continue
+            pending.append((img_path, feat_path))
+
+    if not pending:
+        return 0
+
+    from pipeline.extract_features import UNI2hExtractor
+
+    extractor = UNI2hExtractor(model_path=str(uni_model), device=device)
+    written = 0
+    for img_path, feat_path in pending:
+        if not img_path.is_file():
+            raise FileNotFoundError(f"missing cached image: {img_path}")
+        img = Image.open(img_path).convert("RGB")
+        emb = np.asarray(extractor.extract(img), dtype=np.float64).ravel()
+        feat_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(feat_path, emb)
+        written += 1
+    return written
+
+
 def compute_rgb_pixel_cosine_scores(
     cache_dir: Path,
     orion_root: Path,

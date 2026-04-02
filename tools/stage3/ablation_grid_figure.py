@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
+    cache_manifest_uni_features,
     condition_metric_key,
     default_orion_he_png_path,
     ordered_subset_condition_tuples,
@@ -156,56 +157,75 @@ def _load_grid_cosine_scores(
         ref_npy = orion_root / "features" / f"{tile_id}_uni.npy"
         if ref_npy.is_file():
             try:
+                all4_rel_parent = all4ch_image.resolve().relative_to(cache_dir.resolve()).parent
+            except ValueError:
+                all4_rel_parent = Path("all")
+            try:
                 scores[ALL4CH_KEY] = _compute_image_cosine(
                     all4ch_image, ref_npy, uni_model, device,
-                    feat_cache_dir=cache_dir / "features" / "all",
+                    feat_cache_dir=cache_dir / "features" / all4_rel_parent,
                 )
             except Exception as exc:
                 print(f"Note: All-4-ch cosine failed ({exc})", file=sys.stderr)
 
     if auto_cosine:
-        _cache_missing_manifest_features(cache_dir, uni_model=uni_model, device=device)
+        try:
+            cache_manifest_uni_features(
+                cache_dir,
+                uni_model=uni_model,
+                device=device,
+                force=False,
+            )
+        except Exception as exc:
+            if str(device).lower() == "cuda":
+                try:
+                    cache_manifest_uni_features(
+                        cache_dir,
+                        uni_model=uni_model,
+                        device="cpu",
+                        force=False,
+                    )
+                except Exception as cpu_exc:
+                    print(
+                        "Note: manifest feature caching failed "
+                        f"(cuda: {exc}; cpu: {cpu_exc})",
+                        file=sys.stderr,
+                    )
+            else:
+                print(f"Note: manifest feature caching failed ({exc})", file=sys.stderr)
 
     return scores
 
 
-def _cache_missing_manifest_features(
-    cache_dir: Path,
-    *,
-    uni_model: Path,
-    device: str,
-) -> None:
-    """Ensure UNI embeddings exist for every manifest image under ``features/``.
+def _resolve_all4ch_image(cache_dir: Path, manifest: dict) -> Path | None:
+    """Resolve All-channels image path from manifest first, then legacy fallbacks."""
+    cache_dir = Path(cache_dir)
+    n_groups = len(manifest.get("group_names") or FOUR_GROUP_ORDER)
 
-    Mirrors the image sub-path: ``singles/cell_types/generated_he.png`` →
-    ``features/singles/cell_types/generated_he_uni.npy``.  Loads the UNI
-    model only when at least one file is missing; does nothing otherwise.
-    """
-    manifest_path = cache_dir / "manifest.json"
-    if not manifest_path.is_file():
-        return
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    missing: list[tuple[Path, Path]] = []
     for section in manifest.get("sections", []):
-        for entry in section.get("entries", []):
-            img_rel = Path(entry["image_path"])
-            feat_path = (
-                cache_dir / "features" / img_rel.parent / (img_rel.stem + "_uni.npy")
-            )
-            if not feat_path.is_file():
-                missing.append((cache_dir / img_rel, feat_path))
-    if not missing:
-        return
-    try:
-        from pipeline.extract_features import UNI2hExtractor
-        extractor = UNI2hExtractor(model_path=str(uni_model), device=device)
-        for img_path, feat_path in missing:
-            img = Image.open(img_path).convert("RGB")
-            emb = np.asarray(extractor.extract(img), dtype=np.float64).ravel()
-            feat_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(feat_path, emb)
-    except Exception as exc:
-        print(f"Note: manifest feature caching failed ({exc})", file=sys.stderr)
+        try:
+            subset_size = int(section.get("subset_size", 0))
+        except (TypeError, ValueError):
+            continue
+        if subset_size != n_groups:
+            continue
+        entries = section.get("entries") or []
+        if not entries:
+            continue
+        rel = Path(entries[0].get("image_path", ""))
+        if rel and (cache_dir / rel).is_file():
+            return cache_dir / rel
+
+    canonical = cache_dir / "all" / "generated_he.png"
+    if canonical.is_file():
+        return canonical
+
+    all_dir = cache_dir / "all"
+    if all_dir.is_dir():
+        pngs = sorted(all_dir.glob("*.png"))
+        if len(pngs) == 1:
+            return pngs[0]
+    return None
 
 
 def _draw_dot_row(
@@ -515,11 +535,11 @@ def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> Non
 
     orion_root = args.orion_root.resolve()
 
-    all4ch_image = cache_dir / "all" / "generated_he.png"
-    if not all4ch_image.is_file():
+    all4ch_image = _resolve_all4ch_image(cache_dir, manifest)
+    if all4ch_image is None:
         raise FileNotFoundError(
-            f"All-4-ch image not found: {all4ch_image}\n"
-            "Expected cache-dir to contain all/, pairs/, singles/, triples/ subdirs."
+            f"All-4-ch image not found under: {cache_dir}\n"
+            "Expected an all/ image (prefer all/generated_he.png) or a subset_size==4 section in manifest.json."
         )
 
     out_png = cache_dir / f"{args.output_name}.png"

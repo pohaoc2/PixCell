@@ -331,12 +331,21 @@ python tools/generate_stage3_ablation_subset_cache.py \
     --data-root      data/orion-crc33 \
     --tile-id        YOUR_TILE_ID
 
+# Existing cache repair: add missing all/ and cache UNI features for each condition.
+python tools/generate_stage3_ablation_subset_cache.py \
+    --config                configs/config_controlnet_exp.py \
+    --checkpoint-dir        checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
+    --data-root             data/orion-crc33 \
+    --existing-cache-parent inference_output/cache \
+    --cache-uni-features
+
 python tools/stage3_ablation_grid_figure.py \
     --cache-dir inference_output/test_combinations/YOUR_TILE_ID \
     --orion-root data/orion-crc33
 ```
 
 The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` under the tile cache directory.  
+The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, and writes UNI embeddings under `features/`.
 The second command renders `<cache-dir>/ablation_grid.png` from cached images without rerunning diffusion.
 
 For raw batch generation without visualizations:

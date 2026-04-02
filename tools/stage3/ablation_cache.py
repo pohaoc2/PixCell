@@ -98,7 +98,15 @@ def save_subset_condition_cache(
             zip(section.conditions, section.images, strict=True),
             start=1,
         ):
-            rel_path = Path(section_dir_name) / f"{idx:02d}_{condition_slug(condition.active_groups)}.png"
+            if (
+                subset_size == len(group_names)
+                and len(section.conditions) == 1
+                and len(section.images) == 1
+            ):
+                # Canonical All-channels path used by downstream figure scripts.
+                rel_path = Path(section_dir_name) / "generated_he.png"
+            else:
+                rel_path = Path(section_dir_name) / f"{idx:02d}_{condition_slug(condition.active_groups)}.png"
             Image.fromarray(_as_uint8_rgb(image)).save(cache_dir / rel_path)
             entries.append(
                 {
