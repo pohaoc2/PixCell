@@ -1,5 +1,5 @@
 """
-Publication-style ablation figure: 14 subset conditions, channel header, UNI cosine bars.
+Publication-style ablation figure: 15 subset conditions, channel header, UNI cosine bars.
 
 Reads ``manifest.json`` and optional ``uni_cosine_scores.json`` next to ``--cache-dir``.
 
@@ -141,13 +141,13 @@ def _load_or_compute_cosine_scores(
     then fall back to numpy RGB-pixel cosine vs ``he/{tile_id}.png`` (no torch).
     """
     scores, title = _parse_cosine_json(cache_dir)
-    if scores and len(scores) >= 14:
+    if scores and len(scores) >= 15:
         return scores, title
 
     if not auto_cosine:
         return scores or {}, title
 
-    if not scores or len(scores) < 14:
+    if not scores or len(scores) < 15:
         try:
             from tools.compute_ablation_uni_cosine import compute_and_write_uni_cosine_scores
 
@@ -160,13 +160,13 @@ def _load_or_compute_cosine_scores(
                 device=device,
             )
             scores, title = _parse_cosine_json(cache_dir)
-            if scores and len(scores) >= 14:
+            if scores and len(scores) >= 15:
                 print(f"UNI cosine scores loaded ({len(scores)} conditions).", file=sys.stderr)
                 return scores, title
         except Exception as exc:
             print(f"Note: UNI-2h cosine unavailable ({exc}); trying RGB pixel cosine fallback.", file=sys.stderr)
 
-    if not scores or len(scores) < 14:
+    if not scores or len(scores) < 15:
         try:
             _write_rgb_pixel_cosine_json(cache_dir, orion_root, tile_id=tile_id)
             scores, title = _parse_cosine_json(cache_dir)
@@ -278,10 +278,16 @@ def render_ablation_pub_figure(
     )
 
     n_data = len(ordered)
+<<<<<<< HEAD
     # Columns: 4× channel dots (narrow) | generated image (dominant) | cosine bar
     ncols = 6
     fig_w = 9.5
     fig_h = 3.0 + n_data * 1.5  # ~1.4 in per data row after margins
+=======
+    # Columns: group | 4× dots | generated | cosine (UNI or RGB fallback)
+    ncols = 7
+    fig_w, fig_h = 9.2, 11.85
+>>>>>>> fbe3edc47966a2eaa014b3667ee7c1e8ca631a1f
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
     gs = gridspec.GridSpec(
         1 + n_data + 1,
@@ -364,6 +370,10 @@ def render_ablation_pub_figure(
 
     x_text = blended_transform_factory(ax_bar.transData, ax_bar.transData)
 
+<<<<<<< HEAD
+=======
+    group_starts = {0: "1-ch", 4: "2-ch", 10: "3-ch", 14: "4-ch"}
+>>>>>>> fbe3edc47966a2eaa014b3667ee7c1e8ca631a1f
     for i, cond in enumerate(ordered):
         row_gs = 1 + i
         n = len(cond)
@@ -402,6 +412,13 @@ def render_ablation_pub_figure(
         _maybe_contour_cell_mask(ax_im, cell_mask_full, (gen_im.shape[0], gen_im.shape[1]))
         ax_im.axis("off")
 
+<<<<<<< HEAD
+=======
+        if i in (3, 9, 13):
+            _draw_axes_bottom_rule(ax_dots)
+            _draw_axes_bottom_rule(ax_im)
+
+>>>>>>> fbe3edc47966a2eaa014b3667ee7c1e8ca631a1f
         cos_val = score_map.get(key)
         y_bar = n_data - 1 - i
         if cos_val is not None:
@@ -440,7 +457,16 @@ def render_ablation_pub_figure(
                 zorder=6,
             )
 
+<<<<<<< HEAD
     plt.savefig(out_png, dpi=dpi, bbox_inches="tight", facecolor="white", pad_inches=0.08)
+=======
+    for y_sep in (10.5, 4.5, 0.5):
+        ax_bar.axhline(y_sep, color="#bbbbbb", linestyle="--", linewidth=0.6, zorder=0)
+
+    plt.savefig(out_png, dpi=dpi, bbox_inches="tight", facecolor="white", pad_inches=0.35)
+    if out_pdf is not None:
+        plt.savefig(out_pdf, bbox_inches="tight", facecolor="white", pad_inches=0.35)
+>>>>>>> fbe3edc47966a2eaa014b3667ee7c1e8ca631a1f
     plt.close()
     return out_png
 

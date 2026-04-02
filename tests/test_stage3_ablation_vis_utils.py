@@ -18,7 +18,7 @@ def test_condition_metric_key_sorts():
 
 
 def test_ordered_subset_count():
-    assert len(ordered_subset_condition_tuples()) == 14
+    assert len(ordered_subset_condition_tuples()) == 15
 
 
 def test_load_uni_cosine_scores(tmp_path):

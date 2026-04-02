@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Generate the 14 single/pair/triple Stage 3 ablation images once and cache them as PNGs.
+Generate single/pair/triple/all-four Stage 3 ablation images once and cache them as PNGs
+(singles/, pairs/, triples/, all/).
 
 This is intended for rapid iteration on the combined manuscript-style layout in
 ``tools/stage3_ablation_full_vis.py`` without rerunning diffusion every time.
@@ -109,12 +110,34 @@ def generate_subset_cache_for_tile(
     )
 
     group_names = group_names_from_channel_groups(config.channel_groups)
-    subset_sections = build_subset_ablation_sections(
-        group_names,
-        single_images=single_group_imgs,
-        pair_images=pair_group_imgs,
-        triple_images=triple_group_imgs,
-    )
+    if len(group_names) >= 4:
+        print(f"[{tile_id}] Generating all-four-groups cache image...")
+        all_four_imgs = generate_group_combination_ablation_images(
+            tile_id=tile_id,
+            models=models,
+            config=config,
+            scheduler=scheduler,
+            uni_embeds=uni_embeds,
+            device=device,
+            exp_channels_dir=exp_channels_dir,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            subset_size=4,
+        )
+        subset_sections = build_subset_ablation_sections(
+            group_names,
+            single_images=single_group_imgs,
+            pair_images=pair_group_imgs,
+            triple_images=triple_group_imgs,
+            all_four_images=all_four_imgs,
+        )
+    else:
+        subset_sections = build_subset_ablation_sections(
+            group_names,
+            single_images=single_group_imgs,
+            pair_images=pair_group_imgs,
+            triple_images=triple_group_imgs,
+        )
 
     ctrl_full = load_exp_channels(
         tile_id,

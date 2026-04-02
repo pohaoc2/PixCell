@@ -49,9 +49,10 @@ def build_subset_ablation_sections(
     single_images: Sequence[tuple[str, np.ndarray]],
     pair_images: Sequence[tuple[str, np.ndarray]],
     triple_images: Sequence[tuple[str, np.ndarray]],
+    all_four_images: Sequence[tuple[str, np.ndarray]] | None = None,
 ) -> list[AblationVisSection]:
-    """Build the standard 1/2/3-group subset sections for the combined figure."""
-    return [
+    """Build the standard 1/2/3-group subset sections; optional 4-group (all channels) section."""
+    sections: list[AblationVisSection] = [
         AblationVisSection(
             title="1 active group",
             conditions=tuple(build_subset_conditions(group_names, subset_size=1)),
@@ -68,6 +69,20 @@ def build_subset_ablation_sections(
             images=tuple(triple_images),
         ),
     ]
+    if all_four_images is not None:
+        conds = build_subset_conditions(group_names, subset_size=4)
+        if len(conds) != len(all_four_images):
+            raise ValueError(
+                f"all_four: expected {len(conds)} conditions, got {len(all_four_images)} images"
+            )
+        sections.append(
+            AblationVisSection(
+                title="4 active groups",
+                conditions=tuple(conds),
+                images=tuple(all_four_images),
+            )
+        )
+    return sections
 
 
 def _extract_cell_mask(
