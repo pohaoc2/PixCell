@@ -1,14 +1,63 @@
 # Ablation Grid Figure — Design Spec
 
 **Date:** 2026-04-01  
+**Last updated:** 2026-04-02  
 **Replaces:** `docs/ablation_vis_spec.md` (original strip layout)  
-**Output script:** `tools/stage3_ablation_grid_figure.py`
+**Output scripts:** `tools/stage3_ablation_grid_figure.py` (static PNG/PDF), `tools/stage3_ablation_grid_webvis.py` (interactive HTML — planned)
 
 ---
 
 ## Goal
 
-A single publication-quality PNG/PDF showing all 16 ablation conditions (4×1-ch + 6×2-ch + 4×3-ch + 1×4-ch + 1×Real H&E reference) arranged in a 4×4 grid sorted by cosine similarity. Each cell contains the generated H&E thumbnail, active-channel dot indicators, a colored square border encoding cardinality, and a cosine score bar.
+Two complementary outputs for the same 4×4 ablation grid:
+
+1. **Static figure** (`ablation_grid.png` / `.pdf`) — publication-quality matplotlib PNG/PDF, sorted by primary metric, with colored borders, channel dot indicators, and per-cell metric bars.
+2. **Interactive web vis** (`ablation_grid.html`) — standalone self-contained HTML with sortable columns, hover tooltips, and all metrics visible. Designed for exploration and design review.
+
+Both show 16 cells: 14 ablation conditions + All-4-ch + Real H&E reference.
+
+---
+
+## Metrics
+
+### Implemented
+
+| Metric | Key | Comparison | Range | Better |
+|---|---|---|---|---|
+| Cosine (UNI-2h) | `cosine` | ref H&E UNI embedding vs gen H&E UNI embedding | [−1, 1] | higher |
+
+### Planned (next agent)
+
+| Metric | Key | Comparison | Range | Better | Notes |
+|---|---|---|---|---|---|
+| LPIPS | `lpips` | ref H&E vs gen H&E (perceptual, AlexNet) | [0, 1] | **lower** | per-tile; `lpips` library |
+| AJI | `aji` | input `cell_masks` vs CellViT detections on gen H&E | [0, 1] | higher | Aggregated Jaccard Index; standard in pathology |
+| PQ | `pq` | input `cell_masks` vs CellViT detections on gen H&E | [0, 1] | higher | Panoptic Quality = SQ × RQ; RQ ≡ detection F1 |
+
+**Dropped:** standalone pixel Dice, standalone F1 — both subsumed by AJI and PQ.  
+**Dataset-level (future):** FID on UNI-2h embeddings across ≥ 500 tiles.
+
+### Metrics JSON schema
+
+All four per-condition metrics are stored in a unified `<cache_dir>/metrics.json`:
+
+```json
+{
+  "version": 2,
+  "tile_id": "17408_32768",
+  "per_condition": {
+    "cell_types": {
+      "cosine": 0.9946,
+      "lpips": null,
+      "aji": null,
+      "pq": null
+    },
+    ...
+  }
+}
+```
+
+**Migration:** existing `uni_cosine_scores.json` files should be read as a fallback when `metrics.json` is absent; `_parse_cosine_json` already handles this.
 
 ---
 
@@ -17,60 +66,73 @@ A single publication-quality PNG/PDF showing all 16 ablation conditions (4×1-ch
 ### Grid structure
 
 - **4 columns × 4 rows = 16 cells**, filled left-to-right, top-to-bottom.
-- Sorted **descending by cosine similarity**: top-left = best-performing condition, bottom-right = Real H&E reference.
-- Real H&E has no cosine score and is always placed last (cell [3, 3]).
-- All-4-ch is a real inference run and participates in sorting alongside the 14 ablation conditions.
-
-### Ordering of 15 scored conditions
-
-1. Compute cosine similarity for each of the 15 conditions (14 ablation + All-4-ch).
-2. Sort descending. Ties broken lexicographically by condition key.
-3. Fill cells [0,0]→[3,2] with the 15 sorted conditions.
-4. Cell [3,3] = Real H&E reference (always fixed here).
+- Sorted **descending by selected primary metric** (default: cosine). Ties broken lexicographically by condition key.
+- Real H&E has no metric scores and is always placed last (cell [3, 3]).
+- All-4-ch participates in sorting alongside the 14 ablation conditions.
 
 ---
 
 ## Cell Design
 
-Each cell has three stacked regions (top to bottom):
+Each cell has four stacked regions (top to bottom):
 
 ```
-┌──────────────────┐
-│  ● ● ○ ●        │  ← dot row (4 dots, one per channel)
-├──────────────────┤
-│                  │
-│   H&E thumbnail  │  ← square image (no border-radius)
-│                  │
-│  [═══════░░░░]   │  ← cosine bar (full-width, thin)
-├──────────────────┤
-│   CT+CS+Nu  0.91 │  ← condition label + score text
-└──────────────────┘
+┌──────────────────────┐
+│  ● ● ○ ●            │  ← dot row (4 dots, one per channel group)
+│ ┌──────────────────┐ │
+│ │                  │ │
+│ │   H&E thumbnail  │ │  ← square image, colored spine border
+│ │                  │ │
+│ └──────────────────┘ │
+│  Co [████████────]   │  ← 4 stacked metric bars (Co / LP / AJ / PQ)
+│  LP [──────────]     │    placeholder shown as dashed gray if not computed
+│  AJ [──────────]     │
+│  PQ [──────────]     │
+│   CT+CS+Nu  0.9961 ★ │  ← condition label + primary metric score
+└──────────────────────┘
 ```
 
 ### Dot row
 
-- 4 dots, left-to-right order: **CT · CS · Va · Nu** (matches channel group order in codebase).
-- **Filled dot** (•): channel is active in this condition. Color = cardinality group color (see below).
-- **Open ring** (○): channel inactive. Gray stroke (`#CCCCCC`), no fill.
-- Dot diameter: ~5 pt. Gap between dots: ~3 pt.
-- Real H&E reference: dot row omitted (empty spacer of same height).
+- 4 dots, left-to-right order: **CT · CS · Va · Nu** (matches `FOUR_GROUP_ORDER`).
+- **Filled dot**: channel active. Color = cardinality group color.
+- **Open ring**: channel inactive. Stroke `#CCCCCC`, no fill.
+- Real H&E: dot row is an empty spacer of the same height.
 
 ### Image thumbnail
 
-- Source: generated H&E PNG from `manifest.json → entry["image_path"]`.
-- Real H&E source: `orion_root/he/<tile_id>.png` (or `orion_root/he_tiles/<tile_id>.png`; script tries both).
-- Displayed square; aspect ratio preserved via `imshow` with equal aspect.
-- **Square border** (no `border_radius`): drawn as a colored rectangle patch around the axes, 2.5 pt linewidth, color = cardinality group (see below).
-- Best condition (highest cosine): faint `#FFFBE6` axes background + `★` appended to score text.
-- Real H&E: dashed border (`linestyle='--'`), color `#999999`.
+- Source: generated H&E PNG from `manifest.json → entry["image_path"]` for ablation conditions; `<cache_dir>/all/generated_he.png` for All-4-ch.
+- Real H&E source: `<orion_root>/he/<tile_id>.png`.
+- **Important:** the All-4-ch image is stored at `<cache_dir>/all/generated_he.png`, not `<cache_dir>/all/<tile_id>.png`. Always pass `--all4ch-image` explicitly to the CLI or use the corrected default.
+- Square border: `ax.spines` colored at 2.5 pt, color = cardinality group.
+- Best condition (rank 1 by primary metric): faint `#FFFBE6` axes background + `★` appended to score text.
+- Real H&E: dashed border (`--`), color `#999999`.
 
-### Cosine bar
+### Metric bars (static figure)
 
-- Full-width horizontal bar below the image axes (separate thin axes strip).
-- Bar fill proportional to cosine value on [−1, 1] scale (left edge = −1, right = 1).
-- Bar color = cardinality group color at 50% alpha.
-- Score text right-aligned after bar: e.g., `0.91 ★`.
-- Real H&E: bar empty, label shows `"reference"`.
+Replaces the former single cosine bar. Four thin horizontal bars stacked vertically below the image:
+
+| Bar | Label | Color | Notes |
+|---|---|---|---|
+| Cosine | `Co` | `#0072B2` (blue) | normalized to observed [min, max] across all conditions for visibility |
+| LPIPS | `LP` | `#D55E00` (vermillion) | inverted: lower=better → bar fill = `1 − lpips` |
+| AJI | `AJ` | `#009E73` (green) | [0, 1] direct |
+| PQ | `PQ` | `#9B59B6` (purple) | [0, 1] direct |
+
+Uncomputed metrics shown as dashed gray placeholder bar (not hidden, to preserve layout stability).
+
+**GridSpec height ratios per cell:**
+
+```
+dot_row:    0.12
+image_row:  1.0
+bars_row:   0.35   ← was 0.08 (single bar); expanded for 4 bars
+label_row:  0.12
+```
+
+### Metric bars (web vis)
+
+Identical color/order to static figure. Bar width proportional to within-set min-max normalized value. Uncomputed bars use CSS dashed pattern. Each bar has a 2-letter label on the left (`Co`, `LP`, `AJ`, `PQ`).
 
 ---
 
@@ -85,29 +147,35 @@ Each cell has three stacked regions (top to bottom):
 | Real H&E | Gray dashed | `#999999` |
 | Inactive dot | Light gray | `#CCCCCC` |
 
-The same color is used for: filled dots, square border, and cosine bar fill.
+Metric bar colors are fixed (not cardinality-dependent) so the same metric is always the same color across cells.
 
 ---
 
-## Figure Dimensions
+## Figure Dimensions (static)
 
 | Parameter | Value |
 |---|---|
 | Figure width | 9.0 in |
-| Figure height | auto (see below) |
+| Figure height | ≈ 10.5 in (expanded for 4 metric bars) |
 | DPI | 300 (print), 150 (preview) |
-| Cell image size | ~1.5 in × 1.5 in |
-| Column gap | 8 pt |
-| Row gap | 8 pt |
-| Outer margins | tight (`bbox_inches='tight'`, `pad_inches=0.1`) |
+| Column gap | `wspace=0.06` |
+| Row gap | `hspace=0.10` |
+| Outer margins | `bbox_inches='tight'`, `pad_inches=0.1` |
 
-**Height formula:** `fig_h = top_margin + 4 × (dot_row + image + bar + label) + 3 × row_gap + bottom_margin`
+---
 
-In practice: `fig_h ≈ 10.0` for a 4×4 grid at ~1.5 in per image cell.
+## Web Vis Features
 
-**GridSpec layout per cell column:**
+Implemented in `tools/stage3_ablation_grid_webvis.py` (planned); currently generated inline.
 
-Each column in the GridSpec holds four row-slots: dots, image, cosine bar, label. The 4 image columns share equal width. No separate group-label column.
+| Feature | Description |
+|---|---|
+| Sort controls | Buttons for Cosine / LPIPS / AJI / PQ; re-ranks grid live via JS |
+| Rank badge | `#N` shown top-left of each cell |
+| Hover tooltip | Shows condition name, rank, all 4 metric values with mini bars |
+| Real H&E pin | Always fixed at position 16 regardless of sort |
+| Standalone HTML | All images base64-embedded; no server required after generation |
+| Placeholder state | LPIPS/AJI/PQ bars shown as dashed gray when not yet computed |
 
 ---
 
@@ -117,93 +185,69 @@ Each column in the GridSpec holds four row-slots: dots, image, cosine bar, label
 
 | Source | Path | Notes |
 |---|---|---|
-| Manifest | `<cache_dir>/manifest.json` | 14 ablation conditions + cell mask path |
-| All-4-ch image | `<cache_dir>/all/<tile_id>.png` | Fixed path inside cache dir; **required** |
-| Real H&E | `<orion_root>/he/<tile_id>.png` | **Required** |
-| Real H&E UNI features | `data/features/<tile_id>_uni.npy` | Cached reference embedding for cosine computation |
-| Cell mask | path from manifest `cell_mask_path` | Optional; lime contour overlay if present |
+| Manifest | `<cache_dir>/manifest.json` | 14 ablation conditions |
+| All-4-ch image | `<cache_dir>/all/generated_he.png` | **Note: filename is `generated_he.png`, not `<tile_id>.png`** |
+| Real H&E | `<orion_root>/he/<tile_id>.png` | Reference image |
+| Metrics JSON | `<cache_dir>/metrics.json` | Unified metrics; falls back to `uni_cosine_scores.json` |
+| Real H&E UNI features | `<orion_root>/features/<tile_id>_uni.npy` | For cosine computation |
+| Cell masks | `<orion_root>/exp_channels/cell_masks/<tile_id>.png` | For AJI/PQ vs CellViT detections |
+| CellViT model | `pretrained_models/cellvit-sam-h/` | For cell detection on generated H&E |
 
-### All-4-ch condition
+### AJI / PQ computation pipeline
 
-The ablation cache stores 14 subset conditions (1-ch through 3-ch). The All-4-ch run is saved separately at `<cache_dir>/all/<tile_id>.png`. The script loads it from that fixed path and inserts it into the sorted grid alongside the 14 ablation conditions.
-
-### Cosine similarity computation
-
-For each generated image (14 ablation + All-4-ch = 15 total):
-1. Extract UNI-2h features from the generated H&E PNG using the UNI encoder.
-2. Compute cosine similarity against the cached real H&E UNI features at `data/features/<tile_id>_uni.npy`.
-
-Results are cached to `<cache_dir>/uni_cosine_scores.json` (`per_condition` dict keyed by `condition_metric_key`). On subsequent runs the script reads the JSON directly and skips re-extraction.
-
-Real H&E has no cosine score (it is the reference); its cell always occupies position [3, 3].
+1. Run CellViT-SAM-H on each generated H&E → instance segmentation masks.
+2. Load ground-truth `cell_masks` from input channels (binary, connected components = GT instances).
+3. Match GT instances to predicted instances using Hungarian matching at IoU ≥ 0.5.
+4. Compute AJI (Aggregated Jaccard Index) and PQ = SQ × RQ per condition.
+5. Write to `<cache_dir>/metrics.json`.
 
 ---
 
 ## CLI Interface
 
+### Static figure
+
 ```bash
 python tools/stage3_ablation_grid_figure.py \
   --cache-dir inference_output/test_combinations/<tile_id> \
   --orion-root data/orion-crc33 \
-  --all4ch-image inference_output/all4ch/<tile_id>/generated.png \
-  [--output-name ablation_grid]   # default: ablation_grid
-  [--dpi 300]
-  [--no-auto-cosine]
+  --all4ch-image inference_output/test_combinations/<tile_id>/all/generated_he.png \
+  [--output-name ablation_grid] \
+  [--dpi 300] \
+  [--no-auto-cosine] \
+  [--sort-by cosine|lpips|aji|pq] \
   [--device cuda]
 ```
 
-Output: `<cache_dir>/ablation_grid.png` and `<cache_dir>/ablation_grid.pdf`.
+### Web vis (planned)
+
+```bash
+python tools/stage3_ablation_grid_webvis.py \
+  --cache-dir inference_output/test_combinations/<tile_id> \
+  --orion-root data/orion-crc33 \
+  --all4ch-image inference_output/test_combinations/<tile_id>/all/generated_he.png \
+  [--output-name ablation_grid]
+```
+
+Output: `<cache_dir>/ablation_grid.html` (self-contained, base64 images embedded).
 
 ---
 
 ## Implementation Notes
 
-### New script vs existing
+### Resolved open questions (from original spec)
 
-Create `tools/stage3_ablation_grid_figure.py` as a **new script**. Do not modify `stage3_ablation_pub_figure.py` — that script (strip layout) remains for backward compatibility.
+1. **All-4-ch key format** — confirmed: `condition_metric_key(FOUR_GROUP_ORDER)` = `"cell_state+cell_types+microenv+vasculature"` (alphabetical within the join).
+2. **Real H&E path** — confirmed: `<orion_root>/he/<tile_id>.png`. No `he_tiles/` fallback needed for current dataset.
+3. **Multi-tile support** — implemented: `main()` calls `list_cached_tile_ids()` and loops when given a parent directory.
 
-### Shared utilities reused
+### Sort bug fix
+
+`_sort_conditions_by_cosine` uses `float("-inf")` as the default for missing scores (not `float("inf")`). Using `float("inf")` when negated gives `-inf` which sorts missing values *first*; the fix puts them last.
+
+### Shared utilities
 
 - `tools/stage3_ablation_cache.py`: `is_per_tile_cache_manifest_dir`, `list_cached_tile_ids`
-- `tools/stage3_ablation_vis_utils.py`: `FOUR_GROUP_ORDER`, `condition_metric_key`, `ordered_subset_condition_tuples`, `compute_rgb_pixel_cosine_scores`, `default_orion_uni_npy_path`
-- `tools/compute_ablation_uni_cosine.py`: UNI cosine computation (unchanged)
-
-### GridSpec structure
-
-```
-GridSpec rows per cell group (4 rows total):
-  - dot_row:   height_ratio 0.12  (dots only)
-  - image_row: height_ratio 1.0   (H&E imshow)
-  - bar_row:   height_ratio 0.08  (cosine bar)
-  - label_row: height_ratio 0.12  (text)
-
-GridSpec columns: 4, equal width.
-hspace = 0.10, wspace = 0.06
-```
-
-Border drawn as `ax.spines[side].set_linewidth(2.5)` + `set_edgecolor(color)` on the image axes (not as a patch), so it renders correctly in PDF vector output.
-
-### Cosine score loading
-
-Reuse `_parse_cosine_json` / `_load_or_compute_cosine_scores` from `stage3_ablation_pub_figure.py` (extract to shared util or copy). The All-4-ch cosine score is looked up from the same JSON if present.
-
-### Real H&E path resolution
-
-```python
-def find_real_he(orion_root: Path, tile_id: str) -> Path | None:
-    for subdir in ("he", "he_tiles"):
-        p = orion_root / subdir / f"{tile_id}.png"
-        if p.is_file():
-            return p
-    return None
-```
-
-Warn and skip the Real H&E cell if not found.
-
----
-
-## Open Questions
-
-1. **All-4-ch cosine key format** — confirm the canonical key string produced by `condition_metric_key(("cell_types","cell_state","vasculature","microenv"))`. May differ from the 14-condition keys if group name ordering differs.
-2. **Real H&E directory structure** — `orion-crc33` layout needs to be confirmed before hardcoding fallback paths.
-3. **Multi-tile support** — script should loop over per-tile cache subdirs (same pattern as `stage3_ablation_pub_figure.py`) when given a parent directory.
+- `tools/stage3_ablation_vis_utils.py`: `FOUR_GROUP_ORDER`, `condition_metric_key`, `ordered_subset_condition_tuples`
+- `tools/compute_ablation_uni_cosine.py`: cosine computation (unchanged)
+- `tools/uni_cosine_similarity.py`: `cosine_similarity_uni`, `flatten_uni_npy`
