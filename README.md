@@ -233,8 +233,8 @@ At every `save_model_steps` checkpoint, the training loop generates validation v
 
 ```
 checkpoints/pixcell_controlnet_exp/vis/step_XXXXXXX/
-├── residuals.png              # per-group ‖Δ_group‖ conditioning latent residuals
-└── ablation_grid.png          # 4-row: generated H&E + mask overlay | diff maps | TME composites
+├── overview.png               # input channels and generated H&E
+└── attention_heatmaps.png     # per-group attention maps
 ```
 
 ---
@@ -272,7 +272,7 @@ python stage3_inference.py \
 
 ### Batch generation with visualizations
 
-Generate H&E and full visualization figures for multiple patches (paired + unpaired style conditioning):
+Generate H&E plus the two Stage 3 visuals used in evaluation (paired + unpaired style conditioning):
 
 ```bash
 python tools/run_evaluation.py \
@@ -288,7 +288,6 @@ Per patch, outputs under `{output_dir}/{tile_id}/{paired,unpaired}/`:
 | `generated_he.png` | Generated H&E image |
 | `overview.png` | TME input channels → generated H&E |
 | `ablation_grid.png` | 4-row: H&E+mask overlay \| Δpixel diff \| TME channel composites |
-| `residuals.png` | Per-group conditioning latent residual magnitudes |
 
 Paired = same tile's UNI + TME; unpaired = next tile's UNI + this tile's TME (cross-patch style test).
 Also writes `metrics.json` with per-tile UNI cosine similarity scores.
@@ -323,7 +322,7 @@ Outputs under `{output_dir}/`:
 
 The exhaustive ablation suite is built from the four Stage 3 groups: `cell_types`, `cell_state`, `vasculature`, and `microenv` (`nutrient` in figure labels).
 
-For fast iteration on the combined manuscript-style subset layout, use the separate cache-based workflow:
+For full subset-combination testing (singles/pairs/triples/all), use the cache-based workflow:
 
 ```bash
 python tools/generate_stage3_ablation_subset_cache.py \
@@ -332,11 +331,13 @@ python tools/generate_stage3_ablation_subset_cache.py \
     --data-root      data/orion-crc33 \
     --tile-id        YOUR_TILE_ID
 
-python tools/stage3_ablation_full_vis.py \
-    --cache-dir inference_output/test_combinations/YOUR_TILE_ID
+python tools/stage3_ablation_grid_figure.py \
+    --cache-dir inference_output/test_combinations/YOUR_TILE_ID \
+    --orion-root data/orion-crc33
 ```
 
-The first command saves 14 individual PNGs under `singles/`, `pairs/`, and `triples/` plus `manifest.json`. The second command rebuilds `ablation_group_combinations.png` from those cached PNGs without rerunning diffusion.
+The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` under the tile cache directory.  
+The second command renders `<cache-dir>/ablation_grid.png` from cached images without rerunning diffusion.
 
 For raw batch generation without visualizations:
 
@@ -518,15 +519,15 @@ exp_data_root/
 
 ## 🔍 Analysis Tools
 
-Most visualization functions live in `tools/stage3_figures.py`. The experimental combined single/pair/triple ablation layout lives in `tools/stage3_ablation_full_vis.py`, and its PNG cache helpers live in `tools/stage3_ablation_cache.py`. The inference pipeline helpers (channel loading, model generation, ablation sweeps) are in `tools/stage3_tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
+Most visualization functions live in `tools/stage3/figures.py`. Cache helpers for subset-combination ablations live in `tools/stage3/ablation_cache.py`, and the publication/evaluation grid renderer is `tools/stage3/ablation_grid_figure.py`. Inference helpers (channel loading, model generation, ablation sweeps) are in `tools/stage3/tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
 
 ### Ablation tests
 
 4-row figure: generated H&E with input cell mask contour overlay | per-step Δpixel diff maps | TME channel composites for each newly-added group.
 
 ```python
-from tools.stage3_figures import save_enhanced_ablation_grid
-from tools.stage3_tile_pipeline import generate_ablation_images
+from tools.stage3.figures import save_enhanced_ablation_grid
+from tools.stage3.tile_pipeline import generate_ablation_images
 
 ablation_imgs = generate_ablation_images(tile_id, models, config, scheduler,
                                           uni_embeds, device, exp_channels_dir,
@@ -546,14 +547,14 @@ TME composites use semantic colors matching `CELL_TYPE_COLORS` / `CELL_STATE_COL
 For the full ablation test suite, the shared generator accepts arbitrary group-condition plans and is reused for single-group, pair, triple, and all-order sweeps. During figure-design iteration, cache the 14 single/pair/triple PNGs once and then rebuild the combined layout from disk:
 
 ```python
-from tools.stage3_ablation import (
+from tools.stage3.ablation import (
+    build_subset_ablation_sections,
     order_slug,
     reorder_channel_groups,
 )
-from tools.stage3_ablation_cache import save_subset_condition_cache
-from tools.stage3_ablation_full_vis import build_subset_ablation_sections, render_cached_subset_ablation_figure
-from tools.stage3_figures import save_condition_ablation_grid, save_enhanced_ablation_grid
-from tools.stage3_tile_pipeline import (
+from tools.stage3.ablation_cache import save_subset_condition_cache
+from tools.stage3.figures import save_condition_ablation_grid, save_enhanced_ablation_grid
+from tools.stage3.tile_pipeline import (
     generate_all_progressive_order_ablation_images,
     generate_group_combination_ablation_images,
 )
@@ -587,7 +588,10 @@ save_subset_condition_cache(
     group_names=tuple(group["name"] for group in config.channel_groups),
     sections=subset_sections,
 )
-render_cached_subset_ablation_figure("inference_output/test_combinations/YOUR_TILE_ID")
+# Then render the 4x4 ranked grid from cache:
+# python tools/stage3_ablation_grid_figure.py \
+#   --cache-dir inference_output/test_combinations/YOUR_TILE_ID \
+#   --orion-root data/orion-crc33
 
 # 24 progressive addition orders
 for idx, (group_order, order_imgs) in enumerate(
@@ -612,16 +616,12 @@ Available exhaustive group tests:
 | `ablation_group_pairs.png` | `6` | All `4 choose 2` two-group combinations |
 | `ablation_group_triples.png` | `4` | All `4 choose 3` three-group combinations |
 | `ablation_orders/*.png` | `24` | All `4!` progressive addition orders |
-| `test_combinations/{tile_id}/ablation_group_combinations.png` | `14` | Combined matrix-plus-grid figure rebuilt from cached subset PNGs |
+| `test_combinations/{tile_id}/ablation_grid.png` | `16` | Ranked 4×4 grid (single/pair/triple/all + real H&E reference) rendered from cache |
 
-### Per-group residual magnitudes
+### Legacy residual figure
 
-```python
-from tools.stage3_figures import save_enhanced_attention_figure
-# residuals from tme_module(..., return_residuals=True, return_attn_weights=True)
-save_enhanced_attention_figure(ctrl_full, active_channels, gen_np,
-                                attn_maps, residuals, save_path="residuals.png")
-```
+`residuals.png` generation is no longer part of the default Stage 3 evaluation workflow.
+Legacy residual visualization helpers remain in `tools/stage3/figures.py` if needed for debugging.
 
 ---
 

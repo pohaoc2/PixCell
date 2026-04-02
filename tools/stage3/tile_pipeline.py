@@ -1,7 +1,7 @@
 """
 Shared Stage 3 inference helpers: load exp channels, models, generate one tile, ablation sweep.
 
-Used by run_stage3_full.py and tools/generate_stage3_tile_vis.py.
+Used by tools/run_evaluation.py and tools/generate_stage3_tile_vis.py.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from diffusion.data.datasets.sim_controlnet_dataset import (
     get_channel_load_config,
     resolve_channel_dir as resolve_channel_dir_shared,
 )
-from tools.stage3_ablation import (
+from tools.stage3.ablation import (
     AblationCondition,
     build_progressive_conditions,
     build_progressive_order_conditions,
@@ -42,6 +42,7 @@ _BINARY: frozenset[str] = frozenset(
 
 
 _MIRROR_BORDER_PX: int = 8  # reflect-pad non-binary channels before resize
+_TILE_ID_EXTS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".tif", ".npy")
 
 
 def _prepare_ablation_context(
@@ -222,6 +223,22 @@ def resolve_data_layout(data_root: Path) -> tuple[Path, Path, Path]:
     return ch, feat, he
 
 
+def list_tile_ids_from_exp_channels(exp_channels_dir: Path) -> list[str]:
+    """Tile IDs discovered from the cell-mask channel directory."""
+    mask_dir = resolve_channel_dir(exp_channels_dir, "cell_masks")
+    if not mask_dir.is_dir():
+        raise FileNotFoundError(
+            f"No cell_masks/ or cell_mask/ directory found under {exp_channels_dir}"
+        )
+    tile_ids = sorted(
+        p.stem for p in mask_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in _TILE_ID_EXTS
+    )
+    if not tile_ids:
+        raise FileNotFoundError(f"No tile files found in {mask_dir}")
+    return tile_ids
+
+
 def resolve_channel_dir(exp_channels_dir: Path, channel_name: str) -> Path:
     """Prefer config name; fall back to alias dirs (cell_masks → cell_mask)."""
     return resolve_channel_dir_shared(exp_channels_dir, channel_name)
@@ -312,6 +329,8 @@ def generate_tile(
     exp_channels_dir: Path,
     guidance_scale: float,
     return_vis_data: bool = False,
+    include_residuals: bool = False,
+    include_attn_maps: bool = False,
     seed: int | None = None,
 ):
     """
@@ -319,7 +338,7 @@ def generate_tile(
 
     Returns:
         gen_np: uint8 [H, W, 3]
-        vis_data: dict with residuals, attn_maps, ctrl_full, active_channels (if return_vis_data)
+        vis_data: dict with ctrl_full/active_channels plus optional residuals/attn_maps.
     """
     from tools.channel_group_utils import split_channels_to_groups
     from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
@@ -333,6 +352,8 @@ def generate_tile(
     controlnet = models["controlnet"]
     base_model = models["base_model"]
     tme_module = models["tme_module"]
+    if include_attn_maps:
+        include_residuals = True
 
     vae.to(device=device, dtype=dtype).eval()
 
@@ -352,24 +373,31 @@ def generate_tile(
         config.channel_groups,
     )
 
+    residuals: dict = {}
+    attn_maps: dict = {}
     with torch.no_grad():
-        if return_vis_data:
-            # Pass 1: xformers path (no return_attn_weights) — same path as generate_ablation_images
+        if include_attn_maps:
+            # Pass 1: xformers path (same generation path as ablation renders).
             fused, residuals = tme_module(
                 vae_mask,
                 tme_dict,
                 return_residuals=True,
             )
-            # Pass 2: manual path for attn_maps only (visualization, does not affect generation)
+            # Pass 2: manual path for attention weights (visualization only).
             _, _, attn_maps = tme_module(
                 vae_mask,
                 tme_dict,
                 return_residuals=True,
                 return_attn_weights=True,
             )
+        elif include_residuals:
+            fused, residuals = tme_module(
+                vae_mask,
+                tme_dict,
+                return_residuals=True,
+            )
         else:
             fused = tme_module(vae_mask, tme_dict)
-            residuals, attn_maps = {}, {}
     if getattr(config, "zero_mask_latent", False):
         fused = fused - vae_mask
 
@@ -399,12 +427,14 @@ def generate_tile(
 
     vis_data = None
     if return_vis_data:
-        vis_data = dict(
-            residuals=residuals,
-            attn_maps=attn_maps,
-            ctrl_full=ctrl_full.numpy(),
-            active_channels=active_channels,
-        )
+        vis_data = {
+            "ctrl_full": ctrl_full.numpy(),
+            "active_channels": active_channels,
+        }
+        if include_residuals:
+            vis_data["residuals"] = residuals
+        if include_attn_maps:
+            vis_data["attn_maps"] = attn_maps
 
     return gen_np, vis_data
 
@@ -560,101 +590,6 @@ def generate_all_progressive_order_ablation_images(
         )
         for group_order, conditions in order_conditions
     ]
-
-
-def generate_channel_ablation_images(
-    tile_id: str,
-    models: dict,
-    config,
-    scheduler,
-    uni_embeds: torch.Tensor,
-    device: str,
-    exp_channels_dir: Path,
-    guidance_scale: float,
-    seed: int,
-) -> list[tuple[str, np.ndarray]]:
-    """Return list of (label, gen_np) for progressive per-channel addition.
-
-    Starts from no TME conditioning, then adds one active channel at a time
-    (excluding the spatial anchor channel ``cell_masks``).
-    """
-    context = _prepare_ablation_context(
-        tile_id=tile_id,
-        models=models,
-        config=config,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-    )
-
-    progressive_channels = [ch for ch in context["active_channels"] if ch != "cell_masks"]
-    fixed_noise = _make_fixed_noise(
-        config=config,
-        scheduler=scheduler,
-        device=device,
-        dtype=context["dtype"],
-        seed=seed,
-    )
-
-    ablation_images: list[tuple[str, np.ndarray]] = []
-
-    for n in range(len(progressive_channels) + 1):
-        active_channels_now = set(progressive_channels[:n])
-        if n == 0:
-            label = (
-                "No conditioning\n(zero TME)"
-                if context["zero_mask_latent"]
-                else "Mask only\n(no TME channels)"
-            )
-        else:
-            added = [ch.replace("cell_type_", "").replace("cell_state_", "") for ch in progressive_channels[:n]]
-            label = "Channels:\n" + "\n".join(added)
-
-        with torch.no_grad():
-            if active_channels_now:
-                # Build per-group active gates and zero inactive channels inside active groups.
-                active_groups = {
-                    g["name"]
-                    for g in config.channel_groups
-                    if any(ch in active_channels_now for ch in g["channels"])
-                }
-                tme_dict_step = dict(context["tme_dict"])
-                for g in config.channel_groups:
-                    gname = g["name"]
-                    full_group = context["tme_dict"][gname]
-                    keep_mask = torch.tensor(
-                        [1.0 if ch in active_channels_now else 0.0 for ch in g["channels"]],
-                        device=full_group.device,
-                        dtype=full_group.dtype,
-                    ).view(1, -1, 1, 1)
-                    tme_dict_step[gname] = full_group * keep_mask
-
-                fused = context["tme_module"](
-                    context["vae_mask"],
-                    tme_dict_step,
-                    active_groups=active_groups,
-                )
-                if context["zero_mask_latent"]:
-                    fused = fused - context["vae_mask"]
-            else:
-                fused = (
-                    torch.zeros_like(context["vae_mask"])
-                    if context["zero_mask_latent"]
-                    else context["vae_mask"].clone()
-                )
-
-        gen_np = _render_fused_ablation_image(
-            fused,
-            context=context,
-            scheduler=scheduler,
-            guidance_scale=guidance_scale,
-            device=device,
-            seed=seed,
-            fixed_noise=fixed_noise,
-        )
-        ablation_images.append((label, gen_np))
-
-    return ablation_images
 
 
 def find_latest_checkpoint_dir(checkpoints_parent: Path) -> Path:

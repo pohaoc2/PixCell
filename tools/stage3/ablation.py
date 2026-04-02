@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from itertools import combinations, permutations
+from typing import Any
 
 
 _GROUP_DISPLAY_NAMES = {
@@ -21,6 +22,15 @@ class AblationCondition:
 
     label: str
     active_groups: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AblationVisSection:
+    """One grouped set of ablation conditions and their rendered images."""
+
+    title: str
+    conditions: tuple[AblationCondition, ...]
+    images: tuple[tuple[str, Any], ...]
 
 
 def group_display_name(group_name: str) -> str:
@@ -75,6 +85,48 @@ def build_subset_conditions(
         )
         for group_combo in combinations(group_names, subset_size)
     ]
+
+
+def build_subset_ablation_sections(
+    group_names: Sequence[str],
+    *,
+    single_images: Sequence[tuple[str, Any]],
+    pair_images: Sequence[tuple[str, Any]],
+    triple_images: Sequence[tuple[str, Any]],
+    all_four_images: Sequence[tuple[str, Any]] | None = None,
+) -> list[AblationVisSection]:
+    """Build standard 1/2/3-group sections; optional 4-group (all channels) section."""
+    sections: list[AblationVisSection] = [
+        AblationVisSection(
+            title="1 active group",
+            conditions=tuple(build_subset_conditions(group_names, subset_size=1)),
+            images=tuple(single_images),
+        ),
+        AblationVisSection(
+            title="2 active groups",
+            conditions=tuple(build_subset_conditions(group_names, subset_size=2)),
+            images=tuple(pair_images),
+        ),
+        AblationVisSection(
+            title="3 active groups",
+            conditions=tuple(build_subset_conditions(group_names, subset_size=3)),
+            images=tuple(triple_images),
+        ),
+    ]
+    if all_four_images is not None:
+        conds = build_subset_conditions(group_names, subset_size=4)
+        if len(conds) != len(all_four_images):
+            raise ValueError(
+                f"all_four: expected {len(conds)} conditions, got {len(all_four_images)} images"
+            )
+        sections.append(
+            AblationVisSection(
+                title="4 active groups",
+                conditions=tuple(conds),
+                images=tuple(all_four_images),
+            )
+        )
+    return sections
 
 
 def build_progressive_conditions(

@@ -1,7 +1,7 @@
 """
 UNI feature cosine similarity (reference vs generated H&E).
 
-Used for ablation figures and evaluation; same normalization as ``run_evaluation._cosine_sim``.
+Used for ablation figures and Stage 3 evaluation metrics.
 """
 from __future__ import annotations
 

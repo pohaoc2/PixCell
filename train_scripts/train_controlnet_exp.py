@@ -339,12 +339,10 @@ def generate_validation_visualizations(
     val_control_input, val_vae_mask, val_uni_embeds,
     config, save_dir, device,
 ):
-    """Generate attention heatmaps, residual maps, and ablation grid for one fixed sample."""
+    """Generate attention heatmaps and overview visualization for one fixed sample."""
     from pathlib import Path
     from tools.channel_group_utils import split_channels_to_groups
-    from tools.visualize_group_attention import save_attention_heatmap_figure
-    from tools.visualize_group_residuals import save_residual_magnitude_figure
-    from tools.visualize_ablation_grid import save_ablation_grid
+    from tools.stage3.figures import save_attention_heatmap_figure, save_overview_figure
     from train_scripts.inference_controlnet import denoise
     from diffusers import DDPMScheduler
     import numpy as np
@@ -364,7 +362,7 @@ def generate_validation_visualizations(
     mask_latent_scaled = (mask_latent - vae_shift) * vae_scale
 
     tme_module.eval()
-    fused, residuals, attn_maps = tme_module(
+    fused, _residuals, attn_maps = tme_module(
         mask_latent_scaled, tme_dict,
         return_residuals=True, return_attn_weights=True,
     )
@@ -401,12 +399,14 @@ def generate_validation_visualizations(
     mask_rgb = np.stack([mask_ch] * 3, axis=-1)
     mask_rgb = (mask_rgb * 255).astype(np.uint8)
 
-    save_attention_heatmap_figure(mask_rgb, gen_np, attn_maps, save_dir / "attention_heatmaps.png")
-    save_residual_magnitude_figure(mask_rgb, gen_np, residuals, save_dir / "residual_magnitudes.png")
-    save_ablation_grid(
-        [("All groups", gen_np)],
-        save_dir / "ablation_grid.png",
+    ctrl_full_np = val_control_input[0].detach().cpu().numpy()
+    save_overview_figure(
+        ctrl_full=ctrl_full_np,
+        active_channels=active_channels,
+        gen_np=gen_np,
+        save_path=save_dir / "overview.png",
     )
+    save_attention_heatmap_figure(mask_rgb, gen_np, attn_maps, save_dir / "attention_heatmaps.png")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

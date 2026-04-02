@@ -65,6 +65,44 @@ def default_orion_he_png_path(orion_root: Path, tile_id: str) -> Path | None:
     return None
 
 
+def cosine_metric_title(metric_name: str | None) -> str:
+    """Display title for a cosine metric identifier from ``uni_cosine_scores.json``."""
+    return "RGB cosine" if metric_name == "rgb_pixel_cosine" else "UNI cosine"
+
+
+def parse_uni_cosine_scores_json(
+    cache_dir: str | Path,
+    *,
+    allow_missing: bool = True,
+) -> tuple[dict[str, float], str]:
+    """Parse ``uni_cosine_scores.json`` into ``(per_condition, title)``.
+
+    Invalid entries (``None`` / NaN) are skipped.
+    """
+    path = Path(cache_dir) / "uni_cosine_scores.json"
+    if not path.is_file():
+        if allow_missing:
+            return {}, "UNI cosine"
+        raise FileNotFoundError(path)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    title = cosine_metric_title(raw.get("metric", "uni_cosine"))
+
+    per = raw.get("per_condition")
+    if not isinstance(per, dict):
+        return {}, title
+
+    out: dict[str, float] = {}
+    for k, v in per.items():
+        if v is None:
+            continue
+        fv = float(v)
+        if np.isnan(fv):
+            continue
+        out[str(k)] = fv
+    return out, title
+
+
 def compute_rgb_pixel_cosine_scores(
     cache_dir: Path,
     orion_root: Path,
@@ -150,17 +188,14 @@ def load_uni_cosine_scores(cache_dir: str | Path) -> dict[str, float]:
 
     Returns ``per_condition`` mapping only; raises if file missing or invalid.
     """
-    path = Path(cache_dir) / "uni_cosine_scores.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    per = raw.get("per_condition")
-    if not isinstance(per, dict):
-        raise ValueError(f"invalid uni_cosine_scores.json: missing per_condition in {path}")
-    out: dict[str, float] = {}
-    for k, v in per.items():
-        if v is None:
-            continue
-        out[str(k)] = float(v)
-    return out
+    scores, _ = parse_uni_cosine_scores_json(cache_dir, allow_missing=False)
+    if not scores:
+        path = Path(cache_dir) / "uni_cosine_scores.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        per = raw.get("per_condition")
+        if not isinstance(per, dict):
+            raise ValueError(f"invalid uni_cosine_scores.json: missing per_condition in {path}")
+    return scores
 
 
 def parse_uni_cosine_for_condition(raw: dict[str, Any], active_groups: tuple[str, ...]) -> float | None:
