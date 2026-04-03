@@ -328,7 +328,7 @@ For full subset-combination testing (singles/pairs/triples/all), use the cache-b
 
 | Script | Purpose | Typical command |
 |--------|---------|-----------------|
-| `tools/generate_stage3_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` | `python tools/generate_stage3_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --tile-id YOUR_TILE_ID` |
+| `tools/generate_stage3_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` for one tile or a sampled tile batch | `python tools/generate_stage3_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --n-tiles 8 --jobs 4` |
 | `tools/export_cellvit_batch.py` | Flatten cached generated H&E PNGs into one folder for external CellViT processing | `python tools/export_cellvit_batch.py --cache-root inference_output/cache --output-dir inference_output/cellvit_batch --zip` |
 | `tools/import_cellvit_results.py` | Copy flat CellViT JSON results back beside each cached generated H&E image | `python tools/import_cellvit_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
 | `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/cache --orion-root data/orion-crc33 --metrics lpips aji pq` |
@@ -351,12 +351,21 @@ python tools/generate_stage3_ablation_subset_cache.py \
     --data-root      data/orion-crc33 \
     --tile-id        YOUR_TILE_ID
 
+# Sample N tiles and generate caches in parallel.
+python tools/generate_stage3_ablation_subset_cache.py \
+    --config         configs/config_controlnet_exp.py \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
+    --data-root      data/orion-crc33 \
+    --n-tiles        8 \
+    --jobs           4
+
 # Existing cache repair: add missing all/ and cache UNI features for each condition.
 python tools/generate_stage3_ablation_subset_cache.py \
     --config                configs/config_controlnet_exp.py \
     --checkpoint-dir        checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
     --data-root             data/orion-crc33 \
     --existing-cache-parent inference_output/cache \
+    --jobs                  4 \
     --cache-uni-features
 
 python tools/stage3_ablation_grid_figure.py \
@@ -367,8 +376,15 @@ python tools/stage3_ablation_grid_figure.py \
 ```
 
 The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` under the tile cache directory.  
-The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, and writes UNI embeddings under `features/`.
-The second command renders `<cache-dir>/ablation_grid.png` from cached images without rerunning diffusion.
+The second command randomly samples tiles from `data/orion-crc33`, writes each cache under `inference_output/cache/{tile_id}`, and shows a tile-level progress bar while workers run.  
+The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, writes UNI embeddings under `features/`, and also supports `--jobs` for per-tile parallelism.
+The final command renders `<cache-dir>/ablation_grid.png` from cached images without rerunning diffusion.
+
+Notes:
+
+- `--n-tiles N` samples `N` tile IDs from the dataset; it does not mean "first N".
+- `--jobs N` parallelizes per-tile work in `--n-tiles` and `--existing-cache-parent` modes. Each worker loads its own model checkpoint, so reduce `--jobs` if GPU memory is tight.
+- Omitting `--n-tiles` does not generate all tiles automatically. This CLI requires one of `--tile-id`, `--n-tiles`, or `--existing-cache-parent`.
 
 To render static figures for every tile in a parent cache directory, use:
 
