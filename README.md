@@ -587,6 +587,35 @@ exp_data_root/
 
 Most visualization functions live in `tools/stage3/figures.py`. Cache helpers for subset-combination ablations live in `tools/stage3/ablation_cache.py`, and the publication/evaluation grid renderer is `tools/stage3/ablation_grid_figure.py`. Inference helpers (channel loading, model generation, ablation sweeps) are in `tools/stage3/tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
 
+### Dataset metrics figure renderer
+
+Use `tools/render_dataset_metrics_option_a.py` to export the standalone five-metric "Option A" summary figure as a transparent PNG. The current script renders the curated layout in `dataset_metrics_option_a.html` using the script's built-in example statistics and writes the PNG to the repo root by default.
+
+```bash
+python tools/render_dataset_metrics_option_a.py
+```
+
+Optional flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output PATH` | `dataset_metrics_option_a.png` | Output PNG path |
+| `--dpi N` | `300` | Export resolution |
+
+Examples:
+
+```bash
+python tools/render_dataset_metrics_option_a.py \
+    --output figures/dataset_metrics_option_a.png \
+    --dpi 400
+```
+
+Notes:
+
+- The export uses a transparent background.
+- The renderer requests `Helvetica` first and falls back to `Arial` / `DejaVu Sans` if needed.
+- If you want to iterate on the browser version, update `dataset_metrics_option_a.html` and rerun the script to refresh the PNG.
+
 ### Ablation tests
 
 4-row figure: generated H&E with input cell mask contour overlay | per-step Δpixel diff maps | TME channel composites for each newly-added group.
