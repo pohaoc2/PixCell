@@ -20,6 +20,19 @@ from huggingface_hub import login
 import cv2
 
 
+def _ensure_hf_auth(token=None):
+    """Avoid redundant hub login when HF_TOKEN is already active in the environment."""
+    if token:
+        login(token=token)
+        return token
+
+    env_token = os.getenv("HF_TOKEN")
+    if env_token:
+        return env_token
+
+    return None
+
+
 class UNI2hExtractor:
     """
     UNI-2h feature extractor for histopathology images
@@ -37,11 +50,7 @@ class UNI2hExtractor:
         """
         self.device = device if torch.cuda.is_available() else 'cpu'
         print(f"Loading UNI-2h model from {model_path}...")
-        if token:
-            login(token=token)
-        if token is None:
-            token = os.getenv("HF_TOKEN")
-            login(token=token)
+        token = _ensure_hf_auth(token)
         # Load UNI-2h model (ViT architecture)
         # The model is a Vision Transformer pretrained on histopathology
         timm_kwargs = {
@@ -158,11 +167,7 @@ class SD3VAEExtractor:
         self.dtype = dtype
         self.size = size
         print(f"Loading SD3.5 VAE from {model_path}...")
-        if token:
-            login(token=token)
-        if token is None:
-            token = os.getenv("HF_TOKEN")
-            login(token=token)
+        token = _ensure_hf_auth(token)
         # Load VAE
         model_path = Path(model_path)
         

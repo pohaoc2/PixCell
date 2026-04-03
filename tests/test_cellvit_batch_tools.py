@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.export_cellvit_batch import export_cellvit_batch
-from tools.import_cellvit_results import import_cellvit_results
+from tools.cellvit.export_batch import export_cellvit_batch
+from tools.cellvit.import_results import import_cellvit_results
 
 
 def _write_png(path: Path, value: int) -> None:

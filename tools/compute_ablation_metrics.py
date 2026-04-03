@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import permutations
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -28,6 +31,8 @@ from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cac
 
 METRIC_NAMES: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
 _SPATIAL_EXTS: tuple[str, ...] = (".png", ".npy", ".jpg", ".jpeg", ".tif", ".tiff")
+_METRIC_WORKER_CONFIG: dict[str, Any] | None = None
+_METRIC_WORKER_STATE: dict[str, Any] = {}
 
 
 def _empty_metrics_record() -> dict[str, float | None]:
@@ -143,6 +148,7 @@ def _ensure_cosine_scores(
     *,
     uni_model: Path,
     device: str,
+    uni_extractor: Any | None = None,
 ) -> dict[str, float]:
     scores, _ = parse_uni_cosine_scores_json(cache_dir)
     if scores:
@@ -155,8 +161,15 @@ def _ensure_cosine_scores(
         orion_root=orion_root,
         uni_model=uni_model,
         device=device,
+        extractor=uni_extractor,
     )
     return scores
+
+
+def _load_uni_extractor(uni_model: Path, device: str):
+    from tools.stage3.compute_ablation_uni_cosine import load_uni_extractor
+
+    return load_uni_extractor(uni_model=uni_model, device=device)
 
 
 def _load_rgb_pil(path: Path, *, size: tuple[int, int] | None = None) -> Image.Image:
@@ -190,6 +203,118 @@ def _load_lpips_model(device: str):
     loss_fn = lpips.LPIPS(net="alex").to(resolved_device)
     loss_fn.eval()
     return loss_fn, resolved_device
+
+
+def _init_metrics_worker(config: dict[str, Any]) -> None:
+    global _METRIC_WORKER_CONFIG, _METRIC_WORKER_STATE
+
+    os.chdir(ROOT)
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    _METRIC_WORKER_CONFIG = dict(config)
+    _METRIC_WORKER_STATE = {}
+
+
+def _get_worker_uni_extractor():
+    if _METRIC_WORKER_CONFIG is None:
+        raise RuntimeError("metric worker not initialized")
+    extractor = _METRIC_WORKER_STATE.get("uni_extractor")
+    if extractor is None:
+        extractor = _load_uni_extractor(
+            Path(_METRIC_WORKER_CONFIG["uni_model"]),
+            str(_METRIC_WORKER_CONFIG["device"]),
+        )
+        _METRIC_WORKER_STATE["uni_extractor"] = extractor
+    return extractor
+
+
+def _get_worker_lpips_model():
+    if _METRIC_WORKER_CONFIG is None:
+        raise RuntimeError("metric worker not initialized")
+    loss_fn = _METRIC_WORKER_STATE.get("lpips_loss_fn")
+    if loss_fn is None:
+        loss_fn, _ = _load_lpips_model(str(_METRIC_WORKER_CONFIG["device"]))
+        _METRIC_WORKER_STATE["lpips_loss_fn"] = loss_fn
+    return loss_fn
+
+
+def _compute_metrics_for_cache_dir_job(cache_dir: str) -> tuple[str, str]:
+    if _METRIC_WORKER_CONFIG is None:
+        raise RuntimeError("metric worker not initialized")
+
+    cache_path = Path(cache_dir)
+    metrics_to_compute = list(_METRIC_WORKER_CONFIG["metrics_to_compute"])
+    out_path = compute_metrics_for_cache_dir(
+        cache_path,
+        orion_root=Path(_METRIC_WORKER_CONFIG["orion_root"]),
+        metrics_to_compute=metrics_to_compute,
+        device=str(_METRIC_WORKER_CONFIG["device"]),
+        uni_model=Path(_METRIC_WORKER_CONFIG["uni_model"]),
+        lpips_loss_fn=_get_worker_lpips_model() if "lpips" in metrics_to_compute else None,
+        lpips_batch_size=int(_METRIC_WORKER_CONFIG["lpips_batch_size"]),
+        uni_extractor=_get_worker_uni_extractor() if "cosine" in metrics_to_compute else None,
+    )
+    return cache_path.name, str(out_path)
+
+
+def _print_progress(completed: int, total: int, *, prefix: str) -> None:
+    total = max(1, total)
+    width = 28
+    filled = int(width * completed / total)
+    bar = "#" * filled + "-" * (width - filled)
+    msg = f"\r{prefix} [{bar}] {completed}/{total}"
+    if completed >= total:
+        msg += "\n"
+    print(msg, end="", file=sys.stderr, flush=True)
+
+
+def _run_parallel_cache_metrics(
+    *,
+    cache_parent: Path,
+    tile_ids: list[str],
+    orion_root: Path,
+    metrics_to_compute: list[str],
+    device: str,
+    uni_model: Path,
+    lpips_batch_size: int,
+    requested_jobs: int,
+) -> list[tuple[str, Path]]:
+    worker_count = min(
+        max(1, int(requested_jobs)),
+        len(tile_ids),
+        os.cpu_count() or max(1, int(requested_jobs)),
+    )
+    print(f"Running {len(tile_ids)} metrics job(s) with {worker_count} worker process(es)")
+
+    worker_config = {
+        "orion_root": str(orion_root),
+        "metrics_to_compute": list(metrics_to_compute),
+        "device": device,
+        "uni_model": str(uni_model),
+        "lpips_batch_size": int(lpips_batch_size),
+    }
+
+    results: list[tuple[str, Path]] = []
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_init_metrics_worker,
+        initargs=(worker_config,),
+    ) as executor:
+        futures = [
+            executor.submit(_compute_metrics_for_cache_dir_job, str(cache_parent / tile_id))
+            for tile_id in tile_ids
+        ]
+        total = len(futures)
+        completed = 0
+        _print_progress(0, total, prefix="Metrics")
+        for future in as_completed(futures):
+            tile_id, out_path_str = future.result()
+            out_path = Path(out_path_str)
+            results.append((tile_id, out_path))
+            completed += 1
+            _print_progress(completed, total, prefix="Metrics")
+            print(f"[{completed}/{total}] Wrote metrics → {out_path}")
+    return results
 
 
 def _image_to_lpips_tensor(image: Image.Image, *, device: str):
@@ -566,6 +691,7 @@ def compute_metrics_for_cache_dir(
     uni_model: Path,
     lpips_loss_fn=None,
     lpips_batch_size: int = 8,
+    uni_extractor: Any | None = None,
 ) -> Path:
     """Compute selected metrics for one tile cache and write ``metrics.json``."""
     per_condition = load_or_build_metrics(cache_dir)
@@ -576,6 +702,7 @@ def compute_metrics_for_cache_dir(
             orion_root,
             uni_model=uni_model,
             device=device,
+            uni_extractor=uni_extractor,
         )
         per_condition = _merge_cosine_into_metrics(per_condition, cosine_scores)
 
@@ -632,16 +759,25 @@ def main() -> None:
         default=ROOT / "pretrained_models/uni-2h",
         help="UNI-2h model path for cosine fallback",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Worker processes for parent cache directories (default: 1).",
+    )
     args = parser.parse_args()
+
+    if args.jobs < 1:
+        parser.error("--jobs must be >= 1")
 
     cache_dir = args.cache_dir.resolve()
     orion_root = args.orion_root.resolve()
     metrics_to_compute = _resolve_metric_selection(args.metrics)
-    lpips_loss_fn = None
-    if "lpips" in metrics_to_compute:
-        lpips_loss_fn, _ = _load_lpips_model(args.device)
 
     if is_per_tile_cache_manifest_dir(cache_dir):
+        lpips_loss_fn = None
+        if "lpips" in metrics_to_compute:
+            lpips_loss_fn, _ = _load_lpips_model(args.device)
         out_path = compute_metrics_for_cache_dir(
             cache_dir,
             orion_root=orion_root,
@@ -660,6 +796,34 @@ def main() -> None:
             f"no per-tile caches under {cache_dir} (expected subdirs like <tile_id>/manifest.json)"
         )
 
+    if args.jobs > 1:
+        if str(args.device).lower() == "cuda" and any(
+            metric in metrics_to_compute for metric in ("cosine", "lpips")
+        ):
+            print(
+                "Note: parallel metric workers on CUDA each load their own model state and may "
+                "contend for GPU memory; reduce --jobs or use --device cpu if needed.",
+                file=sys.stderr,
+            )
+        _run_parallel_cache_metrics(
+            cache_parent=cache_dir,
+            tile_ids=tile_ids,
+            orion_root=orion_root,
+            metrics_to_compute=metrics_to_compute,
+            device=args.device,
+            uni_model=args.uni_model,
+            lpips_batch_size=args.lpips_batch_size,
+            requested_jobs=args.jobs,
+        )
+        return
+
+    lpips_loss_fn = None
+    if "lpips" in metrics_to_compute:
+        lpips_loss_fn, _ = _load_lpips_model(args.device)
+    shared_uni_extractor = None
+    if "cosine" in metrics_to_compute:
+        shared_uni_extractor = _load_uni_extractor(args.uni_model, args.device)
+
     for idx, tile_id in enumerate(tile_ids, start=1):
         tile_cache_dir = cache_dir / tile_id
         out_path = compute_metrics_for_cache_dir(
@@ -670,6 +834,7 @@ def main() -> None:
             uni_model=args.uni_model,
             lpips_loss_fn=lpips_loss_fn,
             lpips_batch_size=args.lpips_batch_size,
+            uni_extractor=shared_uni_extractor,
         )
         print(f"[{idx}/{len(tile_ids)}] Wrote metrics → {out_path}")
 

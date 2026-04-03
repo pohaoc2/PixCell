@@ -22,7 +22,7 @@ column is omitted (common for ``inference_data/sample`` without paired H&E tiles
 
 Run from repo root:
 
-  python tools/generate_stage3_tile_vis.py \\
+  python tools/stage3/generate_tile_vis.py \\
       --tile-id sim_0001 \\
       --output-dir inference_output/my_vis
 

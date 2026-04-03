@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import statistics
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".mpl-cache"))
@@ -14,6 +18,11 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, condition_metric_key
 
 INK = "#000000"
 MUTED = "#000000"
@@ -40,7 +49,7 @@ class Combination:
     mask: int
     bits: list[bool]
     n: int
-    metrics: dict[str, dict[str, float]]
+    metrics: dict[str, dict[str, float] | None]
 
 
 METRICS = [
@@ -51,43 +60,72 @@ METRICS = [
     Metric("pq", "PQ", True, (0.0, 0.32)),
 ]
 
-BASE = {"fid": 158, "cosine": 0.410, "lpips": 0.478, "aji": 0.018, "pq": 0.014}
-BONUS = {
-    "fid": [-24, -10, -17, -7],
-    "cosine": [0.052, 0.020, 0.030, 0.014],
-    "lpips": [-0.011, -0.005, -0.009, -0.003],
-    "aji": [0.108, 0.065, 0.050, 0.024],
-    "pq": [0.095, 0.055, 0.048, 0.020],
-}
-JITTER_SCALE = {"fid": 0.28, "cosine": 0.22, "lpips": 0.18, "aji": 0.25, "pq": 0.20}
-STD_BASE = {"fid": 9.5, "cosine": 0.019, "lpips": 0.007, "aji": 0.016, "pq": 0.013}
+def _ordered_condition_tuples() -> list[tuple[str, ...]]:
+    return [
+        tuple(cond)
+        for size in range(1, len(FOUR_GROUP_ORDER) + 1)
+        for cond in combinations(FOUR_GROUP_ORDER, size)
+    ]
 
 
-def lcg(seed: int) -> float:
-    return ((seed * 1664525 + 1013904223) & 0xFFFFFFFF) / 4294967296
+def _condition_mask(cond_tuple: tuple[str, ...]) -> int:
+    groups = set(cond_tuple)
+    mask = 0
+    for idx, group in enumerate(FOUR_GROUP_ORDER):
+        if group in groups:
+            mask |= 1 << idx
+    return mask
 
 
-def build_combinations() -> list[Combination]:
+def load_combinations(metric_dir: Path) -> tuple[list[Combination], int]:
+    grouped: dict[str, dict[str, list[float]]] = {}
+    metrics_paths = sorted(Path(metric_dir).glob("*/metrics.json"))
+    if not metrics_paths:
+        raise FileNotFoundError(
+            f"no per-tile metrics.json files found under {Path(metric_dir).resolve()}"
+        )
+    tile_count = 0
+
+    for metrics_path in metrics_paths:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        per_condition = payload.get("per_condition", {})
+        if not isinstance(per_condition, dict):
+            continue
+        tile_count += 1
+        for cond_key, record in per_condition.items():
+            if not isinstance(record, dict):
+                continue
+            bucket = grouped.setdefault(str(cond_key), {})
+            for metric in METRICS:
+                value = record.get(metric.key)
+                if value is None:
+                    continue
+                bucket.setdefault(metric.key, []).append(float(value))
+
     combinations: list[Combination] = []
-    for mask in range(1, 16):
-        bits = [bool(mask & (1 << index)) for index in range(4)]
-        combinations.append(Combination(mask=mask, bits=bits, n=sum(bits), metrics={}))
-
-    combinations.sort(key=lambda combo: (combo.n, combo.mask))
-
-    for combo in combinations:
+    for cond_tuple in _ordered_condition_tuples():
+        cond_key = condition_metric_key(cond_tuple)
+        metric_stats: dict[str, dict[str, float] | None] = {}
         for metric in METRICS:
-            mean = BASE[metric.key]
-            for group_index, active in enumerate(combo.bits):
-                if active:
-                    mean += BONUS[metric.key][group_index]
+            values = grouped.get(cond_key, {}).get(metric.key, [])
+            metric_stats[metric.key] = (
+                {
+                    "mean": float(statistics.mean(values)),
+                    "std": float(statistics.pstdev(values)) if len(values) > 1 else 0.0,
+                }
+                if values
+                else None
+            )
+        combinations.append(
+            Combination(
+                mask=_condition_mask(cond_tuple),
+                bits=[group in set(cond_tuple) for group in FOUR_GROUP_ORDER],
+                n=len(cond_tuple),
+                metrics=metric_stats,
+            )
+        )
 
-            seed = combo.mask * 31 + ord(metric.key[0])
-            jitter = (lcg(seed) - 0.5) * 2 * STD_BASE[metric.key] * JITTER_SCALE[metric.key]
-            std = STD_BASE[metric.key] * (0.5 + 0.5 * combo.n / 4)
-            combo.metrics[metric.key] = {"mean": mean + jitter, "std": std}
-
-    return combinations
+    return combinations, tile_count
 
 
 def cardinality_spans(combinations: list[Combination]) -> list[tuple[int, int, int]]:
@@ -106,8 +144,32 @@ def fmt_value(metric: Metric, value: float) -> str:
         return str(round(value))
     return f"{value:.3f}"
 
-def render(output_path: Path, dpi: int) -> None:
-    combos = build_combinations()
+
+def _metric_range(metric: Metric, combos: list[Combination]) -> tuple[float, float]:
+    lo, hi = metric.value_range
+    observed: list[float] = []
+    for combo in combos:
+        stats = combo.metrics.get(metric.key)
+        if not stats:
+            continue
+        observed.append(float(stats["mean"] - stats["std"]))
+        observed.append(float(stats["mean"] + stats["std"]))
+    if not observed:
+        return lo, hi
+
+    obs_lo = min(observed)
+    obs_hi = max(observed)
+    lo = min(lo, obs_lo)
+    hi = max(hi, obs_hi)
+    if hi <= lo:
+        pad = 1.0 if metric.key == "fid" else 0.05
+        return lo - pad, hi + pad
+    pad = 0.04 * (hi - lo)
+    return lo - pad, hi + pad
+
+
+def render(metric_dir: Path, output_path: Path, dpi: int) -> None:
+    combos, tile_count = load_combinations(metric_dir)
     spans = cardinality_spans(combos)
 
     plt.rcParams.update(
@@ -141,9 +203,10 @@ def render(output_path: Path, dpi: int) -> None:
         ax = fig.add_subplot(grid[0, column])
         dot_ax = fig.add_subplot(grid[1, column])
 
-        lo, hi = metric.value_range
-        means = [combo.metrics[metric.key]["mean"] for combo in combos]
-        stds = [combo.metrics[metric.key]["std"] for combo in combos]
+        lo, hi = _metric_range(metric, combos)
+        stats_list = [combo.metrics.get(metric.key) for combo in combos]
+        means = [stats["mean"] if stats else None for stats in stats_list]
+        stds = [stats["std"] if stats else 0.0 for stats in stats_list]
         fills = [CARD_COLORS[combo.n - 1] for combo in combos]
 
         ax.set_facecolor("none")
@@ -157,26 +220,42 @@ def render(output_path: Path, dpi: int) -> None:
             ax.axvline(end + 0.5, color="#bcbcbc", linewidth=1.0, linestyle=(0, (3, 2.5)), zorder=1)
             dot_ax.axvline(end + 0.5, color="#d7d0c4", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=0)
 
-        ax.bar(
-            x_positions,
-            means,
-            width=0.64,
-            color=fills,
-            edgecolor=INK,
-            linewidth=0.8,
-            alpha=0.9,
-            zorder=3,
-        )
-        ax.errorbar(
-            x_positions,
-            means,
-            yerr=stds,
-            fmt="none",
-            ecolor="#222222",
-            elinewidth=1.15,
-            capsize=2.8,
-            zorder=4,
-        )
+        if any(mean is not None for mean in means):
+            valid_x = [x for x, mean in zip(x_positions, means, strict=True) if mean is not None]
+            valid_means = [float(mean) for mean in means if mean is not None]
+            valid_stds = [std for mean, std in zip(means, stds, strict=True) if mean is not None]
+            valid_fills = [fill for mean, fill in zip(means, fills, strict=True) if mean is not None]
+            ax.bar(
+                valid_x,
+                valid_means,
+                width=0.64,
+                color=valid_fills,
+                edgecolor=INK,
+                linewidth=0.8,
+                alpha=0.9,
+                zorder=3,
+            )
+            ax.errorbar(
+                valid_x,
+                valid_means,
+                yerr=valid_stds,
+                fmt="none",
+                ecolor="#222222",
+                elinewidth=1.15,
+                capsize=2.8,
+                zorder=4,
+            )
+        else:
+            ax.text(
+                0.5,
+                0.56,
+                f"{metric.label}\nnot available",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=12,
+                color=SOFT,
+            )
 
         for cardinality, start, end in spans:
             center = (start + end) / 2
@@ -202,7 +281,10 @@ def render(output_path: Path, dpi: int) -> None:
             labelpad=10,
         )
         ax.set_yticks([lo + (hi - lo) * tick_index / 5 for tick_index in range(6)])
-        ax.set_yticklabels([fmt_value(metric, lo + (hi - lo) * tick_index / 5) for tick_index in range(6)], fontsize=7.5)
+        ax.set_yticklabels(
+            [fmt_value(metric, lo + (hi - lo) * tick_index / 5) for tick_index in range(6)],
+            fontsize=7.5,
+        )
 
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -258,15 +340,22 @@ def render(output_path: Path, dpi: int) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi, transparent=True)
+    print(f"Rendered dataset metrics from {tile_count} tiles -> {output_path}")
     plt.close(fig)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render dataset_metrics_option_a.png.")
+    parser = argparse.ArgumentParser(description="Render dataset_metrics.png from cached metrics.")
+    parser.add_argument(
+        "--metric-dir",
+        type=Path,
+        default=ROOT / "inference_output" / "full_ablation",
+        help="Directory containing per-tile metrics.json files.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "dataset_metrics_option_a.png",
+        default=ROOT / "dataset_metrics.png",
         help="PNG output path.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="PNG DPI.")
@@ -275,7 +364,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    render(args.output.resolve(), dpi=args.dpi)
+    metric_dir = args.metric_dir.resolve()
+    if not metric_dir.exists():
+        raise SystemExit(f"metric dir not found: {metric_dir}")
+    render(metric_dir, args.output.resolve(), dpi=args.dpi)
 
 
 if __name__ == "__main__":

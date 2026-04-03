@@ -17,6 +17,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -111,27 +112,15 @@ def compute_scores_for_manifest(
     return per_condition
 
 
-def compute_and_write_uni_cosine_scores(
-    cache_dir: Path,
+def load_uni_extractor(
     *,
-    orion_root: Path,
-    reference_uni: Path | None = None,
-    reference_he: Path | None = None,
     uni_model: Path | None = None,
     device: str = "cuda",
-    output_path: Path | None = None,
-) -> tuple[Path, dict, dict[str, float]]:
-    """
-    Run UNI embedding + cosine for every manifest entry; write ``uni_cosine_scores.json``.
-
-    Returns ``(out_path, reference_meta, per_condition)``.
-    """
+):
+    """Load one UNI extractor with the usual cuda->cpu fallback."""
     from pipeline.extract_features import UNI2hExtractor
 
-    cache_dir = Path(cache_dir).resolve()
-    orion_root = Path(orion_root).resolve()
     uni_model = Path(uni_model) if uni_model is not None else ROOT / "pretrained_models/uni-2h"
-    out_path = output_path if output_path is not None else cache_dir / "uni_cosine_scores.json"
 
     devices_try: list[str]
     if str(device).lower() == "cuda":
@@ -151,6 +140,32 @@ def compute_and_write_uni_cosine_scores(
     if extractor is None:
         assert last_err is not None
         raise last_err
+    return extractor
+
+
+def compute_and_write_uni_cosine_scores(
+    cache_dir: Path,
+    *,
+    orion_root: Path,
+    reference_uni: Path | None = None,
+    reference_he: Path | None = None,
+    uni_model: Path | None = None,
+    device: str = "cuda",
+    output_path: Path | None = None,
+    extractor: Any | None = None,
+) -> tuple[Path, dict, dict[str, float]]:
+    """
+    Run UNI embedding + cosine for every manifest entry; write ``uni_cosine_scores.json``.
+
+    Returns ``(out_path, reference_meta, per_condition)``.
+    """
+    cache_dir = Path(cache_dir).resolve()
+    orion_root = Path(orion_root).resolve()
+    uni_model = Path(uni_model) if uni_model is not None else ROOT / "pretrained_models/uni-2h"
+    out_path = output_path if output_path is not None else cache_dir / "uni_cosine_scores.json"
+
+    if extractor is None:
+        extractor = load_uni_extractor(uni_model=uni_model, device=device)
 
     ref_emb, ref_meta = resolve_reference_embedding(
         cache_dir=cache_dir,

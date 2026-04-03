@@ -638,7 +638,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="n_tiles",
         metavar="N",
-        help="Randomly sample N tiles from --data-root and write each under --cache-dir/{tile_id}",
+        help="Randomly sample N tiles from --data-root and write each under --output-dir/{tile_id}",
     )
     mode.add_argument(
         "--existing-cache-parent",
@@ -651,12 +651,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--output-dir",
         "--cache-dir",
         type=str,
         default=None,
+        dest="output_dir",
         help=(
-            "With --tile-id: output dir for that tile (default: inference_output/cache/{tile_id}). "
-            "With --n-tiles: parent directory (default: inference_output/cache)."
+            "Preferred name: --output-dir. With --tile-id: output dir for that tile "
+            "(default: inference_output/full_ablation/{tile_id}). With --n-tiles: parent "
+            "directory (default: inference_output/full_ablation). --cache-dir is kept as a "
+            "backward-compatible alias."
         ),
     )
     parser.add_argument("--device", type=str, default="cuda")
@@ -738,7 +742,7 @@ def main() -> None:
 
     data_root = Path(args.exp_root if args.exp_root is not None else args.data_root)
     exp_channels_dir, feat_dir, _ = resolve_data_layout(data_root)
-    cache_parent_default = ROOT / "inference_output" / "cache"
+    cache_parent_default = ROOT / "inference_output" / "full_ablation"
     device = args.device
     feature_device = args.feature_device or device
     uni_model = Path(args.uni_model)
@@ -754,8 +758,8 @@ def main() -> None:
         )
         print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
         cache_dir = (
-            Path(args.cache_dir)
-            if args.cache_dir is not None
+            Path(args.output_dir)
+            if args.output_dir is not None
             else cache_parent_default / args.tile_id
         )
         uni_override = Path(args.uni_npy) if args.uni_npy else None
@@ -795,7 +799,7 @@ def main() -> None:
 
         random.seed(args.tile_sample_seed)
         selected = random.sample(all_ids, args.n_tiles)
-        cache_parent = Path(args.cache_dir) if args.cache_dir is not None else cache_parent_default
+        cache_parent = Path(args.output_dir) if args.output_dir is not None else cache_parent_default
         print(
             f"Sampled {args.n_tiles} tiles (tile_sample_seed={args.tile_sample_seed}): {selected}"
         )
