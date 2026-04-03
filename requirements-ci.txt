@@ -1,0 +1,10 @@
+# Minimal dependencies for the targeted GitHub Actions CI job.
+# Keep this focused on the files and tests listed in .github/workflows/ci.yml.
+numpy==2.0.2
+opencv-python-headless>=4.9.0
+matplotlib>=3.8.0
+Pillow>=10.0.0
+pytest
+pytest-cov
+black
+pylint

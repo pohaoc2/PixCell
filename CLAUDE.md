@@ -54,3 +54,11 @@
 - Preserve `cell_masks`/`cell_mask` compatibility when touching datasets or inference.
 - If changing inference/training group logic, update both code and tests.
 - Read `README.md` only for full setup instructions; this file is the short agent handoff.
+
+## Token Efficiency — Use Codex for Heavy Commands
+
+Before running commands with large output (git diffs, recursive file listings, large log files, full dataset inspection), delegate to the Codex subagent to summarize instead of flooding Claude's context.
+
+- See `CODEX_COMMANDS.md` for the full reference of which commands to delegate and how.
+- Trigger with: "Use Codex to run `<command>` and summarize the result."
+- Codex runs on OpenAI credits, not Claude tokens.
