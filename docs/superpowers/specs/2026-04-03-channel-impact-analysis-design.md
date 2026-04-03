@@ -171,26 +171,28 @@ Runs all three experiments using models loaded once. Reads tile selection from `
 **Tile selection:** Top-1 tile per cell composition class from `tile_classes.json` → 3 tiles  
 Select the tile with the highest axis1 purity score from the `neutral` axis2 group (oxygen and glucose both near median), so the sweep has room to go both up and down meaningfully. Fallback to any axis2 class if `neutral` is unpopulated for that axis1.
 
-**Sweep:** For each tile, independently sweep each continuous channel:
-- Scales: `[0, 0.25, 0.5, 0.75, 1.0]` applied as `channel_pixels × scale`
-- Channel being swept: replace its spatial map with `original × scale`
+**Sweep:** Full 2D combination grid over both channels simultaneously:
+- Scales: `[0, 0.25, 0.5, 0.75, 1.0]` for each of O₂ and glucose independently
+- Each combination `(o2_scale, glucose_scale)`: replace O₂ map with `original_O₂ × o2_scale`, glucose map with `original_glucose × glucose_scale`
 - All other channels remain at original values
-- Baseline = scale 1.0 (unmodified tile)
+- Baseline = `(1.0, 1.0)` (unmodified tile)
 
-**Inference runs per tile:** 5 (O₂ sweep) + 4 (glucose sweep, baseline shared) = 9 runs  
-**Total:** 3 tiles × 9 = 27 runs
+**Inference runs per tile:** 5 × 5 = 25 combinations  
+**Total:** 3 tiles × 25 = 75 runs
 
-**Figure layout** (one figure per tile):
+**Figure layout** (one figure per tile, 5×5 grid):
 ```
-             scale=0   0.25    0.5    0.75   1.0(baseline)
-O2 row:     [H&E]    [H&E]  [H&E]  [H&E]   [H&E]
-            [diff]   [diff] [diff] [diff]   [—]
-glucose row:[H&E]    [H&E]  [H&E]  [H&E]   [H&E]
-            [diff]   [diff] [diff] [diff]   [—]
-LPIPS curve:────────────────────────────────────  (one line per channel)
+                 glucose=0  0.25   0.5    0.75   1.0
+O₂=0:          [H&E]      [H&E]  [H&E]  [H&E]  [H&E]
+O₂=0.25:       [H&E]      [H&E]  [H&E]  [H&E]  [H&E]
+O₂=0.5:        [H&E]      [H&E]  [H&E]  [H&E]  [H&E]
+O₂=0.75:       [H&E]      [H&E]  [H&E]  [H&E]  [H&E]
+O₂=1.0(base):  [H&E]      [H&E]  [H&E]  [H&E]  [H&E ★]
 ```
-- Header: cell composition thumbnail showing tile class
-- LPIPS curve at bottom: x=scale, y=LPIPS vs baseline, one line per swept channel
+- ★ marks baseline cell `(1.0, 1.0)` with a border highlight
+- Each cell also shows a small diff heatmap thumbnail vs baseline (bottom-left inset)
+- Bottom strip: LPIPS heatmap (5×5 scalar grid, colormap) — shows dose-response surface
+- Header: cell composition thumbnail + tile class label
 
 ---
 
@@ -258,7 +260,7 @@ def channel_indices_for_group(active_channels, group_name, channel_groups):
 ### Total inference budget
 | Experiment | Tiles | Runs/tile | Total |
 |---|---|---|---|
-| 1 (microenv sweep) | 3 | 9 | 27 |
+| 1 (microenv 2D grid) | 3 | 25 | 75 |
 | 2 (cell type relabeling) | 3 | 3 | 9 |
 | 3 (cell state relabeling) | 3 | 3 | 9 |
-| **Total** | | | **45 runs** |
+| **Total** | | | **93 runs** |
