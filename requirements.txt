@@ -20,6 +20,7 @@ mmengine
 timm>=0.9.0
 einops
 opencv-python-headless>=4.9.0
+lpips
 yapf==0.40.1
 h5py
 

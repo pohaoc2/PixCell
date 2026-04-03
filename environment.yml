@@ -22,4 +22,5 @@ dependencies:
     - opencv-python
     - bs4
     - einops
+    - lpips
     - xformers
