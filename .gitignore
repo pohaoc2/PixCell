@@ -9,6 +9,7 @@
 *.pt
 *.csv
 *.txt
+!requirements-ci.txt
 *.json
 *.zip
 *.npy
