@@ -42,6 +42,17 @@ class CachedInferenceFeaturesTests(unittest.TestCase):
             self.assertTrue(cache_path.exists())
             self.assertTrue(np.array_equal(np.load(cache_path), expected))
 
+    def test_load_or_compute_npy_creates_missing_parent_directories(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "nested" / "cache" / "feature.npy"
+            expected = np.array([4.0, 5.0], dtype=np.float32)
+
+            loaded = load_or_compute_npy(cache_path, lambda: expected)
+
+            self.assertTrue(np.array_equal(loaded, expected))
+            self.assertTrue(cache_path.exists())
+            self.assertTrue(cache_path.parent.is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()

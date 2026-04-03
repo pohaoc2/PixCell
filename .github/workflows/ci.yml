@@ -17,25 +17,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "requirements-ci.txt"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install black pylint pytest pytest-cov numpy pillow matplotlib opencv-python-headless
+          python -m pip install -r requirements-ci.txt
 
       - name: Check formatting (black)
         run: |
-          black --check tools/cached_inference_features.py tools/visualize_pretrained_inference.py tests/test_cached_inference_features.py tests/test_visualize_pretrained_inference.py
+          black --check train_scripts/initialize_models_utils.py tools/pretrained_verify/cached_inference_features.py tools/pretrained_verify/visualize_pretrained_inference.py tests/test_cached_inference_features.py tests/test_initialize_models_utils.py tests/test_visualize_pretrained_inference.py
 
       - name: Lint (pylint)
         run: |
           export PYTHONPATH="${PYTHONPATH}:."
-          pylint --rcfile=.pylintrc tools/cached_inference_features.py tools/visualize_pretrained_inference.py tests/test_cached_inference_features.py tests/test_visualize_pretrained_inference.py
+          pylint --rcfile=.pylintrc train_scripts/initialize_models_utils.py tools/pretrained_verify/cached_inference_features.py tools/pretrained_verify/visualize_pretrained_inference.py tests/test_cached_inference_features.py tests/test_initialize_models_utils.py tests/test_visualize_pretrained_inference.py
 
       - name: Run tests with coverage
         run: |
-          pytest tests/test_cached_inference_features.py tests/test_visualize_pretrained_inference.py \
-            --cov=tools --cov-config=.coveragerc --cov-report=xml --cov-report=term-missing \
+          pytest tests/test_cached_inference_features.py tests/test_initialize_models_utils.py tests/test_visualize_pretrained_inference.py \
+            --cov=train_scripts.initialize_models_utils \
+            --cov=tools.pretrained_verify.cached_inference_features \
+            --cov=tools.pretrained_verify.visualize_pretrained_inference \
+            --cov-config=.coveragerc --cov-report=xml --cov-report=term-missing \
             --cov-fail-under=90
 
       - name: Upload coverage to Codecov
