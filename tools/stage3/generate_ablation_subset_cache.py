@@ -15,6 +15,7 @@ Optionally caches UNI features for every manifest image under:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import os
 import random
@@ -27,6 +28,10 @@ from diffusers import DDPMScheduler
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _is_cuda_device(device: str) -> bool:
+    return str(device).lower().startswith("cuda")
 
 
 def _resolve_uni_embedding(
@@ -158,7 +163,7 @@ def _cache_features_for_cache_dir(
             force=force,
         )
     except Exception as exc:
-        if str(device).lower() != "cuda":
+        if not _is_cuda_device(device):
             raise
         print(f"Note: feature caching on cuda failed ({exc}); retrying on cpu")
         return cache_manifest_uni_features(
@@ -406,6 +411,194 @@ def backfill_all_for_cache_dir(
     return tile_id, True
 
 
+def _make_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:
+    scheduler = DDPMScheduler(
+        num_train_timesteps=1000,
+        beta_start=0.0001,
+        beta_end=0.02,
+        beta_schedule="linear",
+        prediction_type="epsilon",
+        clip_sample=False,
+    )
+    scheduler.set_timesteps(num_steps, device=device)
+    return scheduler
+
+
+def _load_runtime(
+    *,
+    config_path: str,
+    checkpoint_dir: str | None,
+    data_root: str,
+    device: str,
+    num_steps: int,
+) -> dict:
+    from diffusion.utils.misc import read_config
+    from tools.stage3.tile_pipeline import (
+        find_latest_checkpoint_dir,
+        load_all_models,
+        resolve_data_layout,
+    )
+
+    data_root_path = Path(data_root)
+    exp_channels_dir, feat_dir, _ = resolve_data_layout(data_root_path)
+
+    ckpt_parent = (
+        Path(checkpoint_dir)
+        if checkpoint_dir
+        else ROOT / "checkpoints/pixcell_controlnet_exp/checkpoints"
+    )
+    ckpt_dir = find_latest_checkpoint_dir(ckpt_parent)
+
+    config = read_config(config_path)
+    config._filename = config_path
+    models = load_all_models(config, config_path, ckpt_dir, device)
+    scheduler = _make_scheduler(num_steps=num_steps, device=device)
+
+    return {
+        "config": config,
+        "models": models,
+        "scheduler": scheduler,
+        "exp_channels_dir": exp_channels_dir,
+        "feat_dir": feat_dir,
+        "ckpt_dir": ckpt_dir,
+    }
+
+
+def _build_worker_common_args(args: argparse.Namespace, *, data_root: Path) -> dict:
+    return {
+        "config_path": args.config,
+        "checkpoint_dir": args.checkpoint_dir,
+        "data_root": str(data_root),
+        "device": args.device,
+        "guidance_scale": args.guidance_scale,
+        "num_steps": args.num_steps,
+        "seed": args.seed,
+        "null_uni": args.null_uni,
+        "cache_uni_features": args.cache_uni_features,
+        "force_uni_features": args.force_uni_features,
+        "uni_model": args.uni_model,
+        "feature_device": args.feature_device or args.device,
+    }
+
+
+def _generate_tile_job(job: dict) -> tuple[str, int]:
+    os.chdir(ROOT)
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+    runtime = _load_runtime(
+        config_path=job["config_path"],
+        checkpoint_dir=job["checkpoint_dir"],
+        data_root=job["data_root"],
+        device=job["device"],
+        num_steps=job["num_steps"],
+    )
+    print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
+
+    tile_id = str(job["tile_id"])
+    cache_dir = Path(job["cache_dir"])
+    generate_subset_cache_for_tile(
+        tile_id,
+        cache_dir=cache_dir,
+        models=runtime["models"],
+        config=runtime["config"],
+        scheduler=runtime["scheduler"],
+        exp_channels_dir=runtime["exp_channels_dir"],
+        feat_dir=runtime["feat_dir"],
+        device=job["device"],
+        guidance_scale=job["guidance_scale"],
+        seed=job["seed"],
+        null_uni=job["null_uni"],
+        uni_npy=None,
+    )
+
+    written = 0
+    if job["cache_uni_features"]:
+        written = _cache_features_for_cache_dir(
+            cache_dir,
+            uni_model=Path(job["uni_model"]),
+            device=job["feature_device"],
+            force=job["force_uni_features"],
+        )
+        print(f"[{tile_id}] Cached {written} UNI feature files")
+    return tile_id, written
+
+
+def _backfill_cache_job(job: dict) -> tuple[str, bool, int]:
+    os.chdir(ROOT)
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+    runtime = _load_runtime(
+        config_path=job["config_path"],
+        checkpoint_dir=job["checkpoint_dir"],
+        data_root=job["data_root"],
+        device=job["device"],
+        num_steps=job["num_steps"],
+    )
+    print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
+
+    cache_dir = Path(job["cache_dir"])
+    tile_id, changed = backfill_all_for_cache_dir(
+        cache_dir,
+        models=runtime["models"],
+        config=runtime["config"],
+        scheduler=runtime["scheduler"],
+        exp_channels_dir=runtime["exp_channels_dir"],
+        feat_dir=runtime["feat_dir"],
+        device=job["device"],
+        guidance_scale=job["guidance_scale"],
+        seed=job["seed"],
+        null_uni=job["null_uni"],
+    )
+
+    written = 0
+    if job["cache_uni_features"]:
+        written = _cache_features_for_cache_dir(
+            cache_dir,
+            uni_model=Path(job["uni_model"]),
+            device=job["feature_device"],
+            force=job["force_uni_features"],
+        )
+        print(f"[{tile_id}] Cached {written} UNI feature files")
+    return tile_id, changed, written
+
+
+def _run_parallel_jobs(
+    *,
+    jobs: list[dict],
+    worker_fn,
+    requested_jobs: int,
+    label: str,
+) -> list:
+    worker_count = min(max(1, int(requested_jobs)), len(jobs), os.cpu_count() or max(1, int(requested_jobs)))
+    print(f"Running {len(jobs)} {label} job(s) with {worker_count} worker process(es)")
+
+    results: list = []
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(worker_fn, job) for job in jobs]
+        total = len(futures)
+        completed = 0
+        _print_progress(0, total, prefix=label.title())
+        for future in as_completed(futures):
+            results.append(future.result())
+            completed += 1
+            _print_progress(completed, total, prefix=label.title())
+    return results
+
+
+def _print_progress(completed: int, total: int, *, prefix: str) -> None:
+    """Write a simple in-place progress bar to stderr."""
+    total = max(1, total)
+    width = 28
+    filled = int(width * completed / total)
+    bar = "#" * filled + "-" * (width - filled)
+    msg = f"\r{prefix} [{bar}] {completed}/{total}"
+    if completed >= total:
+        msg += "\n"
+    print(msg, end="", file=sys.stderr, flush=True)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -510,6 +703,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Device for UNI feature extraction (default: same as --device).",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help=(
+            "Worker processes for per-tile work in --n-tiles or --existing-cache-parent mode "
+            "(default: 1). Each worker loads its own models."
+        ),
+    )
     return parser
 
 
@@ -517,6 +719,8 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.jobs < 1:
+        parser.error("--jobs must be >= 1")
     if args.n_tiles is not None and args.uni_npy is not None:
         parser.error("--uni-npy is only supported with --tile-id (single tile)")
     if args.existing_cache_parent is not None and args.uni_npy is not None:
@@ -526,47 +730,29 @@ def main() -> None:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    from diffusion.utils.misc import read_config
     from tools.stage3.ablation_cache import list_cached_tile_ids
     from tools.stage3.tile_pipeline import (
-        find_latest_checkpoint_dir,
         list_tile_ids_from_exp_channels,
-        load_all_models,
         resolve_data_layout,
     )
 
     data_root = Path(args.exp_root if args.exp_root is not None else args.data_root)
     exp_channels_dir, feat_dir, _ = resolve_data_layout(data_root)
-
-    ckpt_parent = (
-        Path(args.checkpoint_dir)
-        if args.checkpoint_dir
-        else ROOT / "checkpoints/pixcell_controlnet_exp/checkpoints"
-    )
-    ckpt_dir = find_latest_checkpoint_dir(ckpt_parent)
-    print(f"Using checkpoint dir: {ckpt_dir}")
-
-    config = read_config(args.config)
-    config._filename = args.config
+    cache_parent_default = ROOT / "inference_output" / "cache"
     device = args.device
     feature_device = args.feature_device or device
     uni_model = Path(args.uni_model)
-
-    models = load_all_models(config, args.config, ckpt_dir, device)
-
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(args.num_steps, device=device)
-
-    cache_parent_default = ROOT / "inference_output" / "cache"
+    worker_common = _build_worker_common_args(args, data_root=data_root)
 
     if args.tile_id is not None:
+        runtime = _load_runtime(
+            config_path=args.config,
+            checkpoint_dir=args.checkpoint_dir,
+            data_root=str(data_root),
+            device=device,
+            num_steps=args.num_steps,
+        )
+        print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
         cache_dir = (
             Path(args.cache_dir)
             if args.cache_dir is not None
@@ -576,11 +762,11 @@ def main() -> None:
         generate_subset_cache_for_tile(
             args.tile_id,
             cache_dir=cache_dir,
-            models=models,
-            config=config,
-            scheduler=scheduler,
-            exp_channels_dir=exp_channels_dir,
-            feat_dir=feat_dir,
+            models=runtime["models"],
+            config=runtime["config"],
+            scheduler=runtime["scheduler"],
+            exp_channels_dir=runtime["exp_channels_dir"],
+            feat_dir=runtime["feat_dir"],
             device=device,
             guidance_scale=args.guidance_scale,
             seed=args.seed,
@@ -614,16 +800,53 @@ def main() -> None:
             f"Sampled {args.n_tiles} tiles (tile_sample_seed={args.tile_sample_seed}): {selected}"
         )
 
-        for tile_id in selected:
+        if args.jobs > 1 and _is_cuda_device(device):
+            print(
+                "Note: parallel workers on CUDA each load a full checkpoint and may contend for GPU "
+                "memory; reduce --jobs or use --device cpu if needed."
+            )
+        if args.jobs > 1:
+            jobs = [
+                {
+                    **worker_common,
+                    "tile_id": tile_id,
+                    "cache_dir": str(cache_parent / tile_id),
+                }
+                for tile_id in selected
+            ]
+            total_features = sum(
+                written for _, written in _run_parallel_jobs(
+                    jobs=jobs,
+                    worker_fn=_generate_tile_job,
+                    requested_jobs=args.jobs,
+                    label="generation",
+                )
+            )
+            if args.cache_uni_features:
+                print(f"Done. Generated {len(selected)} tile caches; new UNI features: {total_features}")
+            else:
+                print(f"Done. Generated {len(selected)} tile caches")
+            return
+
+        runtime = _load_runtime(
+            config_path=args.config,
+            checkpoint_dir=args.checkpoint_dir,
+            data_root=str(data_root),
+            device=device,
+            num_steps=args.num_steps,
+        )
+        print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
+        _print_progress(0, len(selected), prefix="Generation")
+        for idx, tile_id in enumerate(selected, start=1):
             cache_dir = cache_parent / tile_id
             generate_subset_cache_for_tile(
                 tile_id,
                 cache_dir=cache_dir,
-                models=models,
-                config=config,
-                scheduler=scheduler,
-                exp_channels_dir=exp_channels_dir,
-                feat_dir=feat_dir,
+                models=runtime["models"],
+                config=runtime["config"],
+                scheduler=runtime["scheduler"],
+                exp_channels_dir=runtime["exp_channels_dir"],
+                feat_dir=runtime["feat_dir"],
                 device=device,
                 guidance_scale=args.guidance_scale,
                 seed=args.seed,
@@ -638,6 +861,7 @@ def main() -> None:
                     force=args.force_uni_features,
                 )
                 print(f"[{tile_id}] Cached {written} UNI feature files")
+            _print_progress(idx, len(selected), prefix="Generation")
         return
 
     cache_parent = Path(args.existing_cache_parent).resolve()
@@ -654,15 +878,53 @@ def main() -> None:
     backfilled = 0
     total_features = 0
     print(f"Found {len(cached_ids)} existing cache dirs under {cache_parent}")
-    for tile_name in cached_ids:
+
+    if args.jobs > 1 and _is_cuda_device(device):
+        print(
+            "Note: parallel workers on CUDA each load a full checkpoint and may contend for GPU "
+            "memory; reduce --jobs or use --device cpu if needed."
+        )
+    if args.jobs > 1:
+        jobs = [
+            {
+                **worker_common,
+                "cache_dir": str(cache_parent / tile_name),
+            }
+            for tile_name in cached_ids
+        ]
+        for _, changed, written in _run_parallel_jobs(
+            jobs=jobs,
+            worker_fn=_backfill_cache_job,
+            requested_jobs=args.jobs,
+            label="backfill",
+        ):
+            if changed:
+                backfilled += 1
+            total_features += written
+        print(
+            f"Done. Processed {len(cached_ids)} caches, backfilled all/ for {backfilled}, "
+            f"new UNI features: {total_features}"
+        )
+        return
+
+    runtime = _load_runtime(
+        config_path=args.config,
+        checkpoint_dir=args.checkpoint_dir,
+        data_root=str(data_root),
+        device=device,
+        num_steps=args.num_steps,
+    )
+    print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
+    _print_progress(0, len(cached_ids), prefix="Backfill")
+    for idx, tile_name in enumerate(cached_ids, start=1):
         tile_cache_dir = cache_parent / tile_name
         tile_id, changed = backfill_all_for_cache_dir(
             tile_cache_dir,
-            models=models,
-            config=config,
-            scheduler=scheduler,
-            exp_channels_dir=exp_channels_dir,
-            feat_dir=feat_dir,
+            models=runtime["models"],
+            config=runtime["config"],
+            scheduler=runtime["scheduler"],
+            exp_channels_dir=runtime["exp_channels_dir"],
+            feat_dir=runtime["feat_dir"],
             device=device,
             guidance_scale=args.guidance_scale,
             seed=args.seed,
@@ -680,6 +942,7 @@ def main() -> None:
             )
             total_features += written
             print(f"[{tile_id}] Cached {written} UNI feature files")
+        _print_progress(idx, len(cached_ids), prefix="Backfill")
 
     print(
         f"Done. Processed {len(cached_ids)} caches, backfilled all/ for {backfilled}, "

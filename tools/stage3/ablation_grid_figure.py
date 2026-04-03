@@ -284,7 +284,7 @@ def _draw_dot_row(
         face = color if active else "white"
         edge = "black"
         ax.scatter(
-            [x], [dot_y], s=100,
+            [x], [dot_y], s=100, marker="s",
             c=[face], edgecolors=[edge], linewidths=0.8,
             zorder=3,
         )

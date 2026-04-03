@@ -76,8 +76,6 @@ def save_comparison_figure(
     )
 
     fig, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 5))
-    if len(panels) == 1:
-        axes = [axes]
 
     for ax, (image, title) in zip(axes, panels):
         ax.imshow(image)

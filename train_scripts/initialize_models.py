@@ -1,6 +1,5 @@
 # %%
 import os
-import argparse
 import datetime
 import time
 import types
@@ -34,18 +33,10 @@ from train_scripts.mapping_weights_helper import (
     load_controlnet_weights_flexible,
     load_model_weights_flexible,
 )
+from train_scripts.initialize_models_utils import find_checkpoint, parse_args, set_fsdp_env
 import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
-
-
-def set_fsdp_env():
-    """Set environment variables for FSDP training."""
-    os.environ["ACCELERATE_USE_FSDP"] = "true"
-    os.environ["FSDP_AUTO_WRAP_POLICY"] = "TRANSFORMER_BASED_WRAP"
-    os.environ["FSDP_BACKWARD_PREFETCH"] = "BACKWARD_PRE"
-    os.environ["FSDP_TRANSFORMER_CLS_TO_WRAP"] = "PixArtBlock"
-
 
 def ema_update(model_dest: nn.Module, model_src: nn.Module, rate):
     """Update EMA model parameters."""
@@ -54,22 +45,6 @@ def ema_update(model_dest: nn.Module, model_src: nn.Module, rate):
         p_src = param_dict_src[p_name]
         assert p_src is not p_dest
         p_dest.data.mul_(rate).add_((1 - rate) * p_src.data)
-
-
-def _find_checkpoint(resume_dir):
-    """Find the latest checkpoint in a directory."""
-    if os.path.isfile(resume_dir):
-        return resume_dir
-
-    checkpoints = [ckpt for ckpt in os.listdir(resume_dir) if ckpt.endswith(".pth")]
-    if len(checkpoints) == 0:
-        raise ValueError(f"No checkpoint found in {resume_dir}")
-
-    checkpoints = sorted(
-        checkpoints, key=lambda x: int(x.split("_")[-1].replace(".pth", "")), reverse=True
-    )
-    return os.path.join(resume_dir, checkpoints[0])
-
 
 def _setup_accelerator(config, args):
     """Initialize accelerator with appropriate settings."""
@@ -127,31 +102,6 @@ def _resume_from_checkpoint(
 
     return start_epoch, start_step
 
-
-def parse_args(args_list=None):
-    """
-    Parse command-line arguments.
-
-    Args:
-        args_list: List of arguments (for programmatic use) or None (for CLI use)
-    """
-    parser = argparse.ArgumentParser(description="Train ControlNet for PixCell-256")
-    parser.add_argument("config", type=str, help="config")
-    parser.add_argument("--work-dir", help="the dir to save logs and models")
-    parser.add_argument("--resume-from", help="the dir to resume the training")
-    parser.add_argument("--load-from", help="the checkpoint to load from")
-    parser.add_argument("--local-rank", type=int, default=-1)
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--report-to", type=str, default="tensorboard")
-    parser.add_argument("--tracker-project-name", type=str, default="pixcell_controlnet")
-    parser.add_argument("--slurm-time-limit", type=float, default=float("inf"))
-    parser.add_argument("--loss-report-name", type=str, default="loss")
-    parser.add_argument("--skip-step", type=int, default=0)
-
-    return parser.parse_args(args_list)
-
-
 def initialize_config_and_accelerator(args_list=None):
     """
     Parse arguments, read config, and initialize accelerator.
@@ -167,7 +117,7 @@ def initialize_config_and_accelerator(args_list=None):
         config.work_dir = args.work_dir
 
     if args.resume_from is not None:
-        resume_from = _find_checkpoint(args.resume_from)
+        resume_from = find_checkpoint(args.resume_from)
         config.load_from = None
         config.resume_from = dict(
             checkpoint=resume_from, load_ema=True, resume_optimizer=True, resume_lr_scheduler=True
