@@ -13,7 +13,7 @@
 
 ---
 
-## Status: Tasks 1–7 complete (2026-04-02)
+## Status: Tasks 1–7 and Task 11 complete (2026-04-02)
 
 ### ✅ Task 1: Skeleton, constants, and pure helpers — DONE
 `tools/stage3_ablation_grid_figure.py` created with `_cardinality_color`, `_condition_label`, `_find_real_he`. Tests pass.
@@ -309,56 +309,28 @@ git commit -m "feat: replace cosine bar with 4 stacked metric bars in ablation g
 
 ---
 
-### Task 11: Web vis generator script
+### ✅ Task 11: Web vis generator script — DONE
 
-**Files:**
-- Create: `tools/stage3_ablation_grid_webvis.py`
+**File:** `tools/stage3_ablation_grid_webvis.py`
 
-**Goal:** Formalize the inline Python HTML generator as a proper reusable CLI script. No new tests (output is HTML, tested by manual verification).
+Implemented and reviewed. Final design choices:
 
-- [ ] **Step 1: Create `tools/stage3_ablation_grid_webvis.py`**
+- **Static layout** — pre-sorted by PQ desc (cosine as tiebreaker); no JS sort buttons.
+- **Lime-green contour** — `cell_mask.png` contour baked into every generated H&E image via matplotlib (`levels=[0.5], linewidths=0.7, alpha=0.85`), matching the static figure.
+- **Dot row labels** — CT / CS / Vas / Env labels rendered above dots on the first cell only.
+- **No rank badge** — rank #N removed from cells.
+- **No condition label row** — "CT+CS+Vas" text removed; tooltip still shows active groups on hover.
+- **Nu → Env** — `microenv` short label updated to "Env" throughout.
+- Hover tooltip retained for exploration.
+- All images base64-embedded; output is `<cache_dir>/ablation_grid.html`.
 
-Extract the HTML generation logic from the session prototype into a proper script. Key functions:
-
-```python
-def render_ablation_grid_html(
-    cache_dir: Path,
-    *,
-    all4ch_image: Path,
-    orion_root: Path,
-    tile_id: str,
-    out_html: Path,
-) -> Path:
-    """Generate self-contained HTML ablation grid. Returns path to HTML."""
-    ...
-
-def main() -> None:
-    ...
-```
-
-The HTML must:
-- Embed all images as base64 (self-contained, no server needed after generation).
-- Load metrics from `metrics.json` (fall back to `uni_cosine_scores.json` for cosine only).
-- Show 4 metric bars per cell (Co/LP/AJ/PQ), dashed placeholder for nulls.
-- Support sort by any metric via JS buttons.
-- Pin Real H&E at position 16 regardless of sort.
-- Show rank badge and hover tooltip with all 4 values.
-
-- [ ] **Step 2: Smoke test**
-
+CLI:
 ```bash
 python3 tools/stage3_ablation_grid_webvis.py \
-  --cache-dir inference_output/test_combinations/17408_32768 \
+  --cache-dir inference_output/test_combinations/<tile_id> \
   --orion-root data/orion-crc33 \
-  --all4ch-image inference_output/test_combinations/17408_32768/all/generated_he.png
-# Open inference_output/test_combinations/17408_32768/ablation_grid.html
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add tools/stage3_ablation_grid_webvis.py
-git commit -m "feat: add stage3_ablation_grid_webvis CLI script"
+  --all4ch-image inference_output/test_combinations/<tile_id>/all/generated_he.png \
+  [--output-name ablation_grid]
 ```
 
 ---
@@ -370,6 +342,6 @@ git commit -m "feat: add stage3_ablation_grid_webvis CLI script"
 - [ ] AJI/PQ use `cell_masks` as GT (not ref H&E)
 - [ ] CellViT model path defaults to `pretrained_models/cellvit-sam-h/`
 - [ ] `--sort-by` flag wired through CLI → render function → sort helper
-- [ ] Web vis reads `metrics.json`, falls back to `uni_cosine_scores.json`
+- [x] Web vis reads `metrics.json`, falls back to `uni_cosine_scores.json`
 - [ ] All existing 8 tests still pass after Task 10 changes
 - [ ] Static figure GridSpec `bars_row` height ratio updated to `0.35`

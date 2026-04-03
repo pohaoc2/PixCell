@@ -1,21 +1,25 @@
 """
-4×4 ablation grid figure: 16 conditions (14 ablation + All-4-ch + Real H&E) sorted by cosine similarity.
+4×4 ablation grid figure with four per-condition metric bars.
 
-Reads ``manifest.json`` (14 ablation conditions) plus a separately supplied All-4-ch image.
-Cosine scores are loaded from ``uni_cosine_scores.json`` or auto-computed via UNI-2h.
+Reads ``manifest.json`` (14 ablation conditions) plus a separately supplied All-4-ch
+image. Metrics are loaded from ``metrics.json`` with ``uni_cosine_scores.json`` fallback,
+and cosine can still be auto-computed via UNI-2h when requested.
 
 Outputs ``<cache_dir>/ablation_grid.png``.
 """
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import os
 import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.gridspec as gridspec
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
@@ -24,6 +28,13 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["font.sans-serif"] = ["Helvetica", "Arial", "DejaVu Sans"]
+
+from tools.compute_ablation_metrics import (
+    _merge_cosine_into_metrics,
+    load_or_build_metrics,
+)
 from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
@@ -44,6 +55,14 @@ _COLOR_BY_CARD: dict[int, str] = {
 COLOR_REF = "#999999"
 COLOR_INACTIVE = "#CCCCCC"
 BEST_BG = "#FFFBE6"
+METRIC_BAR_FILL = "#111111"
+METRIC_BAR_LABELS: dict[str, str] = {
+    "cosine": "Cosine",
+    "lpips": "LPIPS",
+    "aji": "AJI",
+    "pq": "PQ",
+}
+METRIC_ORDER: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
 
 # CT · CS · Va · Nu (matches FOUR_GROUP_ORDER)
 _GROUP_SHORT: dict[str, str] = {
@@ -66,20 +85,35 @@ def _condition_label(cond: tuple[str, ...]) -> str:
     return "+".join(_GROUP_SHORT[g] for g in FOUR_GROUP_ORDER if g in cond)
 
 
+def _sort_conditions_by_metric(
+    conditions: list[tuple[str, ...]],
+    scores: dict[str, float],
+    *,
+    metric_name: str = "cosine",
+) -> list[tuple[str, ...]]:
+    """Sort 15 conditions by one metric, with missing values last.
+
+    Ties broken lexicographically by condition key string.
+    """
+    ascending = metric_name == "lpips"
+
+    def _key(cond: tuple[str, ...]) -> tuple[float, float, str]:
+        k = condition_metric_key(cond)
+        score = scores.get(k)
+        if score is None:
+            return (1.0, 0.0, k)
+        rank_value = float(score) if ascending else -float(score)
+        return (0.0, rank_value, k)
+
+    return sorted(conditions, key=_key)
+
+
 def _sort_conditions_by_cosine(
     conditions: list[tuple[str, ...]],
     scores: dict[str, float],
 ) -> list[tuple[str, ...]]:
-    """Sort 15 conditions descending by cosine score.
-
-    Ties broken lexicographically by condition key string.
-    Conditions absent from *scores* sort last (treated as -inf).
-    """
-    def _key(cond: tuple[str, ...]) -> tuple[float, str]:
-        k = condition_metric_key(cond)
-        return (-scores.get(k, float("-inf")), k)
-
-    return sorted(conditions, key=_key)
+    """Backward-compatible alias for cosine sorting."""
+    return _sort_conditions_by_metric(conditions, scores, metric_name="cosine")
 
 
 def _compute_image_cosine(
@@ -241,8 +275,8 @@ def _draw_dot_row(
     ax.axis("off")
 
     xs = np.linspace(0.18, 0.82, 4)
-    dot_y = 0.32 if show_labels else 0.50
-    label_y = 0.78
+    dot_y = 0.50
+    label_y = 0.96
 
     for x, g in zip(xs, FOUR_GROUP_ORDER):
         short = _GROUP_SHORT[g]
@@ -272,66 +306,93 @@ def _draw_cell_border(ax, color: str, *, dashed: bool = False) -> None:
             spine.set_linestyle("--")
 
 
-def _draw_cosine_bar_cell(ax, score: float | None) -> None:
-    """Centered cosine bar: 0 in the middle, ±1 at the edges, monochrome.
+def _metric_fill_fraction(
+    metric_name: str,
+    value: float | None,
+) -> float | None:
+    if value is None:
+        return None
+    del metric_name
+    return float(np.clip(float(value), 0.0, 1.0))
 
-    A light-grey track spans the full [-1, 1] range.  A thin vertical tick
-    marks 0.  The filled portion runs from 0 to *score* (left for negative,
-    right for positive) in dark grey/black.
-    """
-    ax.set_xlim(-1.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
+
+def _draw_metric_bars_cell(
+    ax,
+    metrics: dict[str, float | None],
+    color: str,
+) -> None:
+    """Draw four stacked literal metric bars on a shared 0..1 scale."""
+    del color  # Metric colors are fixed by metric identity.
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 4.0)
     ax.axis("off")
-    # Background track
-    ax.barh(0.5, 2.0, left=-1.0, height=0.50, color="#E6E6E6", linewidth=0)
-    # Centre tick
-    ax.axvline(0.0, ymin=0.15, ymax=0.85, color="#AAAAAA", linewidth=0.7, zorder=2)
-    if score is not None:
-        ax.barh(
-            0.5, abs(score), left=min(0.0, score), height=0.50,
-            color="#111111", linewidth=0, zorder=3,
+
+    label_x = 0.01
+    track_x = 0.28
+    track_w = 0.54
+    bar_h = 0.62
+
+    for idx, metric_name in enumerate(METRIC_ORDER):
+        y = 3.2 - idx
+        value = metrics.get(metric_name)
+        frac = _metric_fill_fraction(metric_name, value)
+
+        ax.text(
+            label_x,
+            y + (bar_h / 2.0),
+            METRIC_BAR_LABELS[metric_name],
+            ha="left",
+            va="center",
+            fontsize=6.4,
+            color="black",
         )
 
+        track = patches.Rectangle(
+            (track_x, y),
+            track_w,
+            bar_h,
+            facecolor="#F2F2F2" if frac is not None else "white",
+            edgecolor="#B3B3B3",
+            linewidth=0.8,
+            linestyle="-" if frac is not None else "--",
+        )
+        ax.add_patch(track)
 
-def _draw_score_label_ax(
-    ax,
-    score: float | None,
-    *,
-    is_best: bool = False,
-    show_scale_extrema: bool = False,
-) -> None:
-    """Annotate the cosine row with endpoint score and optional -1/+1 labels."""
-    ax.set_xlim(-1.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.axis("off")
-    if show_scale_extrema:
-        ax.text(-1.0, 0.18, "-1", ha="left", va="center", fontsize=8.0, color="black")
-        ax.text(1.0, 0.18, "+1", ha="right", va="center", fontsize=8.0, color="black")
-    if score is None:
-        ax.text(0.0, 0.72, "\u2014", ha="center", va="center", fontsize=9.0, color="black")
-        return
+        if frac is not None and frac > 0.0:
+            ax.add_patch(
+                patches.Rectangle(
+                    (track_x, y),
+                    track_w * frac,
+                    bar_h,
+                    facecolor=METRIC_BAR_FILL,
+                    edgecolor="none",
+                )
+            )
 
-    score_text = f"{score:.3f}" + (" \u2605" if is_best else "")
-    score_x = float(np.clip(score, -0.95, 0.95))
-    if score >= 0.0:
-        score_x -= 0.02
-        ha = "right"
-    else:
-        score_x += 0.02
-        ha = "left"
-    ax.text(score_x, 0.72, score_text, ha=ha, va="center", fontsize=8.5, color="black")
+        value_text = "\u2014" if value is None else f"{float(value):.3f}"
+        text_x = track_x + track_w + 0.02
+        ax.text(
+            text_x,
+            y + (bar_h / 2.0),
+            value_text,
+            ha="left",
+            va="center",
+            fontsize=6.0,
+            color="black",
+        )
 
 
 def _draw_reference_label_ax(ax, label_text: str, *, subtitle: str = "") -> None:
     """Centered label row for the reference H&E cell."""
     ax.axis("off")
     if subtitle:
-        ax.text(0.5, 0.72, subtitle, ha="center", va="center", fontsize=7.5,
+        ax.text(0.5, 0.68, subtitle, ha="center", va="center", fontsize=8.0,
                 transform=ax.transAxes, color="black")
-        ax.text(0.5, 0.22, label_text, ha="center", va="center", fontsize=8.5,
+        ax.text(0.5, 0.28, label_text, ha="center", va="center", fontsize=8.0,
                 transform=ax.transAxes, color="black")
     else:
-        ax.text(0.5, 0.5, label_text, ha="center", va="center", fontsize=8.5,
+        ax.text(0.5, 0.5, label_text, ha="center", va="center", fontsize=8.0,
                 transform=ax.transAxes, color="black")
 
 
@@ -382,6 +443,40 @@ def _maybe_contour_cell_mask(
     ax.contour(cell_mask, levels=[0.5], colors=["lime"], linewidths=0.7, alpha=0.85)
 
 
+def _load_cellvit_contours(image_path: Path) -> list[np.ndarray]:
+    """Load imported CellViT contour polygons from the JSON sidecar when available."""
+    sidecar_path = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
+    if not sidecar_path.is_file():
+        return []
+
+    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    contours: list[np.ndarray] = []
+    for cell in payload.get("cells", []):
+        contour = cell.get("contour")
+        if not isinstance(contour, list) or len(contour) < 3:
+            continue
+        arr = np.asarray(contour, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            continue
+        contours.append(arr[:, :2])
+    return contours
+
+
+def _maybe_overlay_cellvit_contours(ax, image_path: Path, *, enabled: bool) -> None:
+    """Overlay imported CellViT contours in yellow for debugging PQ/AJI mismatches."""
+    if not enabled:
+        return
+    for contour in _load_cellvit_contours(image_path):
+        ax.plot(
+            contour[:, 0],
+            contour[:, 1],
+            color="yellow",
+            linewidth=0.7,
+            alpha=0.95,
+            zorder=4,
+        )
+
+
 def render_ablation_grid_figure(
     cache_dir: Path,
     *,
@@ -391,6 +486,8 @@ def render_ablation_grid_figure(
     out_png: Path,
     dpi: int = 300,
     auto_cosine: bool = True,
+    sort_by: str = "cosine",
+    debug_cellvit_overlay: bool = False,
     uni_model: Path | None = None,
     device: str = "cuda",
 ) -> Path:
@@ -405,28 +502,35 @@ def render_ablation_grid_figure(
     cell_mask = _load_cell_mask_array(cache_dir, manifest)
 
     all15 = ordered_subset_condition_tuples()  # 4+6+4+1 = 15 conditions
+    metrics = load_or_build_metrics(cache_dir)
+    if auto_cosine:
+        cosine_scores = _load_grid_cosine_scores(
+            cache_dir, all4ch_image, orion_root,
+            tile_id=tile_id, auto_cosine=auto_cosine,
+            uni_model=uni_model, device=device,
+        )
+        metrics = _merge_cosine_into_metrics(metrics, cosine_scores)
 
-    scores = _load_grid_cosine_scores(
-        cache_dir, all4ch_image, orion_root,
-        tile_id=tile_id, auto_cosine=auto_cosine,
-        uni_model=uni_model, device=device,
-    )
-
-    sorted_conds = _sort_conditions_by_cosine(all15, scores)
-    best_key = condition_metric_key(sorted_conds[0]) if scores else None
+    sort_scores = {
+        key: float(record[sort_by])
+        for key, record in metrics.items()
+        if isinstance(record, dict) and record.get(sort_by) is not None
+    }
+    sorted_conds = _sort_conditions_by_metric(all15, sort_scores, metric_name=sort_by)
+    best_key = condition_metric_key(sorted_conds[0]) if sort_scores else None
 
     real_he_path = default_orion_he_png_path(orion_root, tile_id)
     if real_he_path is None:
         print(f"Warning: Real H&E not found for tile {tile_id!r} — cell [3,3] will be blank.", file=sys.stderr)
 
     # GridSpec: 16 rows (4 sub-rows per grid row × 4 grid rows) × 4 columns
-    # Sub-rows: dot-row | image | cosine-bar | label
+    # Sub-rows: dot-row | image | metric-bars | label
     # layout="constrained" keeps each imshow square and aligns bar width to it.
     NROWS_PER_CELL = 4
-    height_ratios = [0.20, 1.0, 0.09, 0.13] * 4
+    height_ratios = [0.12, 1.0, 0.35, 0.12] * 4
 
-    grid_hspace = 0.04
-    grid_wspace = 0.03
+    grid_hspace = 0.02
+    grid_wspace = 0.015
 
     fig = plt.figure(figsize=(9.0, 10.0), facecolor="white", layout="constrained")
     layout_engine = fig.get_layout_engine()
@@ -447,7 +551,7 @@ def render_ablation_grid_figure(
         gr, gc = divmod(cell_idx, 4)  # grid row (0-3), grid col (0-3)
         color = _cardinality_color(len(cond))
         k = condition_metric_key(cond)
-        score = scores.get(k)
+        metric_record = metrics.get(k, {})
         is_best = (k == best_key)
 
         base = gr * NROWS_PER_CELL
@@ -472,22 +576,22 @@ def render_ablation_grid_figure(
         img_arr = np.asarray(Image.open(img_path).convert("RGB"))
         image_ax.imshow(img_arr)
         _maybe_contour_cell_mask(image_ax, cell_mask, (img_arr.shape[0], img_arr.shape[1]))
+        _maybe_overlay_cellvit_contours(image_ax, img_path, enabled=debug_cellvit_overlay)
         image_ax.set_xticks([])
         image_ax.set_yticks([])
         _draw_cell_border(image_ax, color)
 
-        # Cosine bar
+        # Metric bars
         bar_ax = fig.add_subplot(gs[base + 2, gc])
-        _draw_cosine_bar_cell(bar_ax, score)
-
-        # Label (score only; channel identity is conveyed by the dot row)
-        label_ax = fig.add_subplot(gs[base + 3, gc])
-        _draw_score_label_ax(
-            label_ax,
-            score,
-            is_best=is_best,
-            show_scale_extrema=(cell_idx == 0),
+        _draw_metric_bars_cell(
+            bar_ax,
+            metric_record if isinstance(metric_record, dict) else {},
+            color=color,
         )
+
+        # Label (primary sort metric only; channel identity is conveyed by the dot row)
+        label_ax = fig.add_subplot(gs[base + 3, gc])
+        label_ax.axis("off")
         aux_axes_by_image.append((image_ax, [dot_ax, bar_ax, label_ax]))
 
     # --- Real H&E at cell [3, 3] ---
@@ -508,13 +612,14 @@ def render_ablation_grid_figure(
     image_ax.set_yticks([])
     _draw_cell_border(image_ax, COLOR_REF, dashed=True)
 
-    # Cosine bar: empty spacer
-    fig.add_subplot(gs[base + 2, gc]).axis("off")
+    # Metric bars: place the reference label in the middle row
+    ref_bar_ax = fig.add_subplot(gs[base + 2, gc])
+    _draw_reference_label_ax(ref_bar_ax, "reference", subtitle="Real H\u0026E")
 
-    # Label
+    # Label row: empty spacer
     ref_label_ax = fig.add_subplot(gs[base + 3, gc])
-    _draw_reference_label_ax(ref_label_ax, "reference", subtitle="Real H\u0026E")
-    aux_axes_by_image.append((image_ax, [ref_label_ax]))
+    ref_label_ax.axis("off")
+    aux_axes_by_image.append((image_ax, [ref_bar_ax, ref_label_ax]))
 
     # --- Save ---
     fig.canvas.draw()
@@ -551,10 +656,37 @@ def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> Non
         out_png=out_png,
         dpi=args.dpi,
         auto_cosine=not args.no_auto_cosine,
+        sort_by=args.sort_by,
+        debug_cellvit_overlay=args.debug_cellvit_overlay,
         uni_model=args.uni_model,
         device=args.device,
     )
-    print(f"Wrote {out_png}")
+    if not getattr(args, "quiet", False):
+        print(f"Wrote {out_png}")
+
+
+def _render_grid_for_cache_dir_job(job: tuple[str, dict]) -> str:
+    """Process-pool wrapper for one tile cache directory."""
+    cache_dir_str, args_dict = job
+    namespace = argparse.Namespace(**args_dict)
+    namespace.cache_dir = Path(namespace.cache_dir)
+    namespace.orion_root = Path(namespace.orion_root)
+    namespace.uni_model = Path(namespace.uni_model)
+    namespace.quiet = True
+    _render_grid_for_cache_dir(Path(cache_dir_str), namespace)
+    return cache_dir_str
+
+
+def _print_progress(completed: int, total: int, *, prefix: str = "Rendering") -> None:
+    """Write a simple in-place progress bar to stderr."""
+    total = max(1, total)
+    width = 28
+    filled = int(width * completed / total)
+    bar = "#" * filled + "-" * (width - filled)
+    msg = f"\r{prefix} [{bar}] {completed}/{total}"
+    if completed >= total:
+        msg += "\n"
+    print(msg, end="", file=sys.stderr, flush=True)
 
 
 def main() -> None:
@@ -579,11 +711,30 @@ def main() -> None:
         help="Skip UNI cosine computation; use existing JSON only.",
     )
     parser.add_argument(
+        "--sort-by",
+        type=str,
+        choices=list(METRIC_ORDER),
+        default="cosine",
+        help="Primary metric used to sort the 15 generated conditions.",
+    )
+    parser.add_argument(
+        "--debug-cellvit-overlay",
+        action="store_true",
+        help="Overlay imported CellViT contours in yellow on generated H&E panels.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of worker processes when rendering a parent cache directory (default: 1).",
+    )
+    parser.add_argument(
         "--uni-model", type=Path, default=ROOT / "pretrained_models/uni-2h",
         help="UNI-2h weights path (default: pretrained_models/uni-2h)",
     )
     parser.add_argument("--device", type=str, default="cuda", help="cuda or cpu")
     args = parser.parse_args()
+    args.quiet = False
 
     cache_path = args.cache_dir.resolve()
     if is_per_tile_cache_manifest_dir(cache_path):
@@ -600,8 +751,44 @@ def main() -> None:
             "(expected subdirs like <tile_id>/manifest.json)"
         )
 
-    for tile_name in cached_ids:
-        _render_grid_for_cache_dir(cache_path / tile_name, args)
+    jobs = max(1, int(args.jobs))
+    if jobs == 1:
+        _print_progress(0, len(cached_ids))
+        for idx, tile_name in enumerate(cached_ids, start=1):
+            _render_grid_for_cache_dir(cache_path / tile_name, args)
+            _print_progress(idx, len(cached_ids))
+        return
+
+    if not args.no_auto_cosine and str(args.device).lower() == "cuda":
+        print(
+            "Note: falling back to serial rendering because parallel jobs with "
+            "CUDA cosine auto-computation would contend for the GPU. Use "
+            "--no-auto-cosine to parallelize cached figure rendering.",
+            file=sys.stderr,
+        )
+        _print_progress(0, len(cached_ids))
+        for idx, tile_name in enumerate(cached_ids, start=1):
+            _render_grid_for_cache_dir(cache_path / tile_name, args)
+            _print_progress(idx, len(cached_ids))
+        return
+
+    args_dict = vars(args).copy()
+    args_dict["cache_dir"] = str(args.cache_dir)
+    args_dict["orion_root"] = str(args.orion_root)
+    args_dict["uni_model"] = str(args.uni_model)
+    worker_count = min(jobs, len(cached_ids), os.cpu_count() or jobs)
+    jobs_iter = [
+        (str(cache_path / tile_name), args_dict)
+        for tile_name in cached_ids
+    ]
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(_render_grid_for_cache_dir_job, job) for job in jobs_iter]
+        _print_progress(0, len(futures))
+        completed = 0
+        for future in as_completed(futures):
+            future.result()
+            completed += 1
+            _print_progress(completed, len(futures))
 
 
 if __name__ == "__main__":

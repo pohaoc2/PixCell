@@ -322,7 +322,27 @@ Outputs under `{output_dir}/`:
 
 The exhaustive ablation suite is built from the four Stage 3 groups: `cell_types`, `cell_state`, `vasculature`, and `microenv` (`nutrient` in figure labels).
 
-For full subset-combination testing (singles/pairs/triples/all), use the cache-based workflow:
+For full subset-combination testing (singles/pairs/triples/all), use the cache-based workflow.
+
+### Ablation + Metrics CLI Summary
+
+| Script | Purpose | Typical command |
+|--------|---------|-----------------|
+| `tools/generate_stage3_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` | `python tools/generate_stage3_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --tile-id YOUR_TILE_ID` |
+| `tools/export_cellvit_batch.py` | Flatten cached generated H&E PNGs into one folder for external CellViT processing | `python tools/export_cellvit_batch.py --cache-root inference_output/cache --output-dir inference_output/cellvit_batch --zip` |
+| `tools/import_cellvit_results.py` | Copy flat CellViT JSON results back beside each cached generated H&E image | `python tools/import_cellvit_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
+| `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/cache --orion-root data/orion-crc33 --metrics lpips aji pq` |
+| `tools/stage3_ablation_grid_figure.py` | Render the static ranked 4×4 matplotlib figure from cached PNGs + `metrics.json` for one tile or all tiles | `python tools/stage3_ablation_grid_figure.py --cache-dir inference_output/cache --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
+| `tools/stage3_ablation_grid_webvis.py` | Render the self-contained interactive HTML ablation grid | `python tools/stage3_ablation_grid_webvis.py --cache-dir inference_output/cache/YOUR_TILE_ID --orion-root data/orion-crc33 --all4ch-image inference_output/cache/YOUR_TILE_ID/all/generated_he.png` |
+
+Recommended end-to-end sequence:
+
+1. Generate or refresh the ablation cache.
+2. Export flat PNGs for CellViT.
+3. Run CellViT externally.
+4. Import CellViT JSON back into the cache tree.
+5. Compute `metrics.json` across all tiles.
+6. Render the static PNG and/or interactive HTML view.
 
 ```bash
 python tools/generate_stage3_ablation_subset_cache.py \
@@ -340,13 +360,50 @@ python tools/generate_stage3_ablation_subset_cache.py \
     --cache-uni-features
 
 python tools/stage3_ablation_grid_figure.py \
-    --cache-dir inference_output/test_combinations/YOUR_TILE_ID \
-    --orion-root data/orion-crc33
+    --cache-dir inference_output/cache/YOUR_TILE_ID \
+    --orion-root data/orion-crc33 \
+    --sort-by pq \
+    --no-auto-cosine
 ```
 
 The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` under the tile cache directory.  
 The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, and writes UNI embeddings under `features/`.
 The second command renders `<cache-dir>/ablation_grid.png` from cached images without rerunning diffusion.
+
+To render static figures for every tile in a parent cache directory, use:
+
+```bash
+python tools/stage3_ablation_grid_figure.py \
+    --cache-dir inference_output/cache \
+    --orion-root data/orion-crc33 \
+    --sort-by pq \
+    --no-auto-cosine \
+    --jobs 8
+```
+
+Useful figure flags:
+
+- `--sort-by {cosine,lpips,aji,pq}` chooses the primary ranking metric.
+- `--no-auto-cosine` keeps the renderer from trying to recompute cosine values.
+- `--jobs N` parallelizes parent-directory rendering across tiles.
+- `--debug-cellvit-overlay` overlays imported CellViT contours in yellow on generated H&E panels for PQ/AJI debugging.
+
+If CellViT results have already been imported as `*_cellvit_instances.json`, compute metrics for every tile in the cache root with:
+
+```bash
+conda run --no-capture-output -n pixcell \
+    python -u tools/compute_ablation_metrics.py \
+    --cache-dir inference_output/cache \
+    --orion-root data/orion-crc33 \
+    --metrics lpips aji pq \
+    --lpips-batch-size 8
+```
+
+Notes:
+
+- Use `--metrics aji pq` if you want to skip LPIPS.
+- `lpips` is installed via `requirements.txt` / `environment.yml`, but the command should be run from the `pixcell` conda env because `base` does not include PyTorch.
+- `compute_ablation_metrics.py` uses precomputed reference UNI features under `data/orion-crc33/features/`; it only needs the UNI model if cosine is requested and per-condition cosine scores are missing.
 
 For raw batch generation without visualizations:
 
