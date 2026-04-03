@@ -9,7 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -116,7 +116,7 @@ def main() -> None:
         "--manifest",
         type=Path,
         required=True,
-        help="Manifest written by export_cellvit_batch.py",
+        help="Manifest written by tools/cellvit/export_batch.py",
     )
     parser.add_argument(
         "--results-dir",

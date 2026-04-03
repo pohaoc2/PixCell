@@ -275,7 +275,7 @@ python stage3_inference.py \
 Generate H&E plus the two Stage 3 visuals used in evaluation (paired + unpaired style conditioning):
 
 ```bash
-python tools/run_evaluation.py \
+python tools/stage3/run_evaluation.py \
     --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
     --output-dir     inference_output/zero_out_mask_post \
     --n-tiles        3
@@ -299,7 +299,7 @@ Add `--no-metrics` to skip cosine similarity computation (faster, no UNI extract
 Generate the full Stage 3 visualization bundle for one tile, including the exhaustive group ablation tests:
 
 ```bash
-python tools/generate_stage3_tile_vis.py \
+python tools/vis/generate_stage3_tile_vis.py \
     --config         configs/config_controlnet_exp.py \
     --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
     --data-root      data/orion-crc33 \
@@ -326,33 +326,42 @@ For full subset-combination testing (singles/pairs/triples/all), use the cache-b
 
 ### Ablation + Metrics CLI Summary
 
+Stage 3 ablation workflow, step by step:
+
+1. Generate full-ablation caches: write `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` for each tile under `inference_output/full_ablation/` by default.
+2. Export CellViT batches: flatten cached generated H&E PNGs into one external batch plus a manifest that maps flat filenames back to their source tile/condition.
+3. Import CellViT results: copy CellViT outputs back beside the original cached images as `*_cellvit_instances.*` sidecars.
+4. Compute per-condition metrics: reuse cached/generated H&E, import CellViT detections, and write `metrics.json` with cosine, LPIPS, AJI, and PQ for each ablation condition.
+5. Render tile-level ablation figures: generate one ranked 4×4 summary grid per tile from cached images plus `metrics.json`.
+6. Render the dataset-level summary figure: aggregate per-tile `metrics.json` files from a metric directory with `tools/render_dataset_metrics.py`.
+
 | Script | Purpose | Typical command |
 |--------|---------|-----------------|
-| `tools/generate_stage3_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` for one tile or a sampled tile batch | `python tools/generate_stage3_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --n-tiles 8 --jobs 4` |
-| `tools/export_cellvit_batch.py` | Flatten cached generated H&E PNGs into one folder for external CellViT processing | `python tools/export_cellvit_batch.py --cache-root inference_output/cache --output-dir inference_output/cellvit_batch --zip` |
-| `tools/import_cellvit_results.py` | Copy flat CellViT JSON results back beside each cached generated H&E image | `python tools/import_cellvit_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
-| `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/cache --orion-root data/orion-crc33 --metrics lpips aji pq` |
-| `tools/stage3_ablation_grid_figure.py` | Render the static ranked 4×4 matplotlib figure from cached PNGs + `metrics.json` for one tile or all tiles | `python tools/stage3_ablation_grid_figure.py --cache-dir inference_output/cache --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
-| `tools/stage3_ablation_grid_webvis.py` | Render the self-contained interactive HTML ablation grid | `python tools/stage3_ablation_grid_webvis.py --cache-dir inference_output/cache/YOUR_TILE_ID --orion-root data/orion-crc33 --all4ch-image inference_output/cache/YOUR_TILE_ID/all/generated_he.png` |
+| `tools/stage3/generate_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` for one tile or a sampled tile batch | `python tools/stage3/generate_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --n-tiles 8 --jobs 4` |
+| `tools/cellvit/export_batch.py` | Flatten cached generated H&E PNGs into one folder for external CellViT processing | `python tools/cellvit/export_batch.py --cache-root inference_output/full_ablation --output-dir inference_output/cellvit_batch --zip` |
+| `tools/cellvit/import_results.py` | Copy flat CellViT JSON results back beside each cached generated H&E image | `python tools/cellvit/import_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
+| `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --metrics lpips aji pq` |
+| `tools/vis/stage3_ablation_grid_figure.py` | Render the static ranked 4×4 matplotlib figure from cached PNGs + `metrics.json` for one tile or all tiles | `python tools/vis/stage3_ablation_grid_figure.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
+| `tools/render_dataset_metrics.py` | Render the standalone dataset-level summary figure from per-tile `metrics.json` files | `python tools/render_dataset_metrics.py --metric-dir inference_output/full_ablation --output figures/dataset_metrics.png --dpi 400` |
 
 Recommended end-to-end sequence:
 
-1. Generate or refresh the ablation cache.
+1. Generate or refresh the full-ablation cache.
 2. Export flat PNGs for CellViT.
 3. Run CellViT externally.
 4. Import CellViT JSON back into the cache tree.
 5. Compute `metrics.json` across all tiles.
-6. Render the static PNG and/or interactive HTML view.
+6. Render the tile-level figure and the dataset-level summary figure.
 
 ```bash
-python tools/generate_stage3_ablation_subset_cache.py \
+python tools/stage3/generate_ablation_subset_cache.py \
     --config         configs/config_controlnet_exp.py \
     --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
     --data-root      data/orion-crc33 \
     --tile-id        YOUR_TILE_ID
 
 # Sample N tiles and generate caches in parallel.
-python tools/generate_stage3_ablation_subset_cache.py \
+python tools/stage3/generate_ablation_subset_cache.py \
     --config         configs/config_controlnet_exp.py \
     --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
     --data-root      data/orion-crc33 \
@@ -360,25 +369,30 @@ python tools/generate_stage3_ablation_subset_cache.py \
     --jobs           4
 
 # Existing cache repair: add missing all/ and cache UNI features for each condition.
-python tools/generate_stage3_ablation_subset_cache.py \
+python tools/stage3/generate_ablation_subset_cache.py \
     --config                configs/config_controlnet_exp.py \
     --checkpoint-dir        checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
     --data-root             data/orion-crc33 \
-    --existing-cache-parent inference_output/cache \
+    --existing-cache-parent inference_output/full_ablation \
     --jobs                  4 \
     --cache-uni-features
 
-python tools/stage3_ablation_grid_figure.py \
-    --cache-dir inference_output/cache/YOUR_TILE_ID \
+python tools/vis/stage3_ablation_grid_figure.py \
+    --cache-dir inference_output/full_ablation/YOUR_TILE_ID \
     --orion-root data/orion-crc33 \
     --sort-by pq \
     --no-auto-cosine
+
+python tools/render_dataset_metrics.py \
+    --metric-dir inference_output/full_ablation \
+    --output figures/dataset_metrics.png \
+    --dpi 400
 ```
 
 The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` under the tile cache directory.  
-The second command randomly samples tiles from `data/orion-crc33`, writes each cache under `inference_output/cache/{tile_id}`, and shows a tile-level progress bar while workers run.  
+The second command randomly samples tiles from `data/orion-crc33`, writes each cache under `inference_output/full_ablation/{tile_id}`, and shows a tile-level progress bar while workers run.  
 The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, writes UNI embeddings under `features/`, and also supports `--jobs` for per-tile parallelism.
-The final command renders `<cache-dir>/ablation_grid.png` from cached images without rerunning diffusion.
+The last two commands render `<cache-dir>/ablation_grid.png` per tile and the standalone `dataset_metrics.png` summary figure aggregated from all per-tile `metrics.json` files under `--metric-dir`.
 
 Notes:
 
@@ -389,8 +403,8 @@ Notes:
 To render static figures for every tile in a parent cache directory, use:
 
 ```bash
-python tools/stage3_ablation_grid_figure.py \
-    --cache-dir inference_output/cache \
+python tools/vis/stage3_ablation_grid_figure.py \
+    --cache-dir inference_output/full_ablation \
     --orion-root data/orion-crc33 \
     --sort-by pq \
     --no-auto-cosine \
@@ -409,7 +423,7 @@ If CellViT results have already been imported as `*_cellvit_instances.json`, com
 ```bash
 conda run --no-capture-output -n pixcell \
     python -u tools/compute_ablation_metrics.py \
-    --cache-dir inference_output/cache \
+    --cache-dir inference_output/full_ablation \
     --orion-root data/orion-crc33 \
     --metrics lpips aji pq \
     --lpips-batch-size 8
@@ -601,28 +615,31 @@ exp_data_root/
 
 ## 🔍 Analysis Tools
 
-Most visualization functions live in `tools/stage3/figures.py`. Cache helpers for subset-combination ablations live in `tools/stage3/ablation_cache.py`, and the publication/evaluation grid renderer is `tools/stage3/ablation_grid_figure.py`. Inference helpers (channel loading, model generation, ablation sweeps) are in `tools/stage3/tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
+Most visualization-facing CLIs now live under `tools/vis/`, while CellViT batch import/export lives under `tools/cellvit/`. Shared Stage 3 implementation code remains in `tools/stage3/`: figure builders in `tools/stage3/figures.py`, cache helpers in `tools/stage3/ablation_cache.py`, the publication/evaluation grid renderer in `tools/stage3/ablation_grid_figure.py`, and inference helpers in `tools/stage3/tile_pipeline.py`. Channel colors are centralized in `tools/color_constants.py`.
 
 ### Dataset metrics figure renderer
 
-Use `tools/render_dataset_metrics_option_a.py` to export the standalone five-metric "Option A" summary figure as a transparent PNG. The current script renders the curated layout in `dataset_metrics_option_a.html` using the script's built-in example statistics and writes the PNG to the repo root by default.
+Use `tools/render_dataset_metrics.py` to export the standalone five-metric dataset-level summary figure as a transparent PNG. This script reads per-tile `metrics.json` files from `--metric-dir`, aggregates each condition across tiles, and renders the curated layout from the real cached metrics.
 
 ```bash
-python tools/render_dataset_metrics_option_a.py
+python tools/render_dataset_metrics.py \
+    --metric-dir inference_output/full_ablation
 ```
 
 Optional flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--output PATH` | `dataset_metrics_option_a.png` | Output PNG path |
+| `--metric-dir PATH` | `inference_output/full_ablation` | Parent directory containing per-tile `metrics.json` files |
+| `--output PATH` | `dataset_metrics.png` | Output PNG path |
 | `--dpi N` | `300` | Export resolution |
 
 Examples:
 
 ```bash
-python tools/render_dataset_metrics_option_a.py \
-    --output figures/dataset_metrics_option_a.png \
+python tools/render_dataset_metrics.py \
+    --metric-dir inference_output/full_ablation \
+    --output figures/dataset_metrics.png \
     --dpi 400
 ```
 
@@ -630,7 +647,7 @@ Notes:
 
 - The export uses a transparent background.
 - The renderer requests `Helvetica` first and falls back to `Arial` / `DejaVu Sans` if needed.
-- If you want to iterate on the browser version, update `dataset_metrics_option_a.html` and rerun the script to refresh the PNG.
+- FID is only rendered when `fid` values are present in the per-condition records; otherwise that panel stays marked unavailable.
 
 ### Ablation tests
 
@@ -700,7 +717,7 @@ save_subset_condition_cache(
     sections=subset_sections,
 )
 # Then render the 4x4 ranked grid from cache:
-# python tools/stage3_ablation_grid_figure.py \
+# python tools/vis/stage3_ablation_grid_figure.py \
 #   --cache-dir inference_output/test_combinations/YOUR_TILE_ID \
 #   --orion-root data/orion-crc33
 

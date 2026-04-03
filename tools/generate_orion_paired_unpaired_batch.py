@@ -59,7 +59,7 @@ def main():
 
     from diffusion.utils.misc import read_config
 
-    from tools.generate_stage3_tile_vis import run_vis_suite
+    from tools.stage3.generate_tile_vis import run_vis_suite
     from tools.stage3.tile_pipeline import (
         find_latest_checkpoint_dir,
         list_tile_ids_from_exp_channels,

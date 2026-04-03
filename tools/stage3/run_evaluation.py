@@ -1,5 +1,5 @@
 """
-tools/run_evaluation.py — Stage 3 batch inference + evaluation visualizations.
+tools/stage3/run_evaluation.py — Stage 3 batch inference + evaluation visualizations.
 
 Output per tile:
     {output_dir}/{tile_id}/{paired,unpaired}/

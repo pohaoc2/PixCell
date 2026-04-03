@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import tools.compute_ablation_metrics as compute_ablation_metrics_module
 from tools.compute_ablation_metrics import (
     _compute_aji,
     _compute_pq,
@@ -93,3 +94,121 @@ def test_run_cellvit_reads_json_sidecar(tmp_path: Path):
     )
     inst = run_cellvit(image_path)
     assert int(inst.max()) == 1
+
+
+def _write_cache_manifest(cache_parent: Path, tile_id: str) -> Path:
+    cache_dir = cache_parent / tile_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "manifest.json").write_text(
+        json.dumps({"tile_id": tile_id, "sections": []}),
+        encoding="utf-8",
+    )
+    return cache_dir
+
+
+def test_main_parent_cache_reuses_uni_extractor_once(monkeypatch, tmp_path: Path):
+    cache_parent = tmp_path / "cache"
+    _write_cache_manifest(cache_parent, "tile_b")
+    _write_cache_manifest(cache_parent, "tile_a")
+
+    sentinel = object()
+    seen_extractors: list[object | None] = []
+    load_calls = {"count": 0}
+
+    def fake_load_uni_extractor(uni_model: Path, device: str):
+        assert isinstance(uni_model, Path)
+        assert device == "cuda"
+        load_calls["count"] += 1
+        return sentinel
+
+    def fake_compute_metrics_for_cache_dir(
+        cache_dir: Path,
+        *,
+        orion_root: Path,
+        metrics_to_compute: list[str],
+        device: str,
+        uni_model: Path,
+        lpips_loss_fn=None,
+        lpips_batch_size: int = 8,
+        uni_extractor=None,
+    ) -> Path:
+        assert orion_root == compute_ablation_metrics_module.ROOT / "data/orion-crc33"
+        assert metrics_to_compute == ["cosine"]
+        assert device == "cuda"
+        assert lpips_loss_fn is None
+        assert lpips_batch_size == 8
+        seen_extractors.append(uni_extractor)
+        out_path = cache_dir / "metrics.json"
+        out_path.write_text("{}", encoding="utf-8")
+        return out_path
+
+    monkeypatch.setattr(compute_ablation_metrics_module, "_load_uni_extractor", fake_load_uni_extractor)
+    monkeypatch.setattr(
+        compute_ablation_metrics_module,
+        "compute_metrics_for_cache_dir",
+        fake_compute_metrics_for_cache_dir,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "compute_ablation_metrics.py",
+            "--cache-dir",
+            str(cache_parent),
+            "--metrics",
+            "cosine",
+            "--jobs",
+            "1",
+        ],
+    )
+
+    compute_ablation_metrics_module.main()
+
+    assert load_calls["count"] == 1
+    assert seen_extractors == [sentinel, sentinel]
+
+
+def test_main_parent_cache_parallel_dispatches_jobs(monkeypatch, tmp_path: Path):
+    cache_parent = tmp_path / "cache"
+    _write_cache_manifest(cache_parent, "tile_b")
+    _write_cache_manifest(cache_parent, "tile_a")
+
+    captured: dict[str, object] = {}
+
+    def fake_run_parallel_cache_metrics(**kwargs):
+        captured.update(kwargs)
+        return [
+            ("tile_a", cache_parent / "tile_a" / "metrics.json"),
+            ("tile_b", cache_parent / "tile_b" / "metrics.json"),
+        ]
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("main process should not preload UNI in parallel mode")
+
+    monkeypatch.setattr(
+        compute_ablation_metrics_module,
+        "_run_parallel_cache_metrics",
+        fake_run_parallel_cache_metrics,
+    )
+    monkeypatch.setattr(compute_ablation_metrics_module, "_load_uni_extractor", fail_if_called)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "compute_ablation_metrics.py",
+            "--cache-dir",
+            str(cache_parent),
+            "--metrics",
+            "cosine",
+            "--jobs",
+            "2",
+        ],
+    )
+
+    compute_ablation_metrics_module.main()
+
+    assert captured["cache_parent"] == cache_parent
+    assert captured["tile_ids"] == ["tile_a", "tile_b"]
+    assert captured["metrics_to_compute"] == ["cosine"]
+    assert captured["device"] == "cuda"
+    assert captured["requested_jobs"] == 2

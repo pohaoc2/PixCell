@@ -1,7 +1,7 @@
 """
 Shared Stage 3 inference helpers: load exp channels, models, generate one tile, ablation sweep.
 
-Used by tools/run_evaluation.py and tools/generate_stage3_tile_vis.py.
+Used by tools/stage3/run_evaluation.py and tools/vis/generate_stage3_tile_vis.py.
 """
 from __future__ import annotations
 

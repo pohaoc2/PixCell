@@ -75,6 +75,15 @@ def test_parser_accepts_jobs_with_n_tiles():
     assert args.jobs == 4
 
 
+def test_parser_accepts_output_dir_alias():
+    parser = _build_parser()
+
+    args = parser.parse_args(["--tile-id", "tile_001", "--output-dir", "/tmp/full_ablation"])
+
+    assert args.tile_id == "tile_001"
+    assert args.output_dir == "/tmp/full_ablation"
+
+
 def test_print_progress_finishes_with_newline(capsys):
     _print_progress(2, 2, prefix="Generation")
 
