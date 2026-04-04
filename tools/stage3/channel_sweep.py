@@ -19,6 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 import torch
 from diffusers import DDPMScheduler
@@ -621,10 +622,20 @@ def render_exp1_figure(
                 ax.set_title(f"Glucose={glucose_scale:.2f}", fontsize=7, pad=4)
 
             if o2_scale == 1.0 and glucose_scale == 1.0:
-                for spine in ax.spines.values():
-                    spine.set_visible(True)
-                    spine.set_linewidth(3.0)
-                    spine.set_edgecolor(baseline_border)
+                ax.add_patch(
+                    Rectangle(
+                        (0, 0),
+                        1,
+                        1,
+                        transform=ax.transAxes,
+                        fill=False,
+                        edgecolor=baseline_border,
+                        linewidth=3.0,
+                        linestyle="-",
+                        clip_on=False,
+                        zorder=10,
+                    )
+                )
 
             ax_diff = fig.add_subplot(gs[n + 1 + i, j + 1])
             diff = diff_maps[(o2_scale, glucose_scale)]
@@ -633,10 +644,20 @@ def render_exp1_figure(
             if i == 0:
                 ax_diff.set_title(f"Glucose={glucose_scale:.2f}", fontsize=7, pad=4)
             if o2_scale == 1.0 and glucose_scale == 1.0:
-                for spine in ax_diff.spines.values():
-                    spine.set_visible(True)
-                    spine.set_linewidth(3.0)
-                    spine.set_edgecolor(baseline_border)
+                ax_diff.add_patch(
+                    Rectangle(
+                        (0, 0),
+                        1,
+                        1,
+                        transform=ax_diff.transAxes,
+                        fill=False,
+                        edgecolor=baseline_border,
+                        linewidth=3.0,
+                        linestyle="-",
+                        clip_on=False,
+                        zorder=10,
+                    )
+                )
 
     cbar_ax = fig.add_subplot(gs[(n * 2) + 1, 1:3])
     cbar = fig.colorbar(im, cax=cbar_ax, orientation="horizontal")
