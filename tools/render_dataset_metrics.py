@@ -77,7 +77,11 @@ def _condition_mask(cond_tuple: tuple[str, ...]) -> int:
     return mask
 
 
-def load_combinations(metric_dir: Path) -> tuple[list[Combination], int]:
+def load_combinations(
+    metric_dir: Path,
+    min_gt_cells: int = 0,
+    orion_root: Path | None = None,
+) -> tuple[list[Combination], int]:
     grouped: dict[str, dict[str, list[float]]] = {}
     metrics_paths = sorted(Path(metric_dir).glob("*/metrics.json"))
     if not metrics_paths:
@@ -85,9 +89,21 @@ def load_combinations(metric_dir: Path) -> tuple[list[Combination], int]:
             f"no per-tile metrics.json files found under {Path(metric_dir).resolve()}"
         )
     tile_count = 0
+    filtered = 0
 
     for metrics_path in metrics_paths:
         payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        tile_id = str(payload.get("tile_id", "") or metrics_path.parent.name).strip()
+        if min_gt_cells > 0 and orion_root is not None and tile_id:
+            from tools.compute_ablation_metrics import _load_gt_instance_mask, _instance_ids
+            try:
+                gt = _load_gt_instance_mask(orion_root, tile_id)
+                if _instance_ids(gt).size < min_gt_cells:
+                    filtered += 1
+                    continue
+            except FileNotFoundError:
+                filtered += 1
+                continue
         per_condition = payload.get("per_condition", {})
         if not isinstance(per_condition, dict):
             continue
@@ -125,6 +141,8 @@ def load_combinations(metric_dir: Path) -> tuple[list[Combination], int]:
             )
         )
 
+    if min_gt_cells > 0:
+        print(f"Filtered {filtered} tiles with < {min_gt_cells} GT cells ({tile_count} kept)")
     return combinations, tile_count
 
 
@@ -168,8 +186,8 @@ def _metric_range(metric: Metric, combos: list[Combination]) -> tuple[float, flo
     return lo - pad, hi + pad
 
 
-def render(metric_dir: Path, output_path: Path, dpi: int) -> None:
-    combos, tile_count = load_combinations(metric_dir)
+def render(metric_dir: Path, output_path: Path, dpi: int, min_gt_cells: int = 0, orion_root: Path | None = None) -> None:
+    combos, tile_count = load_combinations(metric_dir, min_gt_cells=min_gt_cells, orion_root=orion_root)
     spans = cardinality_spans(combos)
 
     plt.rcParams.update(
@@ -359,6 +377,11 @@ def parse_args() -> argparse.Namespace:
         help="PNG output path.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="PNG DPI.")
+    parser.add_argument("--min-gt-cells", type=int, default=0,
+        help="Skip tiles with fewer than this many GT cell instances (default: 0 = no filter).")
+    parser.add_argument("--orion-root", type=Path,
+        default=ROOT / "data/orion-crc33",
+        help="Paired dataset root for GT cell mask lookup (default: data/orion-crc33).")
     return parser.parse_args()
 
 
@@ -367,7 +390,8 @@ def main() -> None:
     metric_dir = args.metric_dir.resolve()
     if not metric_dir.exists():
         raise SystemExit(f"metric dir not found: {metric_dir}")
-    render(metric_dir, args.output.resolve(), dpi=args.dpi)
+    render(metric_dir, args.output.resolve(), dpi=args.dpi,
+           min_gt_cells=args.min_gt_cells, orion_root=args.orion_root.resolve())
 
 
 if __name__ == "__main__":
