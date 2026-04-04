@@ -62,3 +62,23 @@ Before running commands with large output (git diffs, recursive file listings, l
 - See `CODEX_COMMANDS.md` for the full reference of which commands to delegate and how.
 - Trigger with: "Use Codex to run `<command>` and summarize the result."
 - Codex runs on OpenAI credits, not Claude tokens.
+- **Always** use Codex for any command listed in `CODEX_COMMANDS.md` (file exploration, git diffs, log inspection, etc.) — do not run these directly in Bash.
+
+## Claude Model Role Split — Plan/Review vs. Implement
+
+**Claude (this session) only plans and reviews. Codex does all real implementation.**
+
+This applies when running as:
+- Claude Opus (any reasoning level), or
+- Claude Sonnet with high reasoning level (i.e. the current model or equivalent)
+
+Under these modes:
+- **Claude**: reads code, writes plans, reviews diffs, answers questions, makes architectural decisions.
+- **Codex**: writes and edits all files, runs tests, executes shell commands for implementation.
+
+When a coding task arrives:
+1. Claude reads the relevant files and produces a concrete plan (what to change, where, why).
+2. Claude delegates the implementation to Codex via the `codex:codex-rescue` subagent with the full plan.
+3. Claude reviews the result and iterates if needed.
+
+Do **not** use Edit/Write tools to implement features or bug fixes directly — delegate to Codex instead.

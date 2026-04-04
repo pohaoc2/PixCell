@@ -324,6 +324,72 @@ The exhaustive ablation suite is built from the four Stage 3 groups: `cell_types
 
 For full subset-combination testing (singles/pairs/triples/all), use the cache-based workflow.
 
+### Channel Impact Analysis
+
+Three CLIs support the channel-impact workflow:
+
+| Script | Purpose | Typical command |
+|--------|---------|-----------------|
+| `tools/vis/leave_one_out_diff.py` | Post-process one cached ablation tile and render leave-one-out diffs | `conda run -n pixcell python tools/vis/leave_one_out_diff.py --cache-dir inference_output/cache/512_9728 --orion-root data/orion-crc33 --out inference_output/cache/512_9728/leave_one_out_diff.png` |
+| `tools/stage3/classify_tiles.py` | Scan the paired dataset, classify tiles, and write `tile_classes.json` | `conda run -n pixcell python tools/stage3/classify_tiles.py --exp-root data/orion-crc33 --out tile_classes.json` |
+| `tools/stage3/channel_sweep.py` | Run cached generation plus figure rendering for Exp 1/2/3 | `conda run -n pixcell python tools/stage3/channel_sweep.py --class-json tile_classes.json --data-root data/orion-crc33 --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs --out inference_output/channel_sweep --cache-dir inference_output/channel_sweep/cache --experiments 1 2 3 --seed 42` |
+
+Recommended full command:
+
+```bash
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json tile_classes.json \
+    --data-root data/orion-crc33 \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --out inference_output/channel_sweep \
+    --cache-dir inference_output/channel_sweep/cache \
+    --experiments 1 2 3 \
+    --seed 42
+```
+
+Once the cache exists, re-render figures without rerunning inference:
+
+```bash
+conda run -n pixcell python tools/stage3/render_channel_sweep_figures.py \
+    --cache-dir inference_output/channel_sweep/cache \
+    --out inference_output/channel_sweep \
+    --experiments 1 2 3
+```
+
+Useful variants:
+
+```bash
+# Generate cached PNGs only; skip figure rendering.
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json tile_classes.json \
+    --data-root data/orion-crc33 \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --out inference_output/channel_sweep \
+    --cache-dir inference_output/channel_sweep/cache \
+    --experiments 1 2 3 \
+    --seed 42 \
+    --generate-only
+
+# Render figures only from an existing cache.
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json tile_classes.json \
+    --data-root data/orion-crc33 \
+    --out inference_output/channel_sweep \
+    --cache-dir inference_output/channel_sweep/cache \
+    --experiments 1 2 3 \
+    --render-only
+```
+
+Targeted tests:
+
+```bash
+conda run -n pixcell python -m pytest \
+    tests/test_leave_one_out_diff.py \
+    tests/test_classify_tiles.py \
+    tests/test_channel_sweep.py \
+    tests/test_channel_sweep_cache.py -v
+```
+
 ### Ablation + Metrics CLI Summary
 
 Stage 3 ablation workflow, step by step:
@@ -332,8 +398,9 @@ Stage 3 ablation workflow, step by step:
 2. Export CellViT batches: flatten cached generated H&E PNGs into one external batch plus a manifest that maps flat filenames back to their source tile/condition.
 3. Import CellViT results: copy CellViT outputs back beside the original cached images as `*_cellvit_instances.*` sidecars.
 4. Compute per-condition metrics: reuse cached/generated H&E, import CellViT detections, and write `metrics.json` with cosine, LPIPS, AJI, and PQ for each ablation condition.
-5. Render tile-level ablation figures: generate one ranked 4×4 summary grid per tile from cached images plus `metrics.json`.
-6. Render the dataset-level summary figure: aggregate per-tile `metrics.json` files from a metric directory with `tools/render_dataset_metrics.py`.
+5. Compute dataset-level FID: run `tools/compute_fid.py` once across all 15 ablation conditions, then backfill the per-condition `fid` values into each tile's `metrics.json`.
+6. Render tile-level ablation figures: generate one ranked 4×4 summary grid per tile from cached images plus `metrics.json`.
+7. Render the dataset-level summary figure: aggregate per-tile `metrics.json` files from a metric directory with `tools/render_dataset_metrics.py`.
 
 | Script | Purpose | Typical command |
 |--------|---------|-----------------|
@@ -341,6 +408,7 @@ Stage 3 ablation workflow, step by step:
 | `tools/cellvit/export_batch.py` | Flatten cached generated H&E PNGs into one folder for external CellViT processing | `python tools/cellvit/export_batch.py --cache-root inference_output/full_ablation --output-dir inference_output/cellvit_batch --zip` |
 | `tools/cellvit/import_results.py` | Copy flat CellViT JSON results back beside each cached generated H&E image | `python tools/cellvit/import_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
 | `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --metrics lpips aji pq` |
+| `tools/compute_fid.py` | Compute dataset-level FID for all 15 ablation conditions and backfill `fid` into each per-tile `metrics.json` | `python tools/compute_fid.py --cache-dir inference_output/cache --device cuda` |
 | `tools/vis/stage3_ablation_grid_figure.py` | Render the static ranked 4×4 matplotlib figure from cached PNGs + `metrics.json` for one tile or all tiles | `python tools/vis/stage3_ablation_grid_figure.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
 | `tools/render_dataset_metrics.py` | Render the standalone dataset-level summary figure from per-tile `metrics.json` files | `python tools/render_dataset_metrics.py --metric-dir inference_output/full_ablation --output figures/dataset_metrics.png --dpi 400` |
 
@@ -351,7 +419,8 @@ Recommended end-to-end sequence:
 3. Run CellViT externally.
 4. Import CellViT JSON back into the cache tree.
 5. Compute `metrics.json` across all tiles.
-6. Render the tile-level figure and the dataset-level summary figure.
+6. Compute dataset-level FID and backfill `fid` into each per-tile `metrics.json`.
+7. Render the tile-level figure and the dataset-level summary figure.
 
 ```bash
 python tools/stage3/generate_ablation_subset_cache.py \
@@ -434,6 +503,23 @@ Notes:
 - Use `--metrics aji pq` if you want to skip LPIPS.
 - `lpips` is installed via `requirements.txt` / `environment.yml`, but the command should be run from the `pixcell` conda env because `base` does not include PyTorch.
 - `compute_ablation_metrics.py` uses precomputed reference UNI features under `data/orion-crc33/features/`; it only needs the UNI model if cosine is requested and per-condition cosine scores are missing.
+
+### Dataset-level FID
+
+Use `tools/compute_fid.py` after `tools/compute_ablation_metrics.py` to compute Fréchet Inception Distance once per ablation condition across the full cached dataset, not per tile. The script uses ImageNet-pretrained `torchvision` Inception v3 to extract 2048-d features from the real H&E tiles and each generated condition, computes dataset-level FID for all 15 ablation conditions, writes `<cache-dir>/fid_scores.json`, and backfills each condition's `fid` value into every per-tile `metrics.json`.
+
+```bash
+python tools/compute_fid.py \
+    --cache-dir inference_output/cache \
+    --device cuda
+```
+
+Optional flags:
+
+- `--batch-size N` controls Inception batching; default is `64`.
+- `--output PATH` writes the JSON summary somewhere other than `<cache-dir>/fid_scores.json`.
+
+After `compute_fid.py` finishes, re-run `tools/render_dataset_metrics.py` to populate the FID panel in the dataset chart. Dependencies are `torch`, `torchvision`, and `scipy` and are already listed in `requirements.txt`.
 
 For raw batch generation without visualizations:
 
@@ -647,7 +733,7 @@ Notes:
 
 - The export uses a transparent background.
 - The renderer requests `Helvetica` first and falls back to `Arial` / `DejaVu Sans` if needed.
-- FID is only rendered when `fid` values are present in the per-condition records; otherwise that panel stays marked unavailable.
+- FID is only rendered when `fid` values are present in the per-condition records; run `tools/compute_fid.py` first, then re-run this renderer to populate that panel.
 
 ### Ablation tests
 
