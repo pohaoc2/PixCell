@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import multiprocessing as mp
 import os
 import random
 import sys
@@ -28,6 +29,8 @@ from diffusers import DDPMScheduler
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+_WORKER_RUNTIME_KEY: tuple[str, str | None, str, str, int] | None = None
+_WORKER_RUNTIME: dict | None = None
 
 
 def _is_cuda_device(device: str) -> bool:
@@ -464,6 +467,30 @@ def _load_runtime(
     }
 
 
+def _get_worker_runtime(job: dict) -> dict:
+    """Lazily load and reuse one runtime per spawned worker process."""
+    global _WORKER_RUNTIME_KEY, _WORKER_RUNTIME
+
+    key = (
+        str(job["config_path"]),
+        None if job["checkpoint_dir"] is None else str(job["checkpoint_dir"]),
+        str(job["data_root"]),
+        str(job["device"]),
+        int(job["num_steps"]),
+    )
+    if _WORKER_RUNTIME_KEY != key or _WORKER_RUNTIME is None:
+        _WORKER_RUNTIME = _load_runtime(
+            config_path=job["config_path"],
+            checkpoint_dir=job["checkpoint_dir"],
+            data_root=job["data_root"],
+            device=job["device"],
+            num_steps=job["num_steps"],
+        )
+        _WORKER_RUNTIME_KEY = key
+        print(f"Using checkpoint dir: {_WORKER_RUNTIME['ckpt_dir']}")
+    return _WORKER_RUNTIME
+
+
 def _build_worker_common_args(args: argparse.Namespace, *, data_root: Path) -> dict:
     return {
         "config_path": args.config,
@@ -486,14 +513,7 @@ def _generate_tile_job(job: dict) -> tuple[str, int]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    runtime = _load_runtime(
-        config_path=job["config_path"],
-        checkpoint_dir=job["checkpoint_dir"],
-        data_root=job["data_root"],
-        device=job["device"],
-        num_steps=job["num_steps"],
-    )
-    print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
+    runtime = _get_worker_runtime(job)
 
     tile_id = str(job["tile_id"])
     cache_dir = Path(job["cache_dir"])
@@ -529,14 +549,7 @@ def _backfill_cache_job(job: dict) -> tuple[str, bool, int]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    runtime = _load_runtime(
-        config_path=job["config_path"],
-        checkpoint_dir=job["checkpoint_dir"],
-        data_root=job["data_root"],
-        device=job["device"],
-        num_steps=job["num_steps"],
-    )
-    print(f"Using checkpoint dir: {runtime['ckpt_dir']}")
+    runtime = _get_worker_runtime(job)
 
     cache_dir = Path(job["cache_dir"])
     tile_id, changed = backfill_all_for_cache_dir(
@@ -575,7 +588,11 @@ def _run_parallel_jobs(
     print(f"Running {len(jobs)} {label} job(s) with {worker_count} worker process(es)")
 
     results: list = []
-    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+    # CUDA workers must use spawn rather than fork to avoid re-init errors.
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=mp.get_context("spawn"),
+    ) as executor:
         futures = [executor.submit(worker_fn, job) for job in jobs]
         total = len(futures)
         completed = 0

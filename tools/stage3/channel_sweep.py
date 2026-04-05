@@ -111,10 +111,18 @@ def _resolve_uni_embedding(
     return torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
 
 
-def _condition_labels_from_results(results: dict[str, dict[str, np.ndarray]]) -> list[str]:
+def _source_labels_from_results(results: dict[str, dict[str, np.ndarray]]) -> list[str]:
     labels = list(results.keys())
     if labels:
         return labels
+    return []
+
+
+def _target_labels_from_results(results: dict[str, dict[str, np.ndarray]]) -> list[str]:
+    for row in results.values():
+        labels = list(row.keys())
+        if labels:
+            return labels
     return []
 
 
@@ -344,17 +352,20 @@ def save_relabeling_cache(
     input_thumbs: dict[str, dict[str, np.ndarray]],
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
-    labels = list(results.keys())
-    for src_label in labels:
+    source_labels = list(results.keys())
+    target_labels = _target_labels_from_results(results)
+    for src_label in source_labels:
         images: dict[str, str] = {}
         input_thumb_paths: dict[str, str] = {}
         for tgt_label, image in results[src_label].items():
             rel = Path(exp_name) / src_label / f"{tgt_label}.png"
             _save_rgb_png(image, Path(cache_dir) / rel)
             images[tgt_label] = rel.as_posix()
-            input_rel = Path(exp_name) / src_label / f"input__{tgt_label}.png"
-            _save_rgb_png(input_thumbs[src_label][tgt_label], Path(cache_dir) / input_rel)
-            input_thumb_paths[tgt_label] = input_rel.as_posix()
+            thumb = input_thumbs.get(src_label, {}).get(tgt_label)
+            if thumb is not None:
+                input_rel = Path(exp_name) / src_label / f"input__{tgt_label}.png"
+                _save_rgb_png(thumb, Path(cache_dir) / input_rel)
+                input_thumb_paths[tgt_label] = input_rel.as_posix()
         thumb_rel = Path(exp_name) / src_label / "baseline_group.png"
         _save_rgb_png(baseline_group_thumbs[src_label], Path(cache_dir) / thumb_rel)
         rows.append(
@@ -366,7 +377,12 @@ def save_relabeling_cache(
                 "images": images,
             }
         )
-    return {"labels": labels, "rows": rows}
+    return {
+        "labels": source_labels,
+        "source_labels": source_labels,
+        "target_labels": target_labels,
+        "rows": rows,
+    }
 
 
 def load_relabeling_cache(
@@ -374,6 +390,8 @@ def load_relabeling_cache(
     record: dict[str, Any],
 ) -> dict[str, Any]:
     labels = [str(label) for label in record.get("labels", [])]
+    source_labels = [str(label) for label in record.get("source_labels", labels)]
+    target_labels = [str(label) for label in record.get("target_labels", labels)]
     results: dict[str, dict[str, np.ndarray]] = {}
     tiles: dict[str, str] = {}
     baseline_group_thumbs: dict[str, np.ndarray] = {}
@@ -394,6 +412,8 @@ def load_relabeling_cache(
         }
     return {
         "labels": labels,
+        "source_labels": source_labels,
+        "target_labels": target_labels,
         "tiles": tiles,
         "baseline_group_thumbs": baseline_group_thumbs,
         "input_thumbs": input_thumbs,
@@ -756,12 +776,15 @@ def render_relabeling_figure(
     baseline_group_thumbs: dict[str, np.ndarray] | None = None,
     input_thumbs: dict[str, dict[str, np.ndarray]] | None = None,
     labels: list[str] | None = None,
+    source_labels: list[str] | None = None,
+    target_labels: list[str] | None = None,
     exp_title: str,
     out_path: Path,
 ) -> None:
-    """Render relabeling results as 3-row source chunks: inputs, H&E, and pixel diffs."""
-    labels = list(labels) if labels is not None else _condition_labels_from_results(results)
-    if not labels:
+    """Render relabeling results as generated-H&E and diff chunks."""
+    source_labels = list(source_labels) if source_labels is not None else list(labels) if labels is not None else _source_labels_from_results(results)
+    target_labels = list(target_labels) if target_labels is not None else list(labels) if labels is not None else _target_labels_from_results(results)
+    if not source_labels or not target_labels:
         raise ValueError("results must not be empty")
 
     hot_cmap = mcolors.LinearSegmentedColormap.from_list(
@@ -769,54 +792,47 @@ def render_relabeling_figure(
         ["#000000", "#ff4400", "#ffff00", "#ffffff"],
     )
     baseline_color = "#9B59B6"
-    n = len(labels)
-    n_rows = n * 3
-    fig, axes = plt.subplots(n_rows, n, figsize=(3.0 * n, 2.4 * n_rows))
-    if n_rows == 1 and n == 1:
+    n_source = len(source_labels)
+    n_target = len(target_labels)
+    n_rows = n_source * 2
+    fig, axes = plt.subplots(n_rows, n_target, figsize=(3.1 * n_target, 2.55 * n_rows))
+    if n_rows == 1 and n_target == 1:
         axes = np.array([[axes]])
     elif n_rows == 1:
         axes = axes[None, :]
-    elif n == 1:
+    elif n_target == 1:
         axes = axes[:, None]
     fig.suptitle(exp_title, fontsize=11)
-    for i, src_label in enumerate(labels):
-        row0 = i * 3
-        row1 = row0 + 1
-        row2 = row0 + 2
-        chunk_name = f"Chunk {chr(ord('A') + i)}"
 
+    diff_maps: dict[tuple[str, str], np.ndarray] = {}
+    diff_max = 0.0
+    for src_label in source_labels:
         baseline = results[src_label][src_label].astype(np.float32)
-        for j, tgt_label in enumerate(labels):
-            ax_in = axes[row0, j]
-            if input_thumbs is not None and src_label in input_thumbs and tgt_label in input_thumbs[src_label]:
-                thumb = input_thumbs[src_label][tgt_label]
-            elif tgt_label == src_label and baseline_group_thumbs is not None and src_label in baseline_group_thumbs:
-                thumb = baseline_group_thumbs[src_label]
-            elif exp_channels_dir is not None:
-                thumb = _render_relabel_input_thumbnail(
-                    exp_channels_dir=Path(exp_channels_dir),
-                    tile_id=tiles[src_label],
-                    source_label=src_label,
-                    target_label=tgt_label,
-                    thumb_specs=thumb_specs,
-                    resolution=96,
-                )
-            else:
-                thumb = _render_label_badge(tgt_label, thumb_specs[tgt_label][1], resolution=96)
-            ax_in.imshow(thumb)
-            title = f"all {tgt_label}"
+        for tgt_label in target_labels:
+            diff = np.abs(results[src_label][tgt_label].astype(np.float32) - baseline).mean(axis=2)
             if tgt_label == src_label:
-                title += " (baseline)"
-            ax_in.set_title(title, fontsize=8)
-            ax_in.axis("off")
+                diff = np.zeros_like(diff)
+            diff_maps[(src_label, tgt_label)] = diff
+            diff_max = max(diff_max, float(diff.max()))
+    diff_vmax = max(diff_max, 1.0)
 
-            ax_he = axes[row1, j]
+    for i, src_label in enumerate(source_labels):
+        row_he = i
+        row_diff = i + n_source
+        for j, tgt_label in enumerate(target_labels):
+            ax_he = axes[row_he, j]
             img = results[src_label][tgt_label]
             ax_he.imshow(img)
+            title = f"{src_label}->{tgt_label}"
+            if tgt_label == src_label:
+                title = f"all {src_label} (baseline)"
+            elif src_label.startswith("non") and tgt_label.startswith("non"):
+                title = f"all {tgt_label}"
+            else:
+                title = f"replace all {src_label} with {tgt_label}"
+            ax_he.set_title(title, fontsize=8, pad=4)
             ax_he.axis("off")
             if tgt_label == src_label:
-                from matplotlib.patches import Rectangle
-
                 ax_he.add_patch(
                     Rectangle(
                         (0.0, 0.0),
@@ -832,18 +848,15 @@ def render_relabeling_figure(
                     )
                 )
 
-            ax_diff = axes[row2, j]
-            diff = np.abs(img.astype(np.float32) - baseline).mean(axis=2)
-            if tgt_label == src_label:
-                diff = np.zeros_like(diff)
-            ax_diff.imshow(diff, cmap=hot_cmap, vmin=0, vmax=max(float(diff.max()), 1.0) if float(diff.max()) > 0 else 1.0)
+            ax_diff = axes[row_diff, j]
+            diff = diff_maps[(src_label, tgt_label)]
+            ax_diff.imshow(diff, cmap=hot_cmap, vmin=0, vmax=diff_vmax)
             ax_diff.axis("off")
 
-        axes[row0, 0].set_ylabel(f"{chunk_name}\nall {src_label}\nInput channel", fontsize=8, rotation=90, labelpad=18)
-        axes[row1, 0].set_ylabel("Generated H&E", fontsize=8, rotation=90, labelpad=18)
-        axes[row2, 0].set_ylabel("Pixel diff", fontsize=8, rotation=90, labelpad=18)
+        axes[row_he, 0].set_ylabel(f"Generated H&E\nall {src_label}", fontsize=8, rotation=90, labelpad=18)
+        axes[row_diff, 0].set_ylabel(f"Pixel diff\nvs all {src_label}", fontsize=8, rotation=90, labelpad=18)
 
-    fig.subplots_adjust(left=0.08, right=0.99, top=0.95, bottom=0.04, wspace=0.05, hspace=0.14)
+    fig.subplots_adjust(left=0.11, right=0.99, top=0.95, bottom=0.04, wspace=0.05, hspace=0.16)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -921,6 +934,8 @@ def render_figures_from_cache(
             baseline_group_thumbs=loaded["baseline_group_thumbs"],
             input_thumbs=loaded.get("input_thumbs"),
             labels=loaded["labels"],
+            source_labels=loaded.get("source_labels"),
+            target_labels=loaded.get("target_labels"),
             exp_title="Exp 2: Cell type relabeling (given cell states + microenv)",
             out_path=Path(out_dir) / "exp2_cell_type_relabeling.png",
         )
@@ -934,6 +949,8 @@ def render_figures_from_cache(
             baseline_group_thumbs=loaded["baseline_group_thumbs"],
             input_thumbs=loaded.get("input_thumbs"),
             labels=loaded["labels"],
+            source_labels=loaded.get("source_labels"),
+            target_labels=loaded.get("target_labels"),
             exp_title="Exp 3: Cell state relabeling (given cell types + microenv)",
             out_path=Path(out_dir) / "exp3_cell_state_relabeling.png",
         )
@@ -1128,7 +1145,7 @@ def main() -> None:
             )
             input_thumbs2 = build_relabel_input_thumbs(
                 tiles=exp2_tiles,
-                labels=list(results2.keys()),
+                labels=_target_labels_from_results(results2),
                 exp_channels_dir=exp_channels_dir,
                 thumb_specs=_CELL_TYPE_THUMB_SPECS,
             )
@@ -1159,7 +1176,7 @@ def main() -> None:
             )
             input_thumbs3 = build_relabel_input_thumbs(
                 tiles=exp3_tiles,
-                labels=list(results3.keys()),
+                labels=_target_labels_from_results(results3),
                 exp_channels_dir=exp_channels_dir,
                 thumb_specs=_CELL_STATE_THUMB_SPECS,
             )

@@ -13,6 +13,7 @@ def _make_cache(
     group_names=("cell_types", "cell_state", "vasculature", "microenv"),
 ):
     """Write a minimal manifest plus synthetic images to tmp_path."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     all_img = np.full((4, 4, 3), 200, dtype=np.uint8)
     Image.fromarray(all_img).save(tmp_path / "generated_he.png")
 
@@ -112,3 +113,25 @@ def test_save_stats_and_render_figure(tmp_path):
     stats = json.loads(stats_path.read_text(encoding="utf-8"))
     assert set(stats) == {"cell_types", "cell_state", "vasculature", "microenv"}
     assert stats["cell_types"]["max_diff"] > 0.0
+
+
+def test_render_loo_cache_root_renders_multiple_tile_dirs(tmp_path):
+    from tools.vis.leave_one_out_diff import render_loo_cache_root
+
+    cache_root = tmp_path / "cache"
+    cache_a = _make_cache(cache_root / "512_9728")
+    cache_b = _make_cache(cache_root / "16896_40448")
+    out_root = tmp_path / "loo_outputs"
+
+    rendered = render_loo_cache_root(cache_root, out_root=out_root, workers=2, show_progress=False)
+
+    assert len(rendered) == 2
+    expected_paths = {
+        out_root / cache_a.relative_to(cache_root) / "leave_one_out_diff.png",
+        out_root / cache_b.relative_to(cache_root) / "leave_one_out_diff.png",
+    }
+    actual_paths = {fig_path for fig_path, _ in rendered}
+    assert actual_paths == expected_paths
+    for fig_path, stats_path in rendered:
+        assert fig_path.is_file()
+        assert stats_path.is_file()
