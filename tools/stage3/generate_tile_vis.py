@@ -38,8 +38,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from diffusers import DDPMScheduler
 from PIL import Image
+
+from tools.stage3.common import make_inference_scheduler, resolve_uni_embedding
 
 # Repo root (parent of tools/)
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -90,6 +91,7 @@ def run_vis_suite(
         generate_group_combination_ablation_images,
         generate_tile,
     )
+    from tools.stage3.uni_cosine_similarity import cosine_similarity_uni
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -143,9 +145,7 @@ def run_vis_suite(
             uni_model_path = getattr(config, "uni_model_path", str(ROOT / "pretrained_models/uni-2h"))
             extractor = UNI2hExtractor(model_path=uni_model_path, device=device)
             gen_feat = extractor.extract(gen_np)
-            a = gen_feat / (np.linalg.norm(gen_feat) + 1e-8)
-            b = exp_feat / (np.linalg.norm(exp_feat) + 1e-8)
-            sim = float(np.dot(a, b))
+            sim = float(cosine_similarity_uni(gen_feat, exp_feat))
         else:
             print(f"  Cosine sim: skipped (missing {cos_feat})")
 
@@ -334,7 +334,6 @@ def main():
         sys.path.insert(0, str(ROOT))
 
     from diffusion.utils.misc import read_config
-    from train_scripts.inference_controlnet import null_uni_embed
 
     from tools.stage3.tile_pipeline import (
         find_latest_checkpoint_dir,
@@ -355,25 +354,16 @@ def main():
 
     models = load_all_models(config, args.config, ckpt_dir, device)
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(args.num_steps, device=device)
+    scheduler = make_inference_scheduler(num_steps=args.num_steps, device=device)
 
     feat_path = Path(args.uni_npy) if args.uni_npy else feat_dir / f"{args.tile_id}_uni.npy"
-    if args.null_uni or not feat_path.exists():
-        uni_embeds = null_uni_embed(device="cpu", dtype=torch.float32)
-        if not args.null_uni:
-            print(f"Warning: missing {feat_path}, using null UNI")
-        cos_path = None
-    else:
-        uni_embeds = torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
-        cos_path = feat_path
+    uni_embeds = resolve_uni_embedding(
+        args.tile_id,
+        feat_dir=feat_dir,
+        null_uni=args.null_uni,
+        uni_npy=Path(args.uni_npy) if args.uni_npy else None,
+    )
+    cos_path = None if args.null_uni or not feat_path.exists() else feat_path
 
     ref_arg = Path(args.reference_he) if args.reference_he else None
 

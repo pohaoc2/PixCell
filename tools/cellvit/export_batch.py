@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
-
-
-def _load_manifest(cache_dir: Path) -> dict:
-    return json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
+from tools.stage3.ablation_cache import (
+    is_per_tile_cache_manifest_dir,
+    list_cached_tile_ids,
+    load_manifest,
+)
 
 
 def _flat_name(tile_id: str, rel_image_path: str) -> str:
@@ -27,7 +27,7 @@ def _flat_name(tile_id: str, rel_image_path: str) -> str:
 
 
 def _iter_manifest_png_entries(cache_dir: Path) -> list[dict[str, str]]:
-    manifest = _load_manifest(cache_dir)
+    manifest = load_manifest(cache_dir)
     tile_id = str(manifest["tile_id"])
     entries: list[dict[str, str]] = []
     for section in manifest.get("sections", []):

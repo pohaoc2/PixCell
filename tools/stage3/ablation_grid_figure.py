@@ -35,7 +35,12 @@ from tools.compute_ablation_metrics import (
     _merge_cosine_into_metrics,
     load_or_build_metrics,
 )
-from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
+from tools.stage3.ablation_cache import (
+    is_per_tile_cache_manifest_dir,
+    list_cached_tile_ids,
+    load_manifest,
+    resolve_all_image_path,
+)
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
     cache_manifest_uni_features,
@@ -44,6 +49,7 @@ from tools.stage3.ablation_vis_utils import (
     ordered_subset_condition_tuples,
     parse_uni_cosine_scores_json,
 )
+from tools.stage3.common import print_progress
 
 # Okabe-Ito palette (colorblind-safe)
 _COLOR_BY_CARD: dict[int, str] = {
@@ -112,14 +118,6 @@ def _sort_conditions_by_metric(
         return (0.0, rank_value, k)
 
     return sorted(conditions, key=_key)
-
-
-def _sort_conditions_by_cosine(
-    conditions: list[tuple[str, ...]],
-    scores: dict[str, float],
-) -> list[tuple[str, ...]]:
-    """Backward-compatible alias for cosine sorting."""
-    return _sort_conditions_by_metric(conditions, scores, metric_name="cosine")
 
 
 def _compute_image_cosine(
@@ -237,37 +235,6 @@ def _load_grid_cosine_scores(
     return scores
 
 
-def _resolve_all4ch_image(cache_dir: Path, manifest: dict) -> Path | None:
-    """Resolve All-channels image path from manifest first, then legacy fallbacks."""
-    cache_dir = Path(cache_dir)
-    n_groups = len(manifest.get("group_names") or FOUR_GROUP_ORDER)
-
-    for section in manifest.get("sections", []):
-        try:
-            subset_size = int(section.get("subset_size", 0))
-        except (TypeError, ValueError):
-            continue
-        if subset_size != n_groups:
-            continue
-        entries = section.get("entries") or []
-        if not entries:
-            continue
-        rel = Path(entries[0].get("image_path", ""))
-        if rel and (cache_dir / rel).is_file():
-            return cache_dir / rel
-
-    canonical = cache_dir / "all" / "generated_he.png"
-    if canonical.is_file():
-        return canonical
-
-    all_dir = cache_dir / "all"
-    if all_dir.is_dir():
-        pngs = sorted(all_dir.glob("*.png"))
-        if len(pngs) == 1:
-            return pngs[0]
-    return None
-
-
 def _draw_dot_row(
     ax,
     cond: tuple[str, ...],
@@ -312,25 +279,18 @@ def _draw_cell_border(ax, color: str, *, dashed: bool = False) -> None:
             spine.set_linestyle("--")
 
 
-def _metric_fill_fraction(
-    metric_name: str,
-    value: float | None,
-) -> float | None:
+def _metric_fill_fraction(value: float | None) -> float | None:
     if value is None:
         return None
-    del metric_name
     return float(np.clip(float(value), 0.0, 1.0))
 
 
 def _draw_metric_bars_cell(
     ax,
     metrics: dict[str, float | None],
-    color: str,
-    metric_names: tuple[str, ...],
+    metric_names: tuple[str, ...] = METRIC_ORDER,
 ) -> None:
     """Draw one stacked literal metric bar per requested metric on a shared 0..1 scale."""
-    del color  # Metric colors are fixed by metric identity.
-
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, float(max(1, len(metric_names))))
     ax.axis("off")
@@ -344,7 +304,7 @@ def _draw_metric_bars_cell(
     for idx, metric_name in enumerate(metric_names):
         y = top_y - idx
         value = metrics.get(metric_name)
-        frac = _metric_fill_fraction(metric_name, value)
+        frac = _metric_fill_fraction(value)
 
         ax.text(
             label_x,
@@ -506,7 +466,7 @@ def render_ablation_grid_figure(
     all4ch_image = Path(all4ch_image)
     uni_model = Path(uni_model) if uni_model is not None else ROOT / "pretrained_models/uni-2h"
 
-    manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest = load_manifest(cache_dir)
     lookup = _build_manifest_lookup(cache_dir, manifest)
     cell_mask = _load_cell_mask_array(cache_dir, manifest)
 
@@ -595,7 +555,6 @@ def render_ablation_grid_figure(
         _draw_metric_bars_cell(
             bar_ax,
             metric_record if isinstance(metric_record, dict) else {},
-            color=color,
             metric_names=metric_bars,
         )
 
@@ -645,12 +604,12 @@ def render_ablation_grid_figure(
 def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> None:
     """Render the grid figure for one tile cache directory."""
     cache_dir = cache_dir.resolve()
-    manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest = load_manifest(cache_dir)
     tile_id = str(manifest["tile_id"])
 
     orion_root = args.orion_root.resolve()
 
-    all4ch_image = _resolve_all4ch_image(cache_dir, manifest)
+    all4ch_image = resolve_all_image_path(cache_dir, manifest, n_groups=len(manifest.get("group_names") or FOUR_GROUP_ORDER))
     if all4ch_image is None:
         raise FileNotFoundError(
             f"All-4-ch image not found under: {cache_dir}\n"
@@ -689,15 +648,7 @@ def _render_grid_for_cache_dir_job(job: tuple[str, dict]) -> str:
 
 
 def _print_progress(completed: int, total: int, *, prefix: str = "Rendering") -> None:
-    """Write a simple in-place progress bar to stderr."""
-    total = max(1, total)
-    width = 28
-    filled = int(width * completed / total)
-    bar = "#" * filled + "-" * (width - filled)
-    msg = f"\r{prefix} [{bar}] {completed}/{total}"
-    if completed >= total:
-        msg += "\n"
-    print(msg, end="", file=sys.stderr, flush=True)
+    print_progress(completed, total, prefix=prefix)
 
 
 def main() -> None:

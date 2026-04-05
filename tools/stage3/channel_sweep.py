@@ -22,69 +22,59 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import numpy as np
 import torch
-from diffusers import DDPMScheduler
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.channel_group_utils import channel_index_map
+from tools.color_constants import CELL_STATE_COLORS, CELL_TYPE_COLORS
+from tools.stage3.common import (
+    inference_dtype,
+    make_inference_scheduler,
+    resolve_uni_embedding,
+    to_uint8_rgb,
+)
+
 SWEEP_SCALES: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
 CACHE_VERSION = 1
 
-_CH_IDX: dict[str, int] = {
-    "cell_masks": 0,
-    "cell_type_healthy": 1,
-    "cell_type_cancer": 2,
-    "cell_type_immune": 3,
-    "cell_state_prolif": 4,
-    "cell_state_nonprolif": 5,
-    "cell_state_dead": 6,
-    "vasculature": 7,
-    "oxygen": 8,
-    "glucose": 9,
-}
-
 _CELL_TYPE_CHANNELS = {
-    "cancer": _CH_IDX["cell_type_cancer"],
-    "immune": _CH_IDX["cell_type_immune"],
-    "healthy": _CH_IDX["cell_type_healthy"],
+    "cancer": "cell_type_cancer",
+    "immune": "cell_type_immune",
+    "healthy": "cell_type_healthy",
 }
 
 _CELL_STATE_CHANNELS = {
-    "prolif": _CH_IDX["cell_state_prolif"],
-    "nonprolif": _CH_IDX["cell_state_nonprolif"],
-    "dead": _CH_IDX["cell_state_dead"],
+    "prolif": "cell_state_prolif",
+    "nonprolif": "cell_state_nonprolif",
+    "dead": "cell_state_dead",
 }
 
+def _rgb(rgba: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    return rgba[:3]
+
+
 _CELL_TYPE_THUMB_SPECS = {
-    "cancer": ("cell_type_cancer", (220, 50, 50)),
-    "immune": ("cell_type_immune", (50, 100, 220)),
-    "healthy": ("cell_type_healthy", (50, 180, 50)),
+    "cancer": ("cell_type_cancer", _rgb(CELL_TYPE_COLORS["cancer"])),
+    "immune": ("cell_type_immune", _rgb(CELL_TYPE_COLORS["immune"])),
+    "healthy": ("cell_type_healthy", _rgb(CELL_TYPE_COLORS["healthy"])),
 }
 
 _CELL_STATE_THUMB_SPECS = {
-    "prolif": ("cell_state_prolif", (230, 50, 180)),
-    "nonprolif": ("cell_state_nonprolif", (240, 140, 30)),
-    "dead": ("cell_state_dead", (110, 40, 160)),
+    "prolif": ("cell_state_prolif", _rgb(CELL_STATE_COLORS["proliferative"])),
+    "nonprolif": ("cell_state_nonprolif", _rgb(CELL_STATE_COLORS["nonprolif"])),
+    "dead": ("cell_state_dead", _rgb(CELL_STATE_COLORS["dead"])),
 }
 
 
 def _get_dtype(device: str) -> torch.dtype:
-    return torch.float16 if device == "cuda" else torch.float32
+    return inference_dtype(device)
 
 
-def _make_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(num_steps, device=device)
-    return scheduler
+def _make_scheduler(*, num_steps: int, device: str):
+    return make_inference_scheduler(num_steps=num_steps, device=device)
 
 
 def _resolve_checkpoint_dir(checkpoint_dir: Path) -> Path:
@@ -93,22 +83,6 @@ def _resolve_checkpoint_dir(checkpoint_dir: Path) -> Path:
     if any(checkpoint_dir.glob("controlnet_*.pth")):
         return checkpoint_dir
     return find_latest_checkpoint_dir(checkpoint_dir)
-
-
-def _resolve_uni_embedding(
-    tile_id: str,
-    *,
-    feat_dir: Path,
-    null_uni: bool,
-) -> torch.Tensor:
-    from train_scripts.inference_controlnet import null_uni_embed
-
-    feat_path = feat_dir / f"{tile_id}_uni.npy"
-    if null_uni or not feat_path.exists():
-        if not null_uni and not feat_path.exists():
-            print(f"Warning: missing {feat_path}, using null UNI")
-        return null_uni_embed(device="cpu", dtype=torch.float32)
-    return torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
 
 
 def _source_labels_from_results(results: dict[str, dict[str, np.ndarray]]) -> list[str]:
@@ -130,15 +104,9 @@ def _blank_rgb(size: int = 96, value: int = 35) -> np.ndarray:
     return np.full((size, size, 3), value, dtype=np.uint8)
 
 
-def _to_uint8_rgb(image: np.ndarray) -> np.ndarray:
-    if image.dtype == np.uint8:
-        return image
-    return np.clip(image, 0, 255).astype(np.uint8)
-
-
 def _save_rgb_png(image: np.ndarray, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(_to_uint8_rgb(image)).save(path)
+    Image.fromarray(to_uint8_rgb(image, value_range="byte")).save(path)
 
 
 def _load_rgb_png(path: Path) -> np.ndarray:
@@ -456,50 +424,20 @@ def generate_from_ctrl(
     seed: int,
 ) -> np.ndarray:
     """Generate one H&E tile from a modified full control tensor."""
-    from tools.channel_group_utils import split_channels_to_groups
-    from train_scripts.inference_controlnet import denoise, encode_ctrl_mask_latent
+    from tools.stage3.tile_pipeline import generate_from_ctrl as generate_from_ctrl_shared
 
-    dtype = _get_dtype(device)
-    vae = models["vae"]
-    vae.to(device=device, dtype=dtype).eval()
-
-    vae_mask = encode_ctrl_mask_latent(
+    gen_np, _ = generate_from_ctrl_shared(
         ctrl_full,
-        vae,
-        vae_shift=config.shift_factor,
-        vae_scale=config.scale_factor,
-        device=device,
-        dtype=dtype,
-    )
-    tme_dict = split_channels_to_groups(
-        ctrl_full.unsqueeze(0).to(device, dtype=dtype),
-        config.data.active_channels,
-        config.channel_groups,
-    )
-    all_groups = {group["name"] for group in config.channel_groups}
-
-    with torch.no_grad():
-        fused = models["tme_module"](vae_mask, tme_dict, active_groups=all_groups)
-        if getattr(config, "zero_mask_latent", False):
-            fused = fused - vae_mask
-
-    torch.manual_seed(seed)
-    denoised = denoise(
-        latents=fixed_noise.clone(),
-        uni_embeds=uni_embeds.to(device, dtype=dtype),
-        controlnet_input_latent=fused,
+        models=models,
+        config=config,
         scheduler=scheduler,
-        controlnet_model=models["controlnet"],
-        pixcell_controlnet_model=models["base_model"],
-        guidance_scale=guidance_scale,
+        uni_embeds=uni_embeds,
         device=device,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        fixed_noise=fixed_noise,
     )
-
-    with torch.no_grad():
-        scaled = (denoised.to(dtype) / config.scale_factor) + config.shift_factor
-        gen = vae.decode(scaled, return_dict=False)[0]
-    gen = (gen / 2 + 0.5).clamp(0, 1)
-    return (gen.cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
+    return gen_np
 
 
 def run_exp1_microenv_grid(
@@ -532,12 +470,13 @@ def run_exp1_microenv_grid(
         dtype=dtype,
         seed=seed,
     )
-    uni_embeds = _resolve_uni_embedding(tile_id, feat_dir=feat_dir, null_uni=null_uni)
+    uni_embeds = resolve_uni_embedding(tile_id, feat_dir=feat_dir, null_uni=null_uni)
 
     results: dict[tuple[float, float], np.ndarray] = {}
     total = len(SWEEP_SCALES) ** 2
-    idx_o2 = _CH_IDX["oxygen"]
-    idx_glucose = _CH_IDX["glucose"]
+    channel_indices = channel_index_map(config.data.active_channels)
+    idx_o2 = channel_indices["oxygen"]
+    idx_glucose = channel_indices["glucose"]
     for i, o2_scale in enumerate(SWEEP_SCALES):
         for j, glucose_scale in enumerate(SWEEP_SCALES):
             step = i * len(SWEEP_SCALES) + j + 1
@@ -710,6 +649,11 @@ def _run_relabeling_experiment(
     labels = list(channel_map.keys())
     dtype = _get_dtype(device)
     results: dict[str, dict[str, np.ndarray]] = {}
+    channel_indices = channel_index_map(config.data.active_channels)
+    resolved_channel_map = {
+        label: channel_indices[channel_name]
+        for label, channel_name in channel_map.items()
+    }
 
     for src_label, tile_id in tiles.items():
         print(f"  Relabel tile {tile_id} (source={src_label})")
@@ -726,7 +670,7 @@ def _run_relabeling_experiment(
             dtype=dtype,
             seed=seed,
         )
-        uni_embeds = _resolve_uni_embedding(tile_id, feat_dir=feat_dir, null_uni=null_uni)
+        uni_embeds = resolve_uni_embedding(tile_id, feat_dir=feat_dir, null_uni=null_uni)
         row: dict[str, np.ndarray] = {}
         for tgt_label in labels:
             if src_label == tgt_label:
@@ -734,8 +678,8 @@ def _run_relabeling_experiment(
             else:
                 ctrl = build_relabeled_ctrl(
                     ctrl_full,
-                    idx_source=channel_map[src_label],
-                    idx_target=channel_map[tgt_label],
+                    idx_source=resolved_channel_map[src_label],
+                    idx_target=resolved_channel_map[tgt_label],
                 )
             row[tgt_label] = generate_from_ctrl(
                 ctrl,
