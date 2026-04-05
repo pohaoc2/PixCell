@@ -202,6 +202,31 @@ def compute_rgb_pixel_cosine_scores(
     return per, meta
 
 
+def draw_image_border(
+    ax,
+    color: str,
+    *,
+    dashed: bool = False,
+    linewidth: float = 2.5,
+) -> None:
+    """Draw a visible border around an image axes even when spines are hidden."""
+    from matplotlib.patches import Rectangle
+
+    patch = Rectangle(
+        (0.0, 0.0),
+        1.0,
+        1.0,
+        transform=ax.transAxes,
+        fill=False,
+        edgecolor=color,
+        linewidth=linewidth,
+        linestyle="--" if dashed else "-",
+        zorder=10,
+        clip_on=False,
+    )
+    ax.add_patch(patch)
+
+
 # --- Channel PNG discovery (paired patch folder; filenames vary) ---
 
 _CHANNEL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (

@@ -27,9 +27,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from diffusers import DDPMScheduler
 
 ROOT = Path(__file__).resolve().parent.parent
+
+from tools.stage3.common import make_inference_scheduler
 
 
 def main():
@@ -89,15 +90,7 @@ def main():
     config._filename = args.config
     models = load_all_models(config, args.config, ckpt_dir, args.device)
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(args.num_steps, device=args.device)
+    scheduler = make_inference_scheduler(num_steps=args.num_steps, device=args.device)
 
     out_root = Path(args.output_dir)
     out_root.mkdir(parents=True, exist_ok=True)

@@ -46,6 +46,7 @@ from tools.stage3.ablation_vis_utils import (
     cache_manifest_uni_features,
     condition_metric_key,
     default_orion_he_png_path,
+    draw_image_border,
     ordered_subset_condition_tuples,
     parse_uni_cosine_scores_json,
 )
@@ -267,16 +268,6 @@ def _draw_dot_row(
                 ha="center", va="center", fontsize=7.5,
                 color="black",
             )
-
-
-def _draw_cell_border(ax, color: str, *, dashed: bool = False) -> None:
-    """Color and optionally dash all four spines of an image axes."""
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(2.5)
-        spine.set_color(color)
-        if dashed:
-            spine.set_linestyle("--")
 
 
 def _metric_fill_fraction(value: float | None) -> float | None:
@@ -548,7 +539,7 @@ def render_ablation_grid_figure(
         _maybe_overlay_cellvit_contours(image_ax, img_path, enabled=debug_cellvit_overlay)
         image_ax.set_xticks([])
         image_ax.set_yticks([])
-        _draw_cell_border(image_ax, color)
+        draw_image_border(image_ax, color)
 
         # Metric bars
         bar_ax = fig.add_subplot(gs[base + 2, gc])
@@ -579,7 +570,7 @@ def render_ablation_grid_figure(
         _maybe_contour_cell_mask(image_ax, cell_mask, (he_arr.shape[0], he_arr.shape[1]))
     image_ax.set_xticks([])
     image_ax.set_yticks([])
-    _draw_cell_border(image_ax, COLOR_REF, dashed=True)
+    draw_image_border(image_ax, COLOR_REF, dashed=True)
 
     # Metric bars: place the reference label in the middle row
     ref_bar_ax = fig.add_subplot(gs[base + 2, gc])
