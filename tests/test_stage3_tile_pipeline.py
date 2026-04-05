@@ -181,7 +181,7 @@ def test_generate_tile_zero_mask_latent_applied(tmp_path):
         return torch.zeros(1, 16, 4, 4)
 
     with patch("train_scripts.inference_controlnet.encode_ctrl_mask_latent", return_value=vae_mean), \
-         patch("tools.channel_group_utils.split_channels_to_groups", return_value={}), \
+         patch("tools.stage3.tile_pipeline.split_channels_to_groups", return_value={}), \
          patch("train_scripts.inference_controlnet.denoise", side_effect=fake_denoise):
         generate_tile(
             tile_id="t",
@@ -223,7 +223,7 @@ def test_generate_tile_zero_mask_latent_off(tmp_path):
         return torch.zeros(1, 16, 4, 4)
 
     with patch("train_scripts.inference_controlnet.encode_ctrl_mask_latent", return_value=vae_mean), \
-         patch("tools.channel_group_utils.split_channels_to_groups", return_value={}), \
+         patch("tools.stage3.tile_pipeline.split_channels_to_groups", return_value={}), \
          patch("train_scripts.inference_controlnet.denoise", side_effect=fake_denoise):
         generate_tile(
             tile_id="t",
@@ -306,7 +306,7 @@ def test_generate_ablation_images_respects_requested_group_conditions(tmp_path):
 
     with patch("tools.stage3.tile_pipeline.load_exp_channels", return_value=fake_ctrl_full), \
          patch("train_scripts.inference_controlnet.encode_ctrl_mask_latent", return_value=torch.ones(1, 16, 4, 4)), \
-         patch("tools.channel_group_utils.split_channels_to_groups", return_value=fake_tme_dict), \
+         patch("tools.stage3.tile_pipeline.split_channels_to_groups", return_value=fake_tme_dict), \
          patch("train_scripts.inference_controlnet.denoise", side_effect=fake_denoise):
         results = generate_ablation_images(
             tile_id="t",

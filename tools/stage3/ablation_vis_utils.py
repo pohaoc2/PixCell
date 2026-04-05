@@ -258,105 +258,6 @@ def parse_uni_cosine_for_condition(raw: dict[str, Any], active_groups: tuple[str
     return float(val)
 
 
-# --- exp_channels/ composites (paired dataset layout) ---------------------------------
-# Self-contained loaders (PIL + numpy only) so figure scripts do not import training stack.
-
-_BINARY_EXP_CHANNELS: frozenset[str] = frozenset(
-    {
-        "cell_masks",
-        "cell_type_healthy",
-        "cell_type_cancer",
-        "cell_type_immune",
-        "cell_state_prolif",
-        "cell_state_nonprolif",
-        "cell_state_dead",
-        "vasculature",
-    }
-)
-_CLIP01_EXP_CHANNELS: frozenset[str] = frozenset({"oxygen", "glucose"})
-_EXTS_DEFAULT: tuple[str, ...] = (".png", ".npy", ".jpg", ".tif")
-_PREFERRED_EXTS: dict[str, tuple[str, ...]] = {
-    "oxygen": (".npy", ".png", ".jpg", ".tif"),
-    "glucose": (".npy", ".png", ".jpg", ".tif"),
-    "vasculature": (".npy", ".png", ".jpg", ".tif"),
-}
-_EXP_CHANNEL_DIR_ALIASES: dict[str, tuple[str, ...]] = {
-    "cell_masks": ("cell_mask",),
-}
-
-
-def _resolve_exp_channel_dir(exp_channels_dir: Path, channel: str) -> Path:
-    for cand in (channel, *_EXP_CHANNEL_DIR_ALIASES.get(channel, ())):
-        p = exp_channels_dir / cand
-        if p.is_dir():
-            return p
-    return exp_channels_dir / channel
-
-
-def _find_tile_spatial_file(channel_dir: Path, tile_id: str, exts: tuple[str, ...]) -> Path:
-    for ext in exts:
-        p = channel_dir / f"{tile_id}{ext}"
-        if p.is_file():
-            return p
-    raise FileNotFoundError(
-        f"No file for tile {tile_id!r} in {channel_dir} (tried {list(exts)})",
-    )
-
-
-def _load_spatial_plane_for_vis(
-    path: Path,
-    *,
-    resolution: int,
-    binary: bool,
-    normalization: str,
-) -> np.ndarray:
-    """Load ``[H,W]`` float32 in ``[0,1]``, resize to ``resolution`` (visualization only)."""
-    from PIL import Image
-
-    if path.suffix.lower() == ".npy":
-        arr = np.load(path).astype(np.float32)
-        while arr.ndim > 2 and arr.shape[0] == 1:
-            arr = arr.squeeze(0)
-        if arr.ndim == 3:
-            arr = arr[0]
-        if arr.ndim != 2:
-            raise ValueError(f"expected 2D after squeeze, got {arr.shape} from {path}")
-    else:
-        raw = Image.open(path).convert("L")
-        arr = np.asarray(raw, dtype=np.float32)
-        if arr.max() > 1.0:
-            arr /= 255.0
-
-    if arr.shape != (resolution, resolution):
-        im8 = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
-        resized = Image.fromarray(im8, mode="L").resize(
-            (resolution, resolution), Image.BILINEAR
-        )
-        arr = np.asarray(resized, dtype=np.float32) / 255.0
-
-    if binary:
-        arr = (arr > 0.5).astype(np.float32)
-    elif normalization == "clip01":
-        arr = np.clip(arr, 0.0, 1.0).astype(np.float32)
-    else:
-        vmin, vmax = float(arr.min()), float(arr.max())
-        if vmax > vmin:
-            arr = ((arr - vmin) / (vmax - vmin)).astype(np.float32)
-        else:
-            arr = np.zeros_like(arr, dtype=np.float32)
-
-    return arr
-
-
-def _exp_channel_load_config(channel_name: str) -> dict[str, object]:
-    binary = channel_name in _BINARY_EXP_CHANNELS
-    normalization = (
-        "binary" if binary else ("clip01" if channel_name in _CLIP01_EXP_CHANNELS else "minmax")
-    )
-    exts = _PREFERRED_EXTS.get(channel_name, _EXTS_DEFAULT)
-    return {"binary": binary, "normalization": normalization, "preferred_exts": exts}
-
-
 def load_exp_channel_plane(
     exp_channels_dir: Path,
     channel: str,
@@ -364,11 +265,18 @@ def load_exp_channel_plane(
     *,
     resolution: int = 256,
 ) -> np.ndarray:
-    """Load one spatial channel as float32 ``[H, W]`` in ``[0, 1]`` (paired ``exp_channels`` layout)."""
-    ch_dir = _resolve_exp_channel_dir(exp_channels_dir, channel)
-    cfg = _exp_channel_load_config(channel)
-    path = _find_tile_spatial_file(ch_dir, tile_id, cfg["preferred_exts"])
-    return _load_spatial_plane_for_vis(
+    """Load one spatial channel as float32 ``[H, W]`` in ``[0, 1]``."""
+    from diffusion.data.datasets.sim_controlnet_dataset import (
+        _find_file,
+        _load_spatial_file,
+        get_channel_load_config,
+        resolve_channel_dir,
+    )
+
+    ch_dir = resolve_channel_dir(exp_channels_dir, channel)
+    cfg = get_channel_load_config(channel)
+    path = _find_file(ch_dir, tile_id, exts=cfg["preferred_exts"])
+    return _load_spatial_file(
         path,
         resolution=resolution,
         binary=bool(cfg["binary"]),

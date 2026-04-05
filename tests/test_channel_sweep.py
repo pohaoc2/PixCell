@@ -65,3 +65,21 @@ def test_sweep_scales_list():
 
     assert SWEEP_SCALES == [0.0, 0.25, 0.5, 0.75, 1.0]
     assert len(SWEEP_SCALES) == 5
+
+
+def test_channel_index_map_follows_runtime_channel_order():
+    from tools.channel_group_utils import channel_index_map
+
+    active_channels = [
+        "cell_masks",
+        "oxygen",
+        "cell_state_dead",
+        "glucose",
+        "cell_type_cancer",
+    ]
+
+    mapping = channel_index_map(active_channels)
+
+    assert mapping["oxygen"] == 1
+    assert mapping["glucose"] == 3
+    assert mapping["cell_type_cancer"] == 4

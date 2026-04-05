@@ -27,7 +27,12 @@ from tools.stage3.ablation_vis_utils import (
     default_orion_he_png_path,
     parse_uni_cosine_scores_json,
 )
-from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
+from tools.stage3.ablation_cache import (
+    is_per_tile_cache_manifest_dir,
+    list_cached_tile_ids,
+    load_manifest,
+)
+from tools.stage3.common import print_progress
 
 DEFAULT_METRIC_NAMES: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
 OPTIONAL_METRIC_NAMES: tuple[str, ...] = ("style_hed",)
@@ -81,13 +86,8 @@ def _merge_cosine_into_metrics(
     return merged
 
 
-def _load_manifest(cache_dir: Path) -> dict:
-    manifest_path = Path(cache_dir) / "manifest.json"
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
-
-
 def _tile_id_from_manifest(cache_dir: Path) -> str:
-    manifest = _load_manifest(cache_dir)
+    manifest = load_manifest(cache_dir)
     tile_id = str(manifest.get("tile_id", "")).strip()
     if not tile_id:
         raise ValueError(f"manifest.json must contain tile_id: {cache_dir / 'manifest.json'}")
@@ -95,7 +95,7 @@ def _tile_id_from_manifest(cache_dir: Path) -> str:
 
 
 def _iter_condition_images(cache_dir: Path) -> dict[str, Path]:
-    manifest = _load_manifest(cache_dir)
+    manifest = load_manifest(cache_dir)
     per_condition: dict[str, Path] = {}
     for section in manifest.get("sections", []):
         for entry in section.get("entries", []):
@@ -288,14 +288,7 @@ def _compute_metrics_for_cache_dir_job(cache_dir: str) -> tuple[str, str]:
 
 
 def _print_progress(completed: int, total: int, *, prefix: str) -> None:
-    total = max(1, total)
-    width = 28
-    filled = int(width * completed / total)
-    bar = "#" * filled + "-" * (width - filled)
-    msg = f"\r{prefix} [{bar}] {completed}/{total}"
-    if completed >= total:
-        msg += "\n"
-    print(msg, end="", file=sys.stderr, flush=True)
+    print_progress(completed, total, prefix=prefix)
 
 
 def _run_parallel_cache_metrics(

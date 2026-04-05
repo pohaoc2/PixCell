@@ -91,7 +91,6 @@ def test_draw_metric_bars_cell_no_crash():
     _draw_metric_bars_cell(
         ax,
         {"cosine": 0.995, "lpips": None, "aji": 0.7, "pq": None},
-        color="#0072B2",
     )
     plt.close(fig)
 

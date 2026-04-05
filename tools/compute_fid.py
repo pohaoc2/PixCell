@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.stage3.ablation_cache import list_cached_tile_ids
+from tools.stage3.ablation_cache import list_cached_tile_ids, load_manifest
 from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, condition_metric_key
 
 _RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR
@@ -82,10 +82,6 @@ def resolve_device(requested: str) -> str:
     return requested
 
 
-def load_manifest(manifest_path: Path) -> dict:
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
-
-
 def collect_condition_paths(
     cache_dir: Path,
     orion_root: Path,
@@ -101,7 +97,7 @@ def collect_condition_paths(
 
     for tile_id in tile_ids:
         tile_dir = cache_dir / tile_id
-        manifest = load_manifest(tile_dir / "manifest.json")
+        manifest = load_manifest(tile_dir)
 
         manifest_tile_id = str(manifest.get("tile_id", "")).strip()
         if manifest_tile_id and manifest_tile_id != tile_id:

@@ -12,6 +12,7 @@ if "torch" not in sys.modules:
 
 if "diffusers" not in sys.modules:
     diffusers_stub = ModuleType("diffusers")
+    diffusers_stub.__path__ = []
 
     class _DummyScheduler:
         def __init__(self, *args, **kwargs):
@@ -20,8 +21,17 @@ if "diffusers" not in sys.modules:
         def set_timesteps(self, *args, **kwargs):
             pass
 
+    diffusers_utils_stub = ModuleType("diffusers.utils")
+    diffusers_torch_utils_stub = ModuleType("diffusers.utils.torch_utils")
+
+    def _randn_tensor(*args, **kwargs):
+        raise RuntimeError("randn_tensor stub should not be called in this test module")
+
     diffusers_stub.DDPMScheduler = _DummyScheduler
+    diffusers_torch_utils_stub.randn_tensor = _randn_tensor
     sys.modules["diffusers"] = diffusers_stub
+    sys.modules["diffusers.utils"] = diffusers_utils_stub
+    sys.modules["diffusers.utils.torch_utils"] = diffusers_torch_utils_stub
 
 from tools.stage3.generate_ablation_subset_cache import (
     _build_parser,

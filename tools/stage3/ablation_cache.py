@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from tools.stage3.ablation import AblationCondition
+from tools.stage3.common import to_uint8_rgb
 
 _SUBSET_DIR_NAMES = {
     1: "singles",
@@ -45,19 +46,55 @@ def condition_slug(active_groups: Sequence[str]) -> str:
     return "__".join(active_groups)
 
 
-def _as_uint8_rgb(image: np.ndarray) -> np.ndarray:
-    if image.ndim == 2:
-        image = np.repeat(image[..., None], 3, axis=2)
-    if image.dtype == np.uint8:
-        return image
-    clipped = np.clip(image, 0.0, 1.0)
-    return (clipped * 255).astype(np.uint8)
-
-
 def _as_uint8_mask(mask: np.ndarray) -> np.ndarray:
     if mask.dtype == np.uint8:
         return mask
     return (np.clip(mask, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def load_manifest(cache_dir_or_manifest_path: str | Path) -> dict:
+    """Load a per-tile ablation cache manifest."""
+    path = Path(cache_dir_or_manifest_path)
+    manifest_path = path if path.name == "manifest.json" else path / "manifest.json"
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def resolve_all_image_path(
+    cache_dir: str | Path,
+    manifest: dict | None = None,
+    *,
+    n_groups: int | None = None,
+) -> Path | None:
+    """Resolve the canonical all-groups image with manifest-first fallback behavior."""
+    cache_dir = Path(cache_dir)
+    manifest = load_manifest(cache_dir) if manifest is None else manifest
+    if n_groups is None:
+        n_groups = len(manifest.get("group_names") or ())
+
+    for section in manifest.get("sections", []):
+        try:
+            subset_size = int(section.get("subset_size", 0))
+        except (TypeError, ValueError):
+            continue
+        if subset_size != n_groups:
+            continue
+        entries = section.get("entries") or []
+        if not entries:
+            continue
+        rel = Path(entries[0].get("image_path", ""))
+        if rel and (cache_dir / rel).is_file():
+            return cache_dir / rel
+
+    canonical = cache_dir / "all" / "generated_he.png"
+    if canonical.is_file():
+        return canonical
+
+    all_dir = cache_dir / "all"
+    if all_dir.is_dir():
+        pngs = sorted(all_dir.glob("*.png"))
+        if len(pngs) == 1:
+            return pngs[0]
+    return None
 
 
 def save_subset_condition_cache(
@@ -107,7 +144,7 @@ def save_subset_condition_cache(
                 rel_path = Path(section_dir_name) / "generated_he.png"
             else:
                 rel_path = Path(section_dir_name) / f"{idx:02d}_{condition_slug(condition.active_groups)}.png"
-            Image.fromarray(_as_uint8_rgb(image)).save(cache_dir / rel_path)
+            Image.fromarray(to_uint8_rgb(image, value_range="unit")).save(cache_dir / rel_path)
             entries.append(
                 {
                     "active_groups": list(condition.active_groups),
@@ -138,8 +175,7 @@ def save_subset_condition_cache(
 def load_subset_condition_cache(cache_dir: str | Path) -> dict:
     """Load cached subset-condition PNGs and reconstruct their manifest structure."""
     cache_dir = Path(cache_dir)
-    manifest_path = cache_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_manifest(cache_dir)
 
     sections = []
     for raw_section in manifest["sections"]:

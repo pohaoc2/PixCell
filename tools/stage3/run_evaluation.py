@@ -23,13 +23,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from diffusers import DDPMScheduler
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
+from tools.stage3.common import make_inference_scheduler
 from tools.stage3.figures import (
     save_enhanced_ablation_grid,
     save_overview_figure,
@@ -193,11 +193,7 @@ def main():
 
     models = load_all_models(config, CONFIG_PATH, CKPT_DIR, args.device)
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000, beta_start=0.0001, beta_end=0.02,
-        beta_schedule="linear", prediction_type="epsilon", clip_sample=False,
-    )
-    scheduler.set_timesteps(args.num_steps, device=args.device)
+    scheduler = make_inference_scheduler(num_steps=args.num_steps, device=args.device)
 
     null_uni = null_uni_embed(device="cpu", dtype=torch.float32)
 

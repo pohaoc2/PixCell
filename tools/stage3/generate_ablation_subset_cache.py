@@ -25,41 +25,23 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from diffusers import DDPMScheduler
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _WORKER_RUNTIME_KEY: tuple[str, str | None, str, str, int] | None = None
 _WORKER_RUNTIME: dict | None = None
 
+from tools.stage3.ablation_cache import load_manifest, resolve_all_image_path
+from tools.stage3.common import (
+    make_inference_scheduler,
+    print_progress,
+    resolve_uni_embedding,
+    to_uint8_rgb,
+)
+
 
 def _is_cuda_device(device: str) -> bool:
     return str(device).lower().startswith("cuda")
-
-
-def _resolve_uni_embedding(
-    tile_id: str,
-    *,
-    feat_dir: Path,
-    null_uni: bool,
-    uni_npy: Path | None,
-) -> torch.Tensor:
-    from train_scripts.inference_controlnet import null_uni_embed
-
-    feat_path = Path(uni_npy) if uni_npy is not None else feat_dir / f"{tile_id}_uni.npy"
-    if null_uni or not feat_path.exists():
-        uni_embeds = null_uni_embed(device="cpu", dtype=torch.float32)
-        if not null_uni:
-            print(f"Warning: missing {feat_path}, using null UNI")
-        return uni_embeds
-    return torch.from_numpy(np.load(feat_path)).view(1, 1, 1, 1536)
-
-
-def _to_uint8_rgb(image: np.ndarray) -> np.ndarray:
-    if image.dtype == np.uint8:
-        return image
-    clipped = np.clip(image, 0.0, 1.0)
-    return (clipped * 255).astype(np.uint8)
 
 
 def _subset_size(section: dict) -> int:
@@ -75,26 +57,7 @@ def _resolve_all_image_from_manifest(
     *,
     n_groups: int,
 ) -> Path | None:
-    for section in manifest.get("sections", []):
-        if _subset_size(section) != n_groups:
-            continue
-        entries = section.get("entries") or []
-        if not entries:
-            continue
-        rel = Path(entries[0].get("image_path", ""))
-        if rel and (cache_dir / rel).is_file():
-            return cache_dir / rel
-
-    canonical = cache_dir / "all" / "generated_he.png"
-    if canonical.is_file():
-        return canonical
-
-    all_dir = cache_dir / "all"
-    if all_dir.is_dir():
-        pngs = sorted(all_dir.glob("*.png"))
-        if len(pngs) == 1:
-            return pngs[0]
-    return None
+    return resolve_all_image_path(cache_dir, manifest, n_groups=n_groups)
 
 
 def _upsert_all_section(
@@ -119,7 +82,7 @@ def _upsert_all_section(
     all_dir = cache_dir / "all"
     all_dir.mkdir(parents=True, exist_ok=True)
     canonical_rel = Path("all") / "generated_he.png"
-    Image.fromarray(_to_uint8_rgb(all_image)).save(cache_dir / canonical_rel)
+    Image.fromarray(to_uint8_rgb(all_image)).save(cache_dir / canonical_rel)
 
     cond = build_subset_conditions(group_names, subset_size=len(group_names))[0]
     all_section = {
@@ -231,7 +194,7 @@ def generate_subset_cache_for_tile(
     from tools.stage3.ablation_cache import save_subset_condition_cache
     from tools.stage3.tile_pipeline import generate_group_combination_ablation_images, load_exp_channels
 
-    uni_embeds = _resolve_uni_embedding(
+    uni_embeds = resolve_uni_embedding(
         tile_id,
         feat_dir=feat_dir,
         null_uni=null_uni,
@@ -351,7 +314,7 @@ def backfill_all_for_cache_dir(
     manifest_path = cache_dir / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_manifest(cache_dir)
 
     tile_id = str(manifest.get("tile_id") or cache_dir.name)
     group_names = tuple(manifest.get("group_names") or group_names_from_channel_groups(config.channel_groups))
@@ -385,7 +348,7 @@ def backfill_all_for_cache_dir(
         print(f"[{tile_id}] Canonicalized all/ and manifest")
         return tile_id, True
 
-    uni_embeds = _resolve_uni_embedding(
+    uni_embeds = resolve_uni_embedding(
         tile_id,
         feat_dir=feat_dir,
         null_uni=null_uni,
@@ -414,17 +377,8 @@ def backfill_all_for_cache_dir(
     return tile_id, True
 
 
-def _make_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(num_steps, device=device)
-    return scheduler
+def _make_scheduler(*, num_steps: int, device: str):
+    return make_inference_scheduler(num_steps=num_steps, device=device)
 
 
 def _load_runtime(
@@ -605,15 +559,7 @@ def _run_parallel_jobs(
 
 
 def _print_progress(completed: int, total: int, *, prefix: str) -> None:
-    """Write a simple in-place progress bar to stderr."""
-    total = max(1, total)
-    width = 28
-    filled = int(width * completed / total)
-    bar = "#" * filled + "-" * (width - filled)
-    msg = f"\r{prefix} [{bar}] {completed}/{total}"
-    if completed >= total:
-        msg += "\n"
-    print(msg, end="", file=sys.stderr, flush=True)
+    print_progress(completed, total, prefix=prefix)
 
 
 def _build_parser() -> argparse.ArgumentParser:
