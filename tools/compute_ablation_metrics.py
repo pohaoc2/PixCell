@@ -29,10 +29,21 @@ from tools.stage3.ablation_vis_utils import (
 )
 from tools.stage3.ablation_cache import is_per_tile_cache_manifest_dir, list_cached_tile_ids
 
-METRIC_NAMES: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
+DEFAULT_METRIC_NAMES: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
+OPTIONAL_METRIC_NAMES: tuple[str, ...] = ("style_hed",)
+METRIC_NAMES: tuple[str, ...] = DEFAULT_METRIC_NAMES + OPTIONAL_METRIC_NAMES
 _SPATIAL_EXTS: tuple[str, ...] = (".png", ".npy", ".jpg", ".jpeg", ".tif", ".tiff")
 _METRIC_WORKER_CONFIG: dict[str, Any] | None = None
 _METRIC_WORKER_STATE: dict[str, Any] = {}
+_RGB_FROM_HED = np.array(
+    [
+        [0.65, 0.70, 0.29],
+        [0.07, 0.99, 0.11],
+        [0.27, 0.57, 0.78],
+    ],
+    dtype=np.float64,
+)
+_HED_FROM_RGB = np.linalg.inv(_RGB_FROM_HED)
 
 
 def _empty_metrics_record() -> dict[str, float | None]:
@@ -135,7 +146,7 @@ def write_metrics(cache_dir: Path, per_condition: dict[str, dict]) -> Path:
 def _resolve_metric_selection(raw_metrics: list[str]) -> list[str]:
     requested = [metric.lower() for metric in raw_metrics]
     if "all" in requested:
-        return list(METRIC_NAMES)
+        return list(DEFAULT_METRIC_NAMES)
     invalid = [metric for metric in requested if metric not in METRIC_NAMES]
     if invalid:
         raise ValueError(f"unsupported metrics: {invalid}")
@@ -177,6 +188,25 @@ def _load_rgb_pil(path: Path, *, size: tuple[int, int] | None = None) -> Image.I
     if size is not None and image.size != size:
         image = image.resize(size, Image.BILINEAR)
     return image
+
+
+def _rgb_to_hed(image: Image.Image) -> np.ndarray:
+    arr = np.asarray(image, dtype=np.float64) / 255.0
+    arr = np.clip(arr, 1e-6, 1.0)
+    optical_density = -np.log(arr)
+    return optical_density @ _HED_FROM_RGB.T
+
+
+def _tissue_mask_from_rgb(image: Image.Image) -> np.ndarray:
+    arr = np.asarray(image, dtype=np.float32) / 255.0
+    return np.mean(arr, axis=2) < 0.95
+
+
+def _masked_mean_std(values: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
+    data = values[np.asarray(mask, dtype=bool)]
+    if data.size == 0:
+        data = values.reshape(-1)
+    return float(np.mean(data)), float(np.std(data))
 
 
 def _resolve_lpips_device(requested: str) -> str:
@@ -381,6 +411,44 @@ def compute_lpips_scores(
             chunk_scores = loss_fn(ref_batch, gen_batch).reshape(-1)
             for cond_key, score in zip(cond_keys, chunk_scores.tolist(), strict=True):
                 scores[cond_key] = float(score)
+    return scores
+
+
+def compute_style_hed_scores(
+    cache_dir: Path,
+    orion_root: Path,
+) -> dict[str, float]:
+    """Compare generated H&E stain/style moments against the reference H&E in HED space.
+
+    Lower is better. This is intended for style similarity, especially in unpaired runs
+    where the dataset root's ``he/<tile_id>`` has been remapped to the style tile.
+    """
+    cache_dir = Path(cache_dir)
+    orion_root = Path(orion_root)
+    tile_id = _tile_id_from_manifest(cache_dir)
+    ref_path = default_orion_he_png_path(orion_root, tile_id)
+    if ref_path is None:
+        raise FileNotFoundError(f"reference H&E not found for tile {tile_id!r}")
+
+    ref_img = _load_rgb_pil(ref_path)
+    ref_hed = _rgb_to_hed(ref_img)
+    ref_mask = _tissue_mask_from_rgb(ref_img)
+    scores: dict[str, float] = {}
+
+    for cond_key, img_path in _iter_condition_images(cache_dir).items():
+        if not img_path.is_file():
+            raise FileNotFoundError(f"generated image not found: {img_path}")
+        gen_img = _load_rgb_pil(img_path, size=ref_img.size)
+        gen_hed = _rgb_to_hed(gen_img)
+        gen_mask = _tissue_mask_from_rgb(gen_img)
+        tissue_mask = ref_mask | gen_mask
+
+        score = 0.0
+        for stain_channel in (0, 1):  # H and E only
+            ref_mean, ref_std = _masked_mean_std(ref_hed[..., stain_channel], tissue_mask)
+            gen_mean, gen_std = _masked_mean_std(gen_hed[..., stain_channel], tissue_mask)
+            score += abs(gen_mean - ref_mean) + abs(gen_std - ref_std)
+        scores[cond_key] = float(score)
     return scores
 
 
@@ -726,6 +794,11 @@ def compute_metrics_for_cache_dir(
             if "pq" in metrics_to_compute:
                 rec["pq"] = values["pq"]
 
+    if "style_hed" in metrics_to_compute:
+        for cond_key, score in compute_style_hed_scores(cache_dir, orion_root).items():
+            rec = per_condition.setdefault(cond_key, _empty_metrics_record())
+            rec["style_hed"] = score
+
     return write_metrics(cache_dir, per_condition)
 
 
@@ -744,7 +817,7 @@ def main() -> None:
         "--metrics",
         nargs="+",
         default=["all"],
-        help="Metrics to compute: cosine lpips aji pq all (default: all)",
+        help="Metrics to compute: cosine lpips aji pq style_hed all (default: all; all excludes style_hed)",
     )
     parser.add_argument("--device", type=str, default="cuda", help="cuda or cpu")
     parser.add_argument(

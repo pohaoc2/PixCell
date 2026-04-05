@@ -5,12 +5,19 @@ Usage:
         --cache-dir inference_output/cache/512_9728 \
         --orion-root data/orion-crc33 \
         --out inference_output/cache/512_9728/leave_one_out_diff.png
+
+    python tools/vis/leave_one_out_diff.py \
+        --cache-root inference_output/cache \
+        --orion-root data/orion-crc33
 """
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import os
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
@@ -108,6 +115,7 @@ def save_loo_stats(diffs: dict[str, np.ndarray], out_path: Path) -> None:
             "pct_pixels_above_10": round(float((diff_255 > 10).mean() * 100.0), 2),
         }
     out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
 
 
@@ -258,29 +266,176 @@ def render_loo_diff_figure(
     plt.close(fig)
 
 
+def render_loo_cache(
+    cache_dir: Path,
+    *,
+    orion_root: Path | None = None,
+    out_path: Path | None = None,
+    stats_path: Path | None = None,
+) -> tuple[Path, Path]:
+    """Render one cache dir and return figure/stats paths."""
+    cache_dir = Path(cache_dir)
+    out_path = Path(out_path) if out_path is not None else cache_dir / "leave_one_out_diff.png"
+    stats_path = Path(stats_path) if stats_path is not None else out_path.with_name("leave_one_out_diff_stats.json")
+
+    diffs = compute_loo_diffs(cache_dir)
+    save_loo_stats(diffs, stats_path)
+    render_loo_diff_figure(diffs, cache_dir, orion_root=orion_root, out_path=out_path)
+    return out_path, stats_path
+
+
+def _find_cache_dirs(cache_root: Path) -> list[Path]:
+    """Return all cache directories under cache_root that contain a manifest."""
+    cache_root = Path(cache_root)
+    return sorted(path.parent for path in cache_root.rglob("manifest.json"))
+
+
+def _progress(iterable, *, total: int, desc: str, disable: bool):
+    """Return a tqdm progress bar when available, else the raw iterable."""
+    if disable:
+        return iterable
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(iterable, total=total, desc=desc)
+    except Exception:
+        return iterable
+
+
+def render_loo_cache_root(
+    cache_root: Path,
+    *,
+    orion_root: Path | None = None,
+    out_root: Path | None = None,
+    workers: int = 1,
+    show_progress: bool = True,
+) -> list[tuple[Path, Path]]:
+    """Render leave-one-out figures for every cache under cache_root."""
+    cache_root = Path(cache_root)
+    cache_dirs = _find_cache_dirs(cache_root)
+    if not cache_dirs:
+        raise FileNotFoundError(f"No manifest.json files found under {cache_root}")
+
+    worker_count = max(1, int(workers))
+
+    def _resolve_outputs(cache_dir: Path) -> tuple[Path, Path]:
+        if out_root is None:
+            out_path = cache_dir / "leave_one_out_diff.png"
+            stats_path = cache_dir / "leave_one_out_diff_stats.json"
+        else:
+            rel = cache_dir.relative_to(cache_root)
+            out_path = Path(out_root) / rel / "leave_one_out_diff.png"
+            stats_path = Path(out_root) / rel / "leave_one_out_diff_stats.json"
+        return out_path, stats_path
+
+    if worker_count == 1:
+        rendered: list[tuple[Path, Path]] = []
+        iterator = _progress(
+            cache_dirs,
+            total=len(cache_dirs),
+            desc="Rendering LOO",
+            disable=not show_progress,
+        )
+        for cache_dir in iterator:
+            out_path, stats_path = _resolve_outputs(cache_dir)
+            rendered.append(
+                render_loo_cache(
+                    cache_dir,
+                    orion_root=orion_root,
+                    out_path=out_path,
+                    stats_path=stats_path,
+                )
+            )
+        return rendered
+
+    future_to_cache: dict[Any, Path] = {}
+    rendered: list[tuple[Path, Path]] = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        for cache_dir in cache_dirs:
+            out_path, stats_path = _resolve_outputs(cache_dir)
+            future = executor.submit(
+                render_loo_cache,
+                cache_dir,
+                orion_root=orion_root,
+                out_path=out_path,
+                stats_path=stats_path,
+            )
+            future_to_cache[future] = cache_dir
+
+        iterator = _progress(
+            as_completed(future_to_cache),
+            total=len(future_to_cache),
+            desc=f"Rendering LOO ({worker_count} workers)",
+            disable=not show_progress,
+        )
+        completed: dict[Path, tuple[Path, Path]] = {}
+        for future in iterator:
+            cache_dir = future_to_cache[future]
+            completed[cache_dir] = future.result()
+
+    for cache_dir in cache_dirs:
+        rendered.append(completed[cache_dir])
+    return rendered
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Leave-one-out group pixel diff from ablation cache")
-    parser.add_argument("--cache-dir", required=True, help="Path to tile cache dir containing manifest.json")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--cache-dir", help="Path to one tile cache dir containing manifest.json")
+    input_group.add_argument("--cache-root", help="Root directory containing many tile cache dirs")
     parser.add_argument("--orion-root", default=None, help="Optional ORION dataset root for channel thumbnails")
     parser.add_argument(
         "--out",
         default=None,
         help="Output PNG path (default: <cache-dir>/leave_one_out_diff.png)",
     )
+    parser.add_argument(
+        "--out-root",
+        default=None,
+        help="Batch output root for --cache-root mode; mirrors cache-root subdirs",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=min(8, max(1, os.cpu_count() or 1)),
+        help="Worker count for --cache-root mode (default: min(8, cpu_count))",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the batch progress bar in --cache-root mode",
+    )
     args = parser.parse_args()
 
-    cache_dir = Path(args.cache_dir)
-    out_path = Path(args.out) if args.out else cache_dir / "leave_one_out_diff.png"
     orion_root = Path(args.orion_root) if args.orion_root else None
+    out_root = Path(args.out_root) if args.out_root else None
 
-    diffs = compute_loo_diffs(cache_dir)
+    if args.cache_dir:
+        cache_dir = Path(args.cache_dir)
+        out_path = Path(args.out) if args.out else cache_dir / "leave_one_out_diff.png"
+        fig_path, stats_path = render_loo_cache(
+            cache_dir,
+            orion_root=orion_root,
+            out_path=out_path,
+        )
+        print(f"Saved stats -> {stats_path}")
+        print(f"Saved figure -> {fig_path}")
+        return
 
-    stats_path = out_path.with_name("leave_one_out_diff_stats.json")
-    save_loo_stats(diffs, stats_path)
-    render_loo_diff_figure(diffs, cache_dir, orion_root=orion_root, out_path=out_path)
+    if args.out:
+        parser.error("--out is only valid with --cache-dir")
 
-    print(f"Saved stats -> {stats_path}")
-    print(f"Saved figure -> {out_path}")
+    rendered = render_loo_cache_root(
+        Path(args.cache_root),
+        orion_root=orion_root,
+        out_root=out_root,
+        workers=args.workers,
+        show_progress=not args.no_progress,
+    )
+    print(f"Rendered {len(rendered)} cache dirs under {args.cache_root}")
+    for fig_path, stats_path in rendered:
+        print(f"Saved stats -> {stats_path}")
+        print(f"Saved figure -> {fig_path}")
 
 
 if __name__ == "__main__":

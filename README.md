@@ -334,7 +334,45 @@ Three CLIs support the channel-impact workflow:
 | `tools/stage3/classify_tiles.py` | Scan the paired dataset, classify tiles, and write `tile_classes.json` | `conda run -n pixcell python tools/stage3/classify_tiles.py --exp-root data/orion-crc33 --out tile_classes.json` |
 | `tools/stage3/channel_sweep.py` | Run cached generation plus figure rendering for Exp 1/2/3 | `conda run -n pixcell python tools/stage3/channel_sweep.py --class-json tile_classes.json --data-root data/orion-crc33 --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs --out inference_output/channel_sweep --cache-dir inference_output/channel_sweep/cache --experiments 1 2 3 --seed 42` |
 
-Recommended full command:
+Leave-one-out (LOO) figure from an existing Stage 3 ablation cache:
+
+```bash
+conda run -n pixcell python tools/vis/leave_one_out_diff.py \
+    --cache-dir inference_output/cache/16896_40448 \
+    --orion-root data/orion-crc33 \
+    --out inference_output/cache/16896_40448/leave_one_out_diff.png
+```
+
+Batch-render LOO figures for every cached tile under one cache root:
+
+```bash
+conda run -n pixcell python tools/vis/leave_one_out_diff.py \
+    --cache-root inference_output/cache \
+    --orion-root data/orion-crc33 \
+    --workers 8
+```
+
+To mirror batch outputs into a separate directory instead of writing beside each cache:
+
+```bash
+conda run -n pixcell python tools/vis/leave_one_out_diff.py \
+    --cache-root inference_output/cache \
+    --orion-root data/orion-crc33 \
+    --out-root inference_output/leave_one_out \
+    --workers 8
+```
+
+Batch mode shows a progress bar by default. Add `--no-progress` to disable it.
+
+Classify tiles once before Exp 1/2/3:
+
+```bash
+conda run -n pixcell python tools/stage3/classify_tiles.py \
+    --exp-root data/orion-crc33 \
+    --out tile_classes.json
+```
+
+Generate and render all three experiments:
 
 ```bash
 conda run -n pixcell python tools/stage3/channel_sweep.py \
@@ -344,6 +382,45 @@ conda run -n pixcell python tools/stage3/channel_sweep.py \
     --out inference_output/channel_sweep \
     --cache-dir inference_output/channel_sweep/cache \
     --experiments 1 2 3 \
+    --seed 42
+```
+
+Generate and render Exp 1 only:
+
+```bash
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json tile_classes.json \
+    --data-root data/orion-crc33 \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --out inference_output/channel_sweep \
+    --cache-dir inference_output/channel_sweep/cache \
+    --experiments 1 \
+    --seed 42
+```
+
+Generate and render Exp 2 only:
+
+```bash
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json tile_classes.json \
+    --data-root data/orion-crc33 \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --out inference_output/channel_sweep \
+    --cache-dir inference_output/channel_sweep/cache \
+    --experiments 2 \
+    --seed 42
+```
+
+Generate and render Exp 3 only:
+
+```bash
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json tile_classes.json \
+    --data-root data/orion-crc33 \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --out inference_output/channel_sweep \
+    --cache-dir inference_output/channel_sweep/cache \
+    --experiments 3 \
     --seed 42
 ```
 
@@ -369,6 +446,24 @@ conda run -n pixcell python tools/stage3/channel_sweep.py \
     --experiments 1 2 3 \
     --seed 42 \
     --generate-only
+
+# Re-render Exp 1 only from an existing cache.
+conda run -n pixcell python tools/stage3/render_channel_sweep_figures.py \
+    --cache-dir inference_output/channel_sweep/cache \
+    --out inference_output/channel_sweep \
+    --experiments 1
+
+# Re-render Exp 2 only from an existing cache.
+conda run -n pixcell python tools/stage3/render_channel_sweep_figures.py \
+    --cache-dir inference_output/channel_sweep/cache \
+    --out inference_output/channel_sweep \
+    --experiments 2
+
+# Re-render Exp 3 only from an existing cache.
+conda run -n pixcell python tools/stage3/render_channel_sweep_figures.py \
+    --cache-dir inference_output/channel_sweep/cache \
+    --out inference_output/channel_sweep \
+    --experiments 3
 
 # Render figures only from an existing cache.
 conda run -n pixcell python tools/stage3/channel_sweep.py \
@@ -401,6 +496,8 @@ Stage 3 ablation workflow, step by step:
 5. Compute dataset-level FID: run `tools/compute_fid.py` once across all 15 ablation conditions, then backfill the per-condition `fid` values into each tile's `metrics.json`.
 6. Render tile-level ablation figures: generate one ranked 4×4 summary grid per tile from cached images plus `metrics.json`.
 7. Render the dataset-level summary figure: aggregate per-tile `metrics.json` files from a metric directory with `tools/render_dataset_metrics.py`.
+
+For a consolidated paired + unpaired workflow reference, including the remapped unpaired dataset preparation steps and current metric recommendations, see [`ablation_cli.md`](ablation_cli.md).
 
 | Script | Purpose | Typical command |
 |--------|---------|-----------------|

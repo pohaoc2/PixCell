@@ -61,8 +61,14 @@ METRIC_BAR_LABELS: dict[str, str] = {
     "lpips": "LPIPS",
     "aji": "AJI",
     "pq": "PQ",
+    "style_hed": "HED",
 }
 METRIC_ORDER: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
+SORTABLE_METRICS: tuple[str, ...] = METRIC_ORDER + ("style_hed",)
+METRIC_BAR_PRESETS: dict[str, tuple[str, ...]] = {
+    "paired": ("cosine", "lpips", "aji", "pq"),
+    "unpaired": ("aji", "pq", "style_hed"),
+}
 
 # CT · CS · Va · Nu (matches FOUR_GROUP_ORDER)
 _GROUP_SHORT: dict[str, str] = {
@@ -95,7 +101,7 @@ def _sort_conditions_by_metric(
 
     Ties broken lexicographically by condition key string.
     """
-    ascending = metric_name == "lpips"
+    ascending = metric_name in {"lpips", "style_hed"}
 
     def _key(cond: tuple[str, ...]) -> tuple[float, float, str]:
         k = condition_metric_key(cond)
@@ -320,12 +326,13 @@ def _draw_metric_bars_cell(
     ax,
     metrics: dict[str, float | None],
     color: str,
+    metric_names: tuple[str, ...],
 ) -> None:
-    """Draw four stacked literal metric bars on a shared 0..1 scale."""
+    """Draw one stacked literal metric bar per requested metric on a shared 0..1 scale."""
     del color  # Metric colors are fixed by metric identity.
 
     ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 4.0)
+    ax.set_ylim(0.0, float(max(1, len(metric_names))))
     ax.axis("off")
 
     label_x = 0.01
@@ -333,8 +340,9 @@ def _draw_metric_bars_cell(
     track_w = 0.54
     bar_h = 0.62
 
-    for idx, metric_name in enumerate(METRIC_ORDER):
-        y = 3.2 - idx
+    top_y = float(len(metric_names)) - 0.8
+    for idx, metric_name in enumerate(metric_names):
+        y = top_y - idx
         value = metrics.get(metric_name)
         frac = _metric_fill_fraction(metric_name, value)
 
@@ -487,6 +495,7 @@ def render_ablation_grid_figure(
     dpi: int = 300,
     auto_cosine: bool = True,
     sort_by: str = "cosine",
+    metric_bars: tuple[str, ...] = METRIC_BAR_PRESETS["paired"],
     debug_cellvit_overlay: bool = False,
     uni_model: Path | None = None,
     device: str = "cuda",
@@ -587,6 +596,7 @@ def render_ablation_grid_figure(
             bar_ax,
             metric_record if isinstance(metric_record, dict) else {},
             color=color,
+            metric_names=metric_bars,
         )
 
         # Label (primary sort metric only; channel identity is conveyed by the dot row)
@@ -657,6 +667,7 @@ def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> Non
         dpi=args.dpi,
         auto_cosine=not args.no_auto_cosine,
         sort_by=args.sort_by,
+        metric_bars=METRIC_BAR_PRESETS[args.metric_set],
         debug_cellvit_overlay=args.debug_cellvit_overlay,
         uni_model=args.uni_model,
         device=args.device,
@@ -711,9 +722,16 @@ def main() -> None:
         help="Skip UNI cosine computation; use existing JSON only.",
     )
     parser.add_argument(
+        "--metric-set",
+        type=str,
+        choices=list(METRIC_BAR_PRESETS),
+        default="paired",
+        help="Metric bars shown in each cell: paired=Cosine/LPIPS/AJI/PQ, unpaired=AJI/PQ/HED.",
+    )
+    parser.add_argument(
         "--sort-by",
         type=str,
-        choices=list(METRIC_ORDER),
+        choices=list(SORTABLE_METRICS),
         default="cosine",
         help="Primary metric used to sort the 15 generated conditions.",
     )
