@@ -340,17 +340,9 @@ if __name__ == "__main__":
     scheduler = DPMSolverMultistepScheduler.from_pretrained(
         scheduler_folder,
     )
-    from diffusers import DDPMScheduler
+    from tools.stage3.common import make_inference_scheduler
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(20, device=device)
+    scheduler = make_inference_scheduler(num_steps=20, device=device)
     print(type(scheduler))
     print(scheduler.config)
     # %%

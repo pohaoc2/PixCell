@@ -20,6 +20,7 @@ import torch
 from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.optimizer import build_optimizer
 
+from tools.stage3.common import make_inference_scheduler
 from train_scripts.initialize_models import (
     initialize_config_and_accelerator,
     initialize_models,
@@ -344,7 +345,6 @@ def generate_validation_visualizations(
     from tools.channel_group_utils import split_channels_to_groups
     from tools.stage3.figures import save_attention_heatmap_figure, save_overview_figure
     from train_scripts.inference_controlnet import denoise
-    from diffusers import DDPMScheduler
     import numpy as np
 
     save_dir = Path(save_dir)
@@ -368,11 +368,7 @@ def generate_validation_visualizations(
     )
     tme_module.train()
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000, beta_start=0.0001, beta_end=0.02,
-        beta_schedule="linear", prediction_type="epsilon", clip_sample=False,
-    )
-    scheduler.set_timesteps(20, device=device)
+    scheduler = make_inference_scheduler(num_steps=20, device=device)
     latent_shape = (1, 16, config.image_size // 8, config.image_size // 8)
     latents = torch.randn(latent_shape, device=device, dtype=dtype)
     latents = latents * scheduler.init_noise_sigma

@@ -11,7 +11,6 @@ import sys
 import torch
 import numpy as np
 from PIL import Image
-from diffusers import DDPMScheduler
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -23,6 +22,7 @@ from train_scripts.inference_controlnet import load_vae, denoise
 from train_scripts.mapping_weights_helper import map_sd_to_controlnet
 from tools.pretrained_verify.cached_inference_features import load_or_compute_npy
 from tools.pretrained_verify.visualize_pretrained_inference import save_comparison_figure
+from tools.stage3.common import make_inference_scheduler
 
 
 def load_base_model(config_path, safetensors_path, device):
@@ -283,14 +283,7 @@ def main():
     )
 
     # 3. Set up scheduler and run denoising
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
+    scheduler = make_inference_scheduler(num_steps=20, device=device)
 
     config = read_config(config_path)
     latent_size = config.image_size // 8

@@ -24,14 +24,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 import numpy as np
 from PIL import Image
 
+from tools.stage3.ablation_cache import load_manifest
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
     build_exp_channel_header_rgb,
     default_orion_he_png_path,
+    draw_image_border,
 )
 
 COLOR_REF = "#999999"
@@ -73,8 +74,7 @@ def _find_all_entry(sections: list[dict], n_groups: int) -> dict:
 def compute_loo_diffs(cache_dir: Path) -> dict[str, np.ndarray]:
     """Compute globally-normalized per-group leave-one-out absolute pixel diffs."""
     cache_dir = Path(cache_dir)
-    manifest_path = cache_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_manifest(cache_dir)
     sections = manifest["sections"]
     group_names = tuple(manifest["group_names"])
 
@@ -128,7 +128,7 @@ def render_loo_diff_figure(
 ) -> None:
     """Save the leave-one-out diff figure."""
     cache_dir = Path(cache_dir)
-    manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest = load_manifest(cache_dir)
     sections = manifest["sections"]
     group_names = tuple(manifest["group_names"])
     tile_id = str(manifest["tile_id"])
@@ -162,21 +162,6 @@ def render_loo_diff_figure(
     def _blank_rgb(size: int = 64) -> np.ndarray:
         return np.full((size, size, 3), 45, dtype=np.uint8)
 
-    def _draw_cell_border(ax, color: str, *, dashed: bool = False) -> None:
-        patch = Rectangle(
-            (0.0, 0.0),
-            1.0,
-            1.0,
-            transform=ax.transAxes,
-            fill=False,
-            edgecolor=color,
-            linewidth=2.5,
-            linestyle="--" if dashed else "-",
-            zorder=10,
-            clip_on=False,
-        )
-        ax.add_patch(patch)
-
     row_labels = ("Inputs", "Leave-one-out H&E", "Diff heatmap", "Diff stats")
     for row, label in enumerate(row_labels):
         axes[row, 0].set_ylabel(label, fontsize=10, rotation=90, labelpad=22)
@@ -187,7 +172,7 @@ def render_loo_diff_figure(
     else:
         axes[0, 0].imshow(_blank_rgb())
     axes[0, 0].set_title("reference", fontsize=9)
-    _draw_cell_border(axes[0, 0], COLOR_REF, dashed=True)
+    draw_image_border(axes[0, 0], COLOR_REF, dashed=True)
     axes[0, 0].set_xticks([])
     axes[0, 0].set_yticks([])
     for row in range(1, 4):
@@ -195,7 +180,7 @@ def render_loo_diff_figure(
 
     axes[1, 0].imshow(img_all)
     axes[1, 0].set_title("baseline", fontsize=9)
-    _draw_cell_border(axes[1, 0], COLOR_BASELINE, dashed=False)
+    draw_image_border(axes[1, 0], COLOR_BASELINE, dashed=False)
     axes[1, 0].set_xticks([])
     axes[1, 0].set_yticks([])
     axes[2, 0].axis("off")

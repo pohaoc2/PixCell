@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from tools.stage3.channel_sweep import render_figures_from_cache
+from tools.stage3.channel_sweep_figures import render_figures_from_cache
 
 
 def main() -> None:

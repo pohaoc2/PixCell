@@ -184,8 +184,6 @@ def run_validation(
 
 
 def main():
-    from diffusers import DDPMScheduler
-
     from diffusion.model.builder import build_model
     from diffusion.utils.misc import read_config
     from pipeline.extract_features import UNI2hExtractor
@@ -196,6 +194,7 @@ def main():
         null_uni_embed,
     )
     from train_scripts.training_utils import load_tme_checkpoint
+    from tools.stage3.common import make_inference_scheduler
 
     parser = argparse.ArgumentParser(description="Sim-to-exp validation pipeline")
     parser.add_argument("--config", required=True)
@@ -242,15 +241,7 @@ def main():
 
     uni_extractor = UNI2hExtractor(model_path=args.uni_model, device=device)
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        prediction_type="epsilon",
-        clip_sample=False,
-    )
-    scheduler.set_timesteps(50, device=device)
+    scheduler = make_inference_scheduler(num_steps=50, device=device)
 
     if args.reference_uni:
         ref = np.load(args.reference_uni)
