@@ -113,4 +113,3 @@ For each matched pair (archetype k, best parameter N_k*):
 - **Style patients**: 33 patients available (ORION-CRC33). For each archetype k, select the patient (excluding CRC-07) whose UNI distribution best covers centroid_k — different archetypes may use different style patients.
 - **N=1024**: Sufficient for ≤5–6 swept parameters with Latin hypercube sampling. Fix biologically constrained parameters; sweep only uncertain ones. Confirm parameter dimensionality before finalizing N.
 - **Simulation model**: ARCADE (Bagheri lab) preferred — outputs (cell type/state masks, oxygen/glucose maps, vasculature) map directly to PixCell channel groups with no conversion. PhysiCell is an alternative but requires an output translation step. Final choice TBD.
-
