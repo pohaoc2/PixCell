@@ -61,6 +61,7 @@ Channel availability is controlled by --active-channels (default: all 10 exp cha
 Missing optional channels are silently skipped.
 """
 import argparse
+import random
 from pathlib import Path
 
 import numpy as np
@@ -116,6 +117,7 @@ def generate(
     scheduler,
     guidance_scale: float,
     device: str,
+    seed: int | None = None,
     active_groups: set | None = None,
 ) -> np.ndarray:
     """Generate a single experimental-like H&E image from simulation channels."""
@@ -131,6 +133,7 @@ def generate(
         uni_embeds=uni_embeds,
         device=device,
         guidance_scale=guidance_scale,
+        seed=seed,
         active_groups=active_groups,
         denoise_fn=denoise,
     )
@@ -174,6 +177,7 @@ def main():
     parser.add_argument("--guidance-scale",   type=float, default=2.5)
     parser.add_argument("--num-steps",        type=int,   default=20)
     parser.add_argument("--device",           default="cuda")
+    parser.add_argument("--seed",             type=int,   default=42)
     parser.add_argument(
         "--active-groups",
         nargs="*",
@@ -199,6 +203,10 @@ def main():
     # Attach config filename for model loader
     config._filename = args.config
     device = args.device
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     # ── Load models ───────────────────────────────────────────────────────────
     print("Loading models...")
@@ -262,6 +270,7 @@ def main():
             scheduler=scheduler,
             guidance_scale=args.guidance_scale,
             device=device,
+            seed=args.seed,
             active_groups=active_groups,
         )
         Image.fromarray(img).save(args.output)
@@ -300,6 +309,7 @@ def main():
             scheduler=scheduler,
             guidance_scale=args.guidance_scale,
             device=device,
+            seed=args.seed,
             active_groups=active_groups,
         )
         Image.fromarray(img).save(output_dir / f"{sim_id}_he.png")
