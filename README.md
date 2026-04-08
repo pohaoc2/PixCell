@@ -492,7 +492,7 @@ Stage 3 ablation workflow, step by step:
 1. Generate full-ablation caches: write `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` for each tile under `inference_output/full_ablation/` by default.
 2. Export CellViT batches: flatten cached generated H&E PNGs into one external batch plus a manifest that maps flat filenames back to their source tile/condition.
 3. Import CellViT results: copy CellViT outputs back beside the original cached images as `*_cellvit_instances.*` sidecars.
-4. Compute per-condition metrics: reuse cached/generated H&E, import CellViT detections, and write `metrics.json` with cosine, LPIPS, AJI, and PQ for each ablation condition.
+4. Compute per-condition metrics: reuse cached/generated H&E, import CellViT detections, and write `metrics.json` with cosine, LPIPS, AJI, PQ, and optional `style_hed` for each ablation condition.
 5. Compute dataset-level FID: run `tools/compute_fid.py` once across all 15 ablation conditions, then backfill the per-condition `fid` values into each tile's `metrics.json`.
 6. Render tile-level ablation figures: generate one ranked 4×4 summary grid per tile from cached images plus `metrics.json`.
 7. Render the dataset-level summary figure: aggregate per-tile `metrics.json` files from a metric directory with `tools/render_dataset_metrics.py`.
@@ -504,10 +504,10 @@ For a consolidated paired + unpaired workflow reference, including the remapped 
 | `tools/stage3/generate_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` for one tile or a sampled tile batch | `python tools/stage3/generate_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --n-tiles 8 --jobs 4` |
 | `tools/cellvit/export_batch.py` | Flatten cached generated H&E PNGs into one folder for external CellViT processing | `python tools/cellvit/export_batch.py --cache-root inference_output/full_ablation --output-dir inference_output/cellvit_batch --zip` |
 | `tools/cellvit/import_results.py` | Copy flat CellViT JSON results back beside each cached generated H&E image | `python tools/cellvit/import_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
-| `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --metrics lpips aji pq` |
+| `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ and optional `style_hed` | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --metrics lpips aji pq` |
 | `tools/compute_fid.py` | Compute dataset-level FID for all 15 ablation conditions and backfill `fid` into each per-tile `metrics.json` | `python tools/compute_fid.py --cache-dir inference_output/cache --device cuda` |
 | `tools/vis/stage3_ablation_grid_figure.py` | Stable CLI wrapper for rendering the static ranked 4×4 matplotlib figure from cached PNGs + `metrics.json` for one tile or all tiles | `python tools/vis/stage3_ablation_grid_figure.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
-| `tools/render_dataset_metrics.py` | Render the standalone dataset-level summary figure from per-tile `metrics.json` files | `python tools/render_dataset_metrics.py --metric-dir inference_output/full_ablation --output figures/dataset_metrics.png --dpi 400` |
+| `tools/render_dataset_metrics.py` | Render the standalone dataset-level summary figure from per-tile `metrics.json` files, with paired/unpaired metric presets | `python tools/render_dataset_metrics.py --metric-dir inference_output/full_ablation --output figures/dataset_metrics.png --dpi 400` |
 
 Recommended end-to-end sequence:
 
@@ -559,6 +559,18 @@ The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest
 The second command randomly samples tiles from `data/orion-crc33`, writes each cache under `inference_output/full_ablation/{tile_id}`, and shows a tile-level progress bar while workers run.  
 The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, writes UNI embeddings under `features/`, and also supports `--jobs` for per-tile parallelism.
 The last two commands render `<cache-dir>/ablation_grid.png` per tile and the standalone `dataset_metrics.png` summary figure aggregated from all per-tile `metrics.json` files under `--metric-dir`.
+
+For unpaired runs, the main metric set is usually `AJI/PQ/HED`; render that dataset summary with:
+
+```bash
+python tools/render_dataset_metrics.py \
+    --metric-dir inference_output/unpaired_ablation/ablation_results \
+    --output figures/dataset_metrics_unpaired.png \
+    --metric-set unpaired \
+    --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+    --min-gt-cells 20 \
+    --dpi 400
+```
 
 Notes:
 
@@ -802,7 +814,7 @@ Most visualization-facing CLIs now live under `tools/vis/`, while CellViT batch 
 
 ### Dataset metrics figure renderer
 
-Use `tools/render_dataset_metrics.py` to export the standalone five-metric dataset-level summary figure as a transparent PNG. This script reads per-tile `metrics.json` files from `--metric-dir`, aggregates each condition across tiles, and renders the curated layout from the real cached metrics.
+Use `tools/render_dataset_metrics.py` to export the standalone dataset-level summary figure as a transparent PNG. This script reads per-tile `metrics.json` files from `--metric-dir`, aggregates each condition across tiles, and renders the curated layout from the real cached metrics. The paired preset shows `FID/Cosine/LPIPS/AJI/PQ`; the unpaired preset swaps `Cosine/LPIPS` out for `HED`.
 
 ```bash
 python tools/render_dataset_metrics.py \
@@ -816,6 +828,9 @@ Optional flags:
 | `--metric-dir PATH` | `inference_output/full_ablation` | Parent directory containing per-tile `metrics.json` files |
 | `--output PATH` | `dataset_metrics.png` | Output PNG path |
 | `--dpi N` | `300` | Export resolution |
+| `--metric-set {all,paired,unpaired}` | `paired` | Metric preset: paired=`FID/Cosine/LPIPS/AJI/PQ`, unpaired=`FID/AJI/PQ/HED` |
+| `--min-gt-cells N` | `0` | Filter out tiles with fewer than `N` GT instances before aggregation |
+| `--orion-root PATH` | `data/orion-crc33` | Dataset root used when `--min-gt-cells` needs GT mask lookup |
 
 Examples:
 
@@ -824,12 +839,21 @@ python tools/render_dataset_metrics.py \
     --metric-dir inference_output/full_ablation \
     --output figures/dataset_metrics.png \
     --dpi 400
+
+python tools/render_dataset_metrics.py \
+    --metric-dir inference_output/unpaired_ablation/ablation_results \
+    --output figures/dataset_metrics_unpaired.png \
+    --metric-set unpaired \
+    --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+    --min-gt-cells 20 \
+    --dpi 400
 ```
 
 Notes:
 
 - The export uses a transparent background.
 - The renderer requests `Helvetica` first and falls back to `Arial` / `DejaVu Sans` if needed.
+- `--metric-set unpaired` is the usual choice for unpaired reports because it matches the recommended `AJI/PQ/HED` metric set.
 - FID is only rendered when `fid` values are present in the per-condition records; run `tools/compute_fid.py` first, then re-run this renderer to populate that panel.
 
 ### Ablation tests
