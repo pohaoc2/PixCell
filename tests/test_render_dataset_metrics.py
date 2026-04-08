@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.render_dataset_metrics import load_combinations
+from tools.render_dataset_metrics import load_combinations, resolve_metric_set
 
 
 def _write_metrics(tile_dir: Path, payload: dict) -> None:
@@ -60,3 +60,8 @@ def test_load_combinations_aggregates_metrics_from_metric_dir(tmp_path: Path):
 def test_load_combinations_requires_metrics_files(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         load_combinations(tmp_path / "missing_metrics")
+
+
+def test_resolve_metric_set_uses_unpaired_main_metrics():
+    metrics = resolve_metric_set("unpaired")
+    assert [metric.key for metric in metrics] == ["fid", "aji", "pq", "style_hed"]
