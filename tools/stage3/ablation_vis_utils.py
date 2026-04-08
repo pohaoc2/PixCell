@@ -207,7 +207,7 @@ def draw_image_border(
     color: str,
     *,
     dashed: bool = False,
-    linewidth: float = 2.5,
+    linewidth: float = 1.2,
 ) -> None:
     """Draw a visible border around an image axes even when spines are hidden."""
     from matplotlib.patches import Rectangle

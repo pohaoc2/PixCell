@@ -146,7 +146,7 @@ def write_metrics(cache_dir: Path, per_condition: dict[str, dict]) -> Path:
 def _resolve_metric_selection(raw_metrics: list[str]) -> list[str]:
     requested = [metric.lower() for metric in raw_metrics]
     if "all" in requested:
-        return list(DEFAULT_METRIC_NAMES)
+        return list(METRIC_NAMES)
     invalid = [metric for metric in requested if metric not in METRIC_NAMES]
     if invalid:
         raise ValueError(f"unsupported metrics: {invalid}")
@@ -810,7 +810,7 @@ def main() -> None:
         "--metrics",
         nargs="+",
         default=["all"],
-        help="Metrics to compute: cosine lpips aji pq style_hed all (default: all; all excludes style_hed)",
+        help="Metrics to compute: cosine lpips aji pq style_hed all (default: all; includes style_hed)",
     )
     parser.add_argument("--device", type=str, default="cuda", help="cuda or cpu")
     parser.add_argument(

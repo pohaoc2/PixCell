@@ -61,6 +61,7 @@ _COLOR_BY_CARD: dict[int, str] = {
 }
 COLOR_REF = "#999999"
 COLOR_INACTIVE = "#CCCCCC"
+COLOR_ACTIVE = "#000000"
 BEST_BG = "#FFFBE6"
 METRIC_BAR_FILL = "#111111"
 METRIC_BAR_LABELS: dict[str, str] = {
@@ -239,35 +240,26 @@ def _load_grid_cosine_scores(
 def _draw_dot_row(
     ax,
     cond: tuple[str, ...],
-    color: str,
-    *,
-    show_labels: bool,
 ) -> None:
-    """Draw 4 channel-indicator dots in a centered horizontal row."""
+    """Draw 4 channel-indicator circles in a transparent overlay row."""
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
     ax.axis("off")
+    ax.set_facecolor("none")
+    ax.patch.set_alpha(0.0)
 
-    xs = np.linspace(0.18, 0.82, 4)
-    dot_y = 0.50
-    label_y = 0.96
+    xs = np.linspace(0.25, 0.75, 4)
+    dot_y = 0.48
 
     for x, g in zip(xs, FOUR_GROUP_ORDER):
-        short = _GROUP_SHORT[g]
         active = g in cond
-        face = color if active else "white"
+        face = COLOR_ACTIVE if active else "white"
         edge = "black"
         ax.scatter(
-            [x], [dot_y], s=100, marker="s",
+            [x], [dot_y], s=65, marker="o",
             c=[face], edgecolors=[edge], linewidths=0.8,
-            zorder=3,
+            zorder=3, clip_on=False,
         )
-        if show_labels:
-            ax.text(
-                x, label_y, short,
-                ha="center", va="center", fontsize=7.5,
-                color="black",
-            )
 
 
 def _metric_fill_fraction(value: float | None) -> float | None:
@@ -487,15 +479,15 @@ def render_ablation_grid_figure(
     # Sub-rows: dot-row | image | metric-bars | label
     # layout="constrained" keeps each imshow square and aligns bar width to it.
     NROWS_PER_CELL = 4
-    height_ratios = [0.12, 1.0, 0.35, 0.12] * 4
+    height_ratios = [0.10, 1.0, 0.30, 0.08] * 4
 
-    grid_hspace = 0.02
-    grid_wspace = 0.015
+    grid_hspace = 0.012
+    grid_wspace = 0.010
 
-    fig = plt.figure(figsize=(9.0, 10.0), facecolor="white", layout="constrained")
+    fig = plt.figure(figsize=(8.4, 9.1), facecolor="white", layout="constrained")
     layout_engine = fig.get_layout_engine()
     if layout_engine is not None:
-        layout_engine.set(hspace=grid_hspace, wspace=grid_wspace, h_pad=0.01, w_pad=0.01)
+        layout_engine.set(hspace=grid_hspace, wspace=grid_wspace, h_pad=0.006, w_pad=0.006)
     gs = gridspec.GridSpec(
         NROWS_PER_CELL * 4, 4,
         figure=fig,
@@ -509,7 +501,6 @@ def render_ablation_grid_figure(
     # --- Draw 15 sorted conditions in cells [0,0] → [3,2] ---
     for cell_idx, cond in enumerate(sorted_conds):
         gr, gc = divmod(cell_idx, 4)  # grid row (0-3), grid col (0-3)
-        color = _cardinality_color(len(cond))
         k = condition_metric_key(cond)
         metric_record = metrics.get(k, {})
         is_best = (k == best_key)
@@ -518,7 +509,9 @@ def render_ablation_grid_figure(
 
         # Dot row
         dot_ax = fig.add_subplot(gs[base, gc])
-        _draw_dot_row(dot_ax, cond, color, show_labels=(cell_idx == 0))
+        dot_ax.set_zorder(3)
+        dot_ax.patch.set_alpha(0.0)
+        _draw_dot_row(dot_ax, cond)
 
         # H&E image
         if cond == tuple(FOUR_GROUP_ORDER):
@@ -530,6 +523,7 @@ def render_ablation_grid_figure(
             img_path = cache_dir / entry["image_path"]
 
         image_ax = fig.add_subplot(gs[base + 1, gc])
+        image_ax.set_zorder(1)
         image_ax.set_box_aspect(1)
         if is_best:
             image_ax.set_facecolor(BEST_BG)
@@ -539,7 +533,7 @@ def render_ablation_grid_figure(
         _maybe_overlay_cellvit_contours(image_ax, img_path, enabled=debug_cellvit_overlay)
         image_ax.set_xticks([])
         image_ax.set_yticks([])
-        draw_image_border(image_ax, color)
+        draw_image_border(image_ax, COLOR_ACTIVE)
 
         # Metric bars
         bar_ax = fig.add_subplot(gs[base + 2, gc])
