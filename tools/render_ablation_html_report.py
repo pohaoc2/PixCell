@@ -41,7 +41,7 @@ from tools.summarize_ablation_report import (
     best_worst_notes,
     cardinality_notes,
     effect_notes,
-    fid_answer_notes,
+    fud_answer_notes,
     load_condition_means,
     loo_notes,
     summarize_added_group_effects,
@@ -73,7 +73,7 @@ METRIC_COLORS = {
     "lpips": OKABE_ORANGE,
     "aji": OKABE_GREEN,
     "pq": OKABE_PURPLE,
-    "fid": OKABE_RED,
+    "fud": OKABE_RED,
     "style_hed": OKABE_TEAL,
 }
 GROUP_COLORS = {
@@ -99,9 +99,10 @@ METRIC_LABELS = {
     "lpips": "LPIPS",
     "aji": "AJI",
     "pq": "PQ",
-    "fid": "FID",
+    "fud": "FUD",
     "style_hed": "HED",
 }
+CHANNEL_EFFECT_CMAP = plt.get_cmap("RdBu")
 
 
 @dataclass(frozen=True)
@@ -134,8 +135,11 @@ def _mean_std(values: list[float]) -> tuple[float, float] | None:
     return float(statistics.mean(values)), float(statistics.pstdev(values)) if len(values) > 1 else 0.0
 
 
-def load_fid_scores(metrics_root: Path) -> dict[str, float]:
-    path = Path(metrics_root) / "fid_scores.json"
+def load_fud_scores(metrics_root: Path) -> dict[str, float]:
+    root = Path(metrics_root)
+    path = root / "fud_scores.json"
+    if not path.is_file():
+        path = root / "fid_scores.json"
     if not path.is_file():
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -273,6 +277,8 @@ def load_tile_condition_metrics(
             normalized: dict[str, float] = {}
             for metric in DEFAULT_METRIC_ORDER:
                 value = record.get(metric)
+                if value is None and metric == "fud":
+                    value = record.get("fid")
                 if value is None:
                     continue
                 normalized[metric] = float(value)
@@ -281,12 +287,12 @@ def load_tile_condition_metrics(
                 tile_record[str(cond_key)] = normalized
         tile_records.append((metrics_path.parent, tile_record))
 
-    fid_scores = load_fid_scores(metrics_root)
-    if fid_scores:
+    fud_scores = load_fud_scores(metrics_root)
+    if fud_scores:
         for _, tile_record in tile_records:
-            for cond_key, fid_value in fid_scores.items():
-                tile_record.setdefault(cond_key, {})["fid"] = float(fid_value)
-                metric_keys.add("fid")
+            for cond_key, fud_value in fud_scores.items():
+                tile_record.setdefault(cond_key, {})["fud"] = float(fud_value)
+                metric_keys.add("fud")
 
     if reference_root is not None:
         for cache_dir, tile_record in tile_records:
@@ -703,27 +709,27 @@ def add_missing_style_hed_means(
     return augmented, ordered
 
 
-def add_missing_fid_means(
+def add_missing_fud_means(
     condition_means: dict[str, dict[str, float]],
     metrics_root: Path,
     metric_keys: list[str],
 ) -> tuple[dict[str, dict[str, float]], list[str]]:
-    if "fid" in metric_keys:
+    if "fud" in metric_keys:
         return condition_means, metric_keys
 
-    fid_scores = load_fid_scores(metrics_root)
-    if not fid_scores:
+    fud_scores = load_fud_scores(metrics_root)
+    if not fud_scores:
         return condition_means, metric_keys
 
     augmented = {
         cond_key: dict(metrics)
         for cond_key, metrics in condition_means.items()
     }
-    for cond_key, value in fid_scores.items():
-        augmented.setdefault(cond_key, {})["fid"] = float(value)
+    for cond_key, value in fud_scores.items():
+        augmented.setdefault(cond_key, {})["fud"] = float(value)
 
     present = set(metric_keys)
-    present.add("fid")
+    present.add("fud")
     ordered = [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
     return augmented, ordered
 
@@ -769,7 +775,7 @@ def load_dataset_summary(
         )
 
     condition_means, tile_count, metric_keys = load_condition_means_from_paths(filtered_metrics_paths)
-    condition_means, metric_keys = add_missing_fid_means(
+    condition_means, metric_keys = add_missing_fud_means(
         condition_means,
         metrics_root,
         metric_keys,
@@ -809,7 +815,7 @@ def load_dataset_summary(
     notes.extend(best_worst_notes(best_worst))
     notes.extend(effect_notes(added_effects, presence_absence, metric_keys))
     notes.extend(loo_notes(loo_summary))
-    notes.extend(fid_answer_notes(by_cardinality, metric_keys))
+    notes.extend(fud_answer_notes(by_cardinality, metric_keys))
 
     seen: set[str] = set()
     deduped_notes: list[str] = []
@@ -917,9 +923,7 @@ def condition_indicator_text(condition: object) -> str:
 
 
 def comparison_metric_keys(summary: DatasetSummary) -> list[str]:
-    if summary.slug != "unpaired":
-        return list(summary.metric_keys)
-    return [metric_key for metric_key in summary.metric_keys if metric_key not in {"cosine", "lpips"}]
+    return list(summary.metric_keys)
 
 
 def metric_tradeoff_keys(summaries: list[DatasetSummary]) -> list[str]:
@@ -1110,30 +1114,81 @@ def _heatmap_matrix(
     return matrix, stds
 
 
-def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
-    fig = plt.figure(figsize=(12.2, 3.9 * len(summaries)))
-    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.045], wspace=0.20, hspace=0.34)
-    all_values: list[float] = []
-    im = None
+def _heatmap_metric_ranges(summaries: list[DatasetSummary]) -> dict[str, tuple[float, float]]:
+    per_metric_values: dict[str, list[float]] = {}
     for summary in summaries:
         metric_keys = heatmap_metric_keys(summary)
         for source in (summary.added_effect_stats, summary.presence_absence_stats):
             matrix, _ = _heatmap_matrix(summary, source, metric_keys)
-            all_values.extend([float(value) for value in matrix[np.isfinite(matrix)]])
-    vmax = max((abs(value) for value in all_values), default=1.0)
-    vmax = max(vmax, 1e-6)
+            for col, metric_key in enumerate(metric_keys):
+                values = matrix[:, col]
+                finite_values = [float(value) for value in values[np.isfinite(values)]]
+                if finite_values:
+                    per_metric_values.setdefault(metric_key, []).extend(finite_values)
+
+    ranges: dict[str, tuple[float, float]] = {}
+    for metric_key, values in per_metric_values.items():
+        ranges[metric_key] = (min(values), max(values))
+    return ranges
+
+
+def _normalize_heatmap_matrix(
+    matrix: np.ndarray,
+    metric_keys: list[str],
+    metric_ranges: dict[str, tuple[float, float]],
+) -> np.ndarray:
+    normalized = np.full(matrix.shape, np.nan, dtype=float)
+    for col, metric_key in enumerate(metric_keys):
+        lo, hi = metric_ranges.get(metric_key, (0.0, 1.0))
+        column = matrix[:, col]
+        finite_mask = np.isfinite(column)
+        if not np.any(finite_mask):
+            continue
+        if hi > lo:
+            normalized[finite_mask, col] = (column[finite_mask] - lo) / (hi - lo)
+        else:
+            normalized[finite_mask, col] = 0.5
+    return normalized
+
+
+def _normalize_heatmap_stds(
+    stds: np.ndarray,
+    metric_keys: list[str],
+    metric_ranges: dict[str, tuple[float, float]],
+) -> np.ndarray:
+    normalized = np.full(stds.shape, np.nan, dtype=float)
+    for col, metric_key in enumerate(metric_keys):
+        lo, hi = metric_ranges.get(metric_key, (0.0, 1.0))
+        column = stds[:, col]
+        finite_mask = np.isfinite(column)
+        if not np.any(finite_mask):
+            continue
+        if hi > lo:
+            normalized[finite_mask, col] = column[finite_mask] / (hi - lo)
+        else:
+            normalized[finite_mask, col] = 0.0
+    return normalized
+
+
+def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    fig = plt.figure(figsize=(12.2, 3.9 * len(summaries)))
+    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.045], wspace=0.20, hspace=0.34)
+    metric_ranges = _heatmap_metric_ranges(summaries)
+    im = None
 
     for row, summary in enumerate(summaries):
         panels = [
-            ("Average gain from adding a group", summary.added_effect_stats),
+            ("Average improvement from adding a group", summary.added_effect_stats),
             ("Present vs absent delta", summary.presence_absence_stats),
         ]
         for col, (panel_title, source) in enumerate(panels):
             ax = fig.add_subplot(grid[row, col])
             metric_keys = heatmap_metric_keys(summary)
-            matrix, stds = _heatmap_matrix(summary, source, metric_keys)
-            masked = np.ma.masked_invalid(matrix)
-            im = ax.imshow(masked, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+            raw_matrix, stds = _heatmap_matrix(summary, source, metric_keys)
+            normalized_matrix = _normalize_heatmap_matrix(raw_matrix, metric_keys, metric_ranges)
+            normalized_stds = _normalize_heatmap_stds(stds, metric_keys, metric_ranges)
+            masked = np.ma.masked_invalid(normalized_matrix)
+            im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=0.0, vmax=1.0, aspect="auto")
             ax.set_title(f"{summary.title}: {panel_title}", fontsize=11.0, fontweight="bold", color=INK)
             ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
             if col == 0:
@@ -1148,21 +1203,22 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
                 fontsize=10.0,
                 color=INK,
             )
-            for r in range(matrix.shape[0]):
-                for c in range(matrix.shape[1]):
-                    value = matrix[r, c]
+            for r in range(raw_matrix.shape[0]):
+                for c in range(raw_matrix.shape[1]):
+                    value = raw_matrix[r, c]
                     if not np.isfinite(value):
                         continue
-                    std_value = stds[r, c]
+                    norm_value = normalized_matrix[r, c]
+                    norm_std_value = normalized_stds[r, c]
                     ax.text(
                         c,
                         r,
-                        f"{value:+.3f}\n±{std_value:.3f}",
+                        f"{norm_value:.3f}\n±{norm_std_value:.3f}",
                         ha="center",
                         va="center",
                         fontsize=8.6,
                         fontweight="semibold",
-                        color="white" if abs(value) > vmax * 0.45 else "#111111",
+                        color="white" if norm_value <= 0.20 or norm_value >= 0.70 else "#111111",
                     )
             ax.set_xticks(np.arange(-0.5, len(metric_keys), 1), minor=True)
             ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
@@ -1175,7 +1231,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
 
     cax = fig.add_subplot(grid[:, 2])
     cbar = fig.colorbar(im, cax=cax)
-    cbar.set_label("Oriented delta (positive = helps)", color=INK)
+    cbar.set_label("Per-metric min-max normalized improvement (0 = worst, 1 = best)", color=INK)
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     fig.suptitle("Channel effect matrices", y=0.98, fontsize=15, fontweight="bold")
     fig.subplots_adjust(left=0.08, right=0.94, top=0.89, bottom=0.11)
@@ -1726,19 +1782,19 @@ def render_report_html(
         <img src="{trend_uri}" alt="Metric trends by active group count" />
       </section>
       <section class="figure-card">
+        <h2>Paired vs Unpaired Best/Worst Conditions</h2>
+        <p>A compact paper-style table compares each metric’s best and worst ablation condition across paired and unpaired settings. Filled circles indicate included groups in {html.escape(condition_order_label())} order.</p>
+        {comparison_table}
+      </section>
+      <section class="figure-card">
         <h2>Channel Effect Sizes</h2>
-        <p>Each cell shows mean oriented effect ± SD. Positive values help the metric after orientation by metric direction.</p>
+        <p>Each cell shows per-metric min-max normalized improvement ± normalized SD, so both the numbers and colors run from 0 for worst to 1 for best across the combined plot.</p>
         <img src="{heatmap_uri}" alt="Channel effect heatmaps" />
       </section>
       <section class="figure-card">
         <h2>Leave-One-Out Impact</h2>
         <p>Grouped bars show mean ± SD across tiles, with paired bars on white fill and unpaired bars hatched for contrast.</p>
         <img src="{loo_uri}" alt="Leave one out summary bars" />
-      </section>
-      <section class="figure-card">
-        <h2>Paired vs Unpaired Best/Worst Conditions</h2>
-        <p>A compact paper-style table compares each metric’s best and worst ablation condition across paired and unpaired settings. Filled circles indicate included groups in {html.escape(condition_order_label())} order.</p>
-        {comparison_table}
       </section>
       {dataset_sections}
     </div>
@@ -1873,9 +1929,9 @@ def build_dataset_summary_figure(summary: DatasetSummary) -> plt.Figure:
 def export_report_png_pages(summaries: list[DatasetSummary], png_dir: Path) -> list[Path]:
     page_builders: list[tuple[str, plt.Figure]] = [
         ("01_metric_tradeoffs.png", build_metric_trends_figure(summaries)),
-        ("02_channel_effect_sizes.png", build_channel_effect_heatmaps_figure(summaries)),
-        ("03_leave_one_out_impact.png", build_leave_one_out_figure(summaries)),
-        ("04_paired_vs_unpaired.png", build_comparison_table_figure(summaries)),
+        ("02_paired_vs_unpaired.png", build_comparison_table_figure(summaries)),
+        ("03_channel_effect_sizes.png", build_channel_effect_heatmaps_figure(summaries)),
+        ("04_leave_one_out_impact.png", build_leave_one_out_figure(summaries)),
     ]
     for index, summary in enumerate(summaries, start=5):
         page_builders.append((f"{index:02d}_{summary.slug}_summary.png", build_dataset_summary_figure(summary)))

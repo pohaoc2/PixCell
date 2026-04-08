@@ -54,7 +54,7 @@ def test_load_combinations_aggregates_metrics_from_metric_dir(tmp_path: Path):
     assert singles.metrics["lpips"]["mean"] == pytest.approx(0.17)
     assert singles.metrics["aji"]["mean"] == pytest.approx(0.41)
     assert singles.metrics["pq"]["mean"] == pytest.approx(0.38)
-    assert singles.metrics["fid"] is None
+    assert singles.metrics["fud"] is None
 
 
 def test_load_combinations_requires_metrics_files(tmp_path: Path):
@@ -64,4 +64,4 @@ def test_load_combinations_requires_metrics_files(tmp_path: Path):
 
 def test_resolve_metric_set_uses_unpaired_main_metrics():
     metrics = resolve_metric_set("unpaired")
-    assert [metric.key for metric in metrics] == ["fid", "aji", "pq", "style_hed"]
+    assert [metric.key for metric in metrics] == ["fud", "aji", "pq", "style_hed"]

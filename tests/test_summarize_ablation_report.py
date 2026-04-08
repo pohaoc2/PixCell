@@ -70,42 +70,42 @@ def test_summary_helpers_capture_expected_metric_directions() -> None:
             key = condition_metric_key(subset)
             aji = 0.05 * size
             pq = 0.04 * size
-            fid = 70.0 - (1.5 * size)
+            fud = 70.0 - (1.5 * size)
             if "cell_state" in groups:
                 aji += 0.08
                 pq += 0.07
-                fid += 2.0
+                fud += 2.0
             if "microenv" in groups:
                 aji += 0.06
                 pq += 0.05
-                fid -= 3.0
+                fud -= 3.0
             if "cell_types" in groups:
-                fid += 0.5
+                fud += 0.5
             if "vasculature" in groups:
                 aji += 0.01
                 pq += 0.01
-                fid -= 0.2
+                fud -= 0.2
             condition_means[key] = {
                 "aji": aji,
                 "pq": pq,
-                "fid": fid,
+                "fud": fud,
                 "style_hed": 0.090 - (0.004 * size) + (0.003 if "cell_state" in groups else 0.0) - (0.005 if "microenv" in groups else 0.0),
             }
 
-    best_worst = summarize_best_worst(condition_means, ["aji", "pq", "fid", "style_hed"])
-    added = summarize_added_group_effects(condition_means, ["aji", "pq", "fid", "style_hed"])
-    presence = summarize_presence_absence(condition_means, ["aji", "pq", "fid", "style_hed"])
+    best_worst = summarize_best_worst(condition_means, ["aji", "pq", "fud", "style_hed"])
+    added = summarize_added_group_effects(condition_means, ["aji", "pq", "fud", "style_hed"])
+    presence = summarize_presence_absence(condition_means, ["aji", "pq", "fud", "style_hed"])
 
     full_key = condition_metric_key(FOUR_GROUP_ORDER)
     assert best_worst["aji"]["best_condition"] == full_key
     assert best_worst["pq"]["best_condition"] == full_key
-    assert "microenv" in str(best_worst["fid"]["best_condition"])
-    assert "cell_state" not in str(best_worst["fid"]["best_condition"])
+    assert "microenv" in str(best_worst["fud"]["best_condition"])
+    assert "cell_state" not in str(best_worst["fud"]["best_condition"])
 
     assert added["cell_state"]["aji"] > added["cell_types"]["aji"]
-    assert added["microenv"]["fid"] > 0
+    assert added["microenv"]["fud"] > 0
     assert presence["cell_state"]["aji"] > 0
-    assert presence["cell_state"]["fid"] < 0
+    assert presence["cell_state"]["fud"] < 0
 
 
 def test_load_leave_one_out_summary_selects_representative_tile(tmp_path: Path) -> None:
