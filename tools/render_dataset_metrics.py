@@ -53,7 +53,7 @@ class Combination:
 
 
 METRICS = [
-    Metric("fid", "FID", False, (55, 200)),
+    Metric("fud", "FUD", False, (55, 200)),
     Metric("cosine", "Cosine", True, (0.34, 0.63)),
     Metric("lpips", "LPIPS", False, (0.38, 0.52)),
     Metric("aji", "AJI", True, (0.0, 0.38)),
@@ -62,10 +62,19 @@ METRICS = [
 ]
 METRIC_BY_KEY = {metric.key: metric for metric in METRICS}
 METRIC_SETS: dict[str, tuple[str, ...]] = {
-    "paired": ("fid", "cosine", "lpips", "aji", "pq"),
-    "unpaired": ("fid", "aji", "pq", "style_hed"),
+    "paired": ("fud", "cosine", "lpips", "aji", "pq"),
+    "unpaired": ("fud", "aji", "pq", "style_hed"),
     "all": tuple(metric.key for metric in METRICS),
 }
+
+
+def _metric_value_from_record(record: dict[str, object], metric_key: str) -> object:
+    if metric_key == "fud":
+        value = record.get("fud")
+        if value is None:
+            return record.get("fid")
+        return value
+    return record.get(metric_key)
 
 def _ordered_condition_tuples() -> list[tuple[str, ...]]:
     return [
@@ -120,7 +129,7 @@ def load_combinations(
                 continue
             bucket = grouped.setdefault(str(cond_key), {})
             for metric in METRICS:
-                value = record.get(metric.key)
+                value = _metric_value_from_record(record, metric.key)
                 if value is None:
                     continue
                 bucket.setdefault(metric.key, []).append(float(value))
@@ -173,7 +182,7 @@ def cardinality_spans(combinations: list[Combination]) -> list[tuple[int, int, i
 
 
 def fmt_value(metric: Metric, value: float) -> str:
-    if metric.key == "fid":
+    if metric.key == "fud":
         return str(round(value))
     return f"{value:.3f}"
 
@@ -195,7 +204,7 @@ def _metric_range(metric: Metric, combos: list[Combination]) -> tuple[float, flo
     lo = min(lo, obs_lo)
     hi = max(hi, obs_hi)
     if hi <= lo:
-        pad = 1.0 if metric.key == "fid" else 0.05
+        pad = 1.0 if metric.key == "fud" else 0.05
         return lo - pad, hi + pad
     pad = 0.04 * (hi - lo)
     return lo - pad, hi + pad
@@ -404,7 +413,7 @@ def parse_args() -> argparse.Namespace:
         "--metric-set",
         choices=sorted(METRIC_SETS),
         default="paired",
-        help="Metrics to show: paired=FID/Cosine/LPIPS/AJI/PQ, unpaired=FID/AJI/PQ/HED, all=all metrics.",
+        help="Metrics to show: paired=FUD/Cosine/LPIPS/AJI/PQ, unpaired=FUD/AJI/PQ/HED, all=all metrics.",
     )
     parser.add_argument("--min-gt-cells", type=int, default=0,
         help="Skip tiles with fewer than this many GT cell instances (default: 0 = no filter).")

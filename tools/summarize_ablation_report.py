@@ -28,7 +28,7 @@ METRIC_SPECS: tuple[MetricSpec, ...] = (
     MetricSpec("lpips", "lpips", False),
     MetricSpec("aji", "aji", True),
     MetricSpec("pq", "pq", True),
-    MetricSpec("fid", "fid", False),
+    MetricSpec("fud", "fud", False),
     MetricSpec("style_hed", "style_hed", False),
 )
 METRIC_SPEC_BY_KEY = {spec.key: spec for spec in METRIC_SPECS}
@@ -54,6 +54,15 @@ def _ordered_metrics(metric_keys: set[str]) -> list[str]:
     return [key for key in DEFAULT_METRIC_ORDER if key in metric_keys]
 
 
+def _metric_value_from_record(record: dict[str, object], metric_key: str) -> object:
+    if metric_key == "fud":
+        value = record.get("fud")
+        if value is None:
+            return record.get("fid")
+        return value
+    return record.get(metric_key)
+
+
 def load_condition_means(metrics_root: Path) -> tuple[dict[str, dict[str, float]], int, list[str]]:
     grouped: dict[str, dict[str, list[float]]] = {}
     metric_keys: set[str] = set()
@@ -73,7 +82,7 @@ def load_condition_means(metrics_root: Path) -> tuple[dict[str, dict[str, float]
                 continue
             bucket = grouped.setdefault(str(cond_key), {})
             for metric in METRIC_SPECS:
-                value = record.get(metric.key)
+                value = _metric_value_from_record(record, metric.key)
                 if value is None:
                     continue
                 bucket.setdefault(metric.key, []).append(float(value))
@@ -337,7 +346,7 @@ def effect_notes(
     notes: list[str] = []
 
     structure_metrics = [metric_key for metric_key in ("aji", "pq") if metric_key in metric_keys]
-    realism_metrics = [metric_key for metric_key in ("fid", "style_hed", "lpips") if metric_key in metric_keys]
+    realism_metrics = [metric_key for metric_key in ("fud", "style_hed", "lpips") if metric_key in metric_keys]
 
     if structure_metrics:
         group = max(
@@ -410,14 +419,14 @@ def loo_notes(loo_summary: dict[str, dict[str, float]]) -> list[str]:
     ]
 
 
-def fid_answer_notes(
+def fud_answer_notes(
     by_cardinality: dict[int, dict[str, float]],
     metric_keys: list[str],
 ) -> list[str]:
     notes: list[str] = []
     group_counts = sorted(by_cardinality)
     structural_metrics = [metric_key for metric_key in ("aji", "pq") if metric_key in metric_keys]
-    realism_metrics = [metric_key for metric_key in ("fid", "style_hed", "lpips") if metric_key in metric_keys]
+    realism_metrics = [metric_key for metric_key in ("fud", "style_hed", "lpips") if metric_key in metric_keys]
 
     if structural_metrics and group_counts:
         structural_improved = all(
@@ -588,8 +597,8 @@ def render_markdown(
     lines.extend(["", "Interpretation:", ""])
     lines.extend(loo_notes(loo_summary))
 
-    lines.extend(["", "## 6. Answer to the FID question", "", "Does adding more groups generate \"worse\" results?", "", "Not in a blanket sense.", ""])
-    lines.extend(fid_answer_notes(by_cardinality, metric_keys))
+    lines.extend(["", "## 6. Answer to the FUD question", "", "Does adding more groups generate \"worse\" results?", "", "Not in a blanket sense.", ""])
+    lines.extend(fud_answer_notes(by_cardinality, metric_keys))
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -633,6 +642,9 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report, encoding="utf-8")
     print(f"Wrote summary → {args.output}")
+
+
+fid_answer_notes = fud_answer_notes
 
 
 if __name__ == "__main__":

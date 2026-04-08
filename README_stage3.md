@@ -173,7 +173,7 @@ Stage 3 ablation workflow, end to end:
 3. Run CellViT externally.
 4. Import CellViT outputs back into the cache tree.
 5. Compute per-condition metrics.
-6. Compute dataset-level FID.
+6. Compute dataset-level FUD.
 7. Render tile-level and dataset-level figures.
 8. Render the paired-vs-unpaired scientific HTML report.
 
@@ -185,7 +185,7 @@ For the consolidated paired + unpaired workflow reference, see [`ablation_cli.md
 | `tools/cellvit/export_batch.py` | Flatten cached PNGs for external CellViT processing | `python tools/cellvit/export_batch.py --cache-root inference_output/full_ablation --output-dir inference_output/cellvit_batch --zip` |
 | `tools/cellvit/import_results.py` | Copy flat CellViT JSON results back beside each cached image | `python tools/cellvit/import_results.py --manifest inference_output/cellvit_batch/manifest.json --results-dir inference_output/cellvit` |
 | `tools/compute_ablation_metrics.py` | Write `<cache-dir>/metrics.json` with cosine / LPIPS / AJI / PQ / `style_hed` | `conda run -n pixcell python tools/compute_ablation_metrics.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33` |
-| `tools/compute_fid.py` | Compute dataset-level FID for all 15 ablation conditions | `python tools/compute_fid.py --cache-dir inference_output/cache --device cuda` |
+| `tools/compute_fid.py` | Compute dataset-level FUD for all 15 ablation conditions | `python tools/compute_fid.py --cache-dir inference_output/cache --device cuda` |
 | `tools/vis/stage3_ablation_grid_figure.py` | Render the static ranked 4x4 matplotlib figure | `python tools/vis/stage3_ablation_grid_figure.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
 | `tools/render_dataset_metrics.py` | Render the standalone dataset-level summary figure | `python tools/render_dataset_metrics.py --metric-dir inference_output/full_ablation --output figures/dataset_metrics.png --dpi 400` |
 | `tools/render_ablation_html_report.py` | Render the paired-vs-unpaired scientific HTML report | `python tools/render_ablation_html_report.py --output docs/ablation_scientific_report.html` |
@@ -233,9 +233,9 @@ conda run --no-capture-output -n pixcell \
 
 ---
 
-## Dataset-Level FID
+## Dataset-Level FUD
 
-Use `tools/compute_fid.py` after `tools/compute_ablation_metrics.py` to compute Fréchet Inception Distance once per ablation condition across the full cached dataset. The script writes `<cache-dir>/fid_scores.json` and backfills `fid` into each per-tile `metrics.json`.
+Use `tools/compute_fid.py` after `tools/compute_ablation_metrics.py` to compute Fréchet UNI Distance once per ablation condition across the full cached dataset by default. The script writes `<cache-dir>/fud_scores.json` and backfills `fud` into each per-tile `metrics.json`. If you explicitly use `--feature-backend inception`, it instead writes canonical `fid_scores.json` and backfills `fid`.
 
 ```bash
 python tools/compute_fid.py \
@@ -245,10 +245,10 @@ python tools/compute_fid.py \
 
 Optional flags:
 
-- `--batch-size N` controls Inception batching; default is `64`.
-- `--output PATH` writes the JSON summary somewhere other than `<cache-dir>/fid_scores.json`.
+- `--batch-size N` controls feature batching; default is `64`.
+- `--output PATH` writes the JSON summary somewhere other than the backend-specific default (`<cache-dir>/fud_scores.json` for UNI, `<cache-dir>/fid_scores.json` for Inception).
 
-Afterward, re-run `tools/render_dataset_metrics.py` to populate the FID panel.
+Afterward, re-run `tools/render_dataset_metrics.py` to populate the FUD panel.
 
 ---
 

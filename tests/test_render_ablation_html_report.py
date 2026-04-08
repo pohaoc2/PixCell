@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from itertools import combinations
 from pathlib import Path
 
@@ -9,10 +10,34 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+if "torch" not in sys.modules:
+    torch_stub = types.ModuleType("torch")
+    class _DummyTensor:
+        pass
+    torch_stub.float16 = "float16"
+    torch_stub.float32 = "float32"
+    torch_stub.Tensor = _DummyTensor
+    sys.modules["torch"] = torch_stub
+
+if "diffusers" not in sys.modules:
+    diffusers_stub = types.ModuleType("diffusers")
+
+    class _DummyScheduler:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def set_timesteps(self, *args, **kwargs) -> None:
+            pass
+
+    diffusers_stub.DDPMScheduler = _DummyScheduler
+    sys.modules["diffusers"] = diffusers_stub
+
 from tools.render_ablation_html_report import (
     DatasetSummary,
+    build_channel_effect_heatmaps_figure,
     build_leave_one_out_figure,
     build_metric_trends_figure,
+    export_report_png_pages,
     load_dataset_summary,
     render_comparison_table,
     render_report_html,
@@ -32,7 +57,7 @@ def _write_png(path: Path) -> None:
     Image.new("RGB", (4, 4), (255, 255, 255)).save(path)
 
 
-def _write_fid_scores(path: Path, payload: dict[str, float]) -> None:
+def _write_metric_scores(path: Path, payload: dict[str, float]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -101,6 +126,8 @@ def _make_summary(
     metric_keys: list[str],
     condition_stats: dict[str, dict[str, tuple[float, float]]] | None = None,
     by_cardinality_stats: dict[int, dict[str, tuple[float, float]]] | None = None,
+    added_effect_stats: dict[str, dict[str, tuple[float, float]]] | None = None,
+    presence_absence_stats: dict[str, dict[str, tuple[float, float]]] | None = None,
     loo_summary: dict[str, dict[str, float]] | None = None,
     loo_stats: dict[str, dict[str, tuple[float, float]]] | None = None,
 ) -> DatasetSummary:
@@ -117,8 +144,8 @@ def _make_summary(
         best_worst={},
         added_effects={},
         presence_absence={},
-        added_effect_stats={},
-        presence_absence_stats={},
+        added_effect_stats=added_effect_stats or {},
+        presence_absence_stats=presence_absence_stats or {},
         loo_summary=loo_summary or {},
         loo_stats=loo_stats or {},
         representative_tile=None,
@@ -152,11 +179,11 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
             "version": 2,
             "tile_id": "tile_a",
             "per_condition": {
-                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02, "fid": 68.0},
-                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14, "fid": 67.0},
-                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22, "fid": 66.5},
-                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31, "fid": 66.2},
-                "cell_types+cell_state+microenv+vasculature": {"cosine": 0.62, "lpips": 0.37, "aji": 0.44, "pq": 0.39, "fid": 67.4},
+                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02, "fud": 68.0},
+                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14, "fud": 67.0},
+                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22, "fud": 66.5},
+                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31, "fud": 66.2},
+                "cell_types+cell_state+microenv+vasculature": {"cosine": 0.62, "lpips": 0.37, "aji": 0.44, "pq": 0.39, "fud": 67.4},
             },
         },
     )
@@ -166,11 +193,11 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
             "version": 2,
             "tile_id": "tile_b",
             "per_condition": {
-                "cell_types": {"aji": 0.04, "pq": 0.01, "fid": 69.0, "style_hed": 0.08},
-                "cell_state": {"aji": 0.16, "pq": 0.10, "fid": 68.7, "style_hed": 0.079},
-                "cell_types+cell_state": {"aji": 0.22, "pq": 0.15, "fid": 67.8, "style_hed": 0.074},
-                "cell_types+cell_state+microenv": {"aji": 0.31, "pq": 0.23, "fid": 64.0, "style_hed": 0.069},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.39, "pq": 0.32, "fid": 65.4, "style_hed": 0.071},
+                "cell_types": {"aji": 0.04, "pq": 0.01, "fud": 69.0, "style_hed": 0.08},
+                "cell_state": {"aji": 0.16, "pq": 0.10, "fud": 68.7, "style_hed": 0.079},
+                "cell_types+cell_state": {"aji": 0.22, "pq": 0.15, "fud": 67.8, "style_hed": 0.074},
+                "cell_types+cell_state+microenv": {"aji": 0.31, "pq": 0.23, "fud": 64.0, "style_hed": 0.069},
+                "cell_types+cell_state+microenv+vasculature": {"aji": 0.39, "pq": 0.32, "fud": 65.4, "style_hed": 0.071},
             },
         },
     )
@@ -207,6 +234,9 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
     )
 
     report = render_report_html("Ablation report", [paired, unpaired], tmp_path / "report.html")
+    metric_tradeoffs_idx = report.index("Metric Tradeoffs")
+    comparison_idx = report.index("Paired vs Unpaired Best/Worst Conditions")
+    channel_effect_idx = report.index("Channel Effect Sizes")
 
     assert "Metric Tradeoffs" in report
     assert "Channel Effect Sizes" in report
@@ -222,6 +252,9 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
     assert "CT / CS / Vas / Env" in report
     assert "class='condition-glyph'" in report
     assert "class='condition-dot is-active'" in report
+    assert "Each cell shows per-metric min-max normalized improvement ± normalized SD" in report
+    assert "0 for worst to 1 for best across the combined plot" in report
+    assert metric_tradeoffs_idx < comparison_idx < channel_effect_idx
 
 
 def test_build_metric_trends_figure_uses_dashed_unpaired_std() -> None:
@@ -305,7 +338,49 @@ def test_build_leave_one_out_figure_uses_white_paired_bars() -> None:
         fig.clf()
 
 
-def test_render_comparison_table_omits_unpaired_cosine_and_lpips() -> None:
+def test_build_channel_effect_heatmaps_figure_normalizes_per_metric_colors() -> None:
+    added_effect_stats = {
+        "cell_types": {"aji": (0.10, 0.01), "fud": (-5.0, 0.8)},
+        "cell_state": {"aji": (0.20, 0.02), "fud": (-1.0, 0.7)},
+        "vasculature": {"aji": (0.30, 0.03), "fud": (2.0, 0.6)},
+        "microenv": {"aji": (0.40, 0.04), "fud": (10.0, 0.5)},
+    }
+    presence_absence_stats = {
+        "cell_types": {"aji": (-0.20, 0.01), "fud": (-8.0, 0.8)},
+        "cell_state": {"aji": (0.00, 0.02), "fud": (-4.0, 0.7)},
+        "vasculature": {"aji": (0.10, 0.03), "fud": (4.0, 0.6)},
+        "microenv": {"aji": (0.20, 0.04), "fud": (12.0, 0.5)},
+    }
+    summary = _make_summary(
+        slug="paired",
+        title="Paired",
+        metric_keys=["aji", "fud"],
+        added_effect_stats=added_effect_stats,
+        presence_absence_stats=presence_absence_stats,
+    )
+
+    fig = build_channel_effect_heatmaps_figure([summary])
+    try:
+        heatmap_ax = next(ax for ax in fig.axes if ax.get_title().startswith("Paired: Average improvement"))
+        image = heatmap_ax.images[0]
+        colorbar_ax = fig.axes[-1]
+        normalized = image.get_array().filled(float("nan"))
+        text_values = {text.get_text() for text in heatmap_ax.texts}
+
+        assert image.get_clim() == (0.0, 1.0)
+        assert image.cmap.name == "RdBu"
+        assert normalized.min() >= 0.0
+        assert normalized.max() <= 1.0
+        assert normalized[0, 0] == 0.5
+        assert round(float(normalized[0, 1]), 2) == 0.15
+        assert "0.500\n±0.017" in text_values
+        assert "0.150\n±0.040" in text_values
+        assert "0 = worst, 1 = best" in colorbar_ax.get_ylabel()
+    finally:
+        fig.clf()
+
+
+def test_render_comparison_table_includes_unpaired_cosine_and_lpips() -> None:
     paired = _make_summary(
         slug="paired",
         title="Paired",
@@ -367,9 +442,50 @@ def test_render_comparison_table_omits_unpaired_cosine_and_lpips() -> None:
 
     table_html = render_comparison_table([paired, unpaired])
 
-    assert table_html.count(">Cosine<") == 1
-    assert table_html.count(">LPIPS<") == 1
+    assert table_html.count(">Cosine<") == 2
+    assert table_html.count(">LPIPS<") == 2
     assert table_html.count(">AJI<") == 2
+
+
+def test_export_report_png_pages_places_comparison_second(tmp_path: Path) -> None:
+    summary = _make_summary(
+        slug="paired",
+        title="Paired",
+        metric_keys=["aji"],
+        condition_stats=_full_condition_stats("aji", base=0.1, step=0.01, std=0.01),
+        by_cardinality_stats={
+            1: {"aji": (0.1, 0.01)},
+            2: {"aji": (0.2, 0.01)},
+            3: {"aji": (0.3, 0.01)},
+            4: {"aji": (0.4, 0.01)},
+        },
+        added_effect_stats={group: {"aji": (0.1 + idx * 0.05, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+        presence_absence_stats={group: {"aji": (0.05 + idx * 0.03, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+        loo_summary={group: {"mean_diff": 1.0 + idx, "pct_pixels_above_10": 2.0 + idx} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+        loo_stats={
+            group: {"mean_diff": (1.0 + idx, 0.1), "pct_pixels_above_10": (2.0 + idx, 0.2)}
+            for idx, group in enumerate(FOUR_GROUP_ORDER)
+        },
+    )
+    object.__setattr__(
+        summary,
+        "best_worst",
+        {
+            "aji": {
+                "best_condition": "cell_types+microenv",
+                "best_value": 0.35,
+                "worst_condition": "cell_state",
+                "worst_value": 0.14,
+            }
+        },
+    )
+
+    output_paths = export_report_png_pages([summary], tmp_path)
+
+    assert output_paths[0].name == "01_metric_tradeoffs.png"
+    assert output_paths[1].name == "02_paired_vs_unpaired.png"
+    assert output_paths[2].name == "03_channel_effect_sizes.png"
+    assert output_paths[3].name == "04_leave_one_out_impact.png"
 
 
 def test_render_report_html_self_contained_embeds_evidence_images(tmp_path: Path) -> None:
@@ -383,11 +499,11 @@ def test_render_report_html_self_contained_embeds_evidence_images(tmp_path: Path
             "version": 2,
             "tile_id": tile_id,
             "per_condition": {
-                "cell_types": {"aji": 0.06, "pq": 0.02, "fid": 68.0},
-                "cell_state": {"aji": 0.20, "pq": 0.14, "fid": 67.0},
-                "cell_types+cell_state": {"aji": 0.28, "pq": 0.22, "fid": 66.5},
-                "cell_types+cell_state+microenv": {"aji": 0.36, "pq": 0.31, "fid": 66.2},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.44, "pq": 0.39, "fid": 67.4},
+                "cell_types": {"aji": 0.06, "pq": 0.02, "fud": 68.0},
+                "cell_state": {"aji": 0.20, "pq": 0.14, "fud": 67.0},
+                "cell_types+cell_state": {"aji": 0.28, "pq": 0.22, "fud": 66.5},
+                "cell_types+cell_state+microenv": {"aji": 0.36, "pq": 0.31, "fud": 66.2},
+                "cell_types+cell_state+microenv+vasculature": {"aji": 0.44, "pq": 0.39, "fud": 67.4},
             },
         },
     )
@@ -437,16 +553,16 @@ def test_load_dataset_summary_computes_missing_paired_style_hed(tmp_path: Path) 
             "version": 2,
             "tile_id": tile_id,
             "per_condition": {
-                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02, "fid": 68.0},
-                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14, "fid": 67.0},
-                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22, "fid": 66.5},
-                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31, "fid": 66.2},
+                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02, "fud": 68.0},
+                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14, "fud": 67.0},
+                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22, "fud": 66.5},
+                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31, "fud": 66.2},
                 "cell_types+cell_state+microenv+vasculature": {
                     "cosine": 0.62,
                     "lpips": 0.37,
                     "aji": 0.44,
                     "pq": 0.39,
-                    "fid": 67.4,
+                    "fud": 67.4,
                 },
             },
         },
@@ -466,7 +582,7 @@ def test_load_dataset_summary_computes_missing_paired_style_hed(tmp_path: Path) 
     assert summary.by_cardinality[4]["style_hed"] == 0.0
 
 
-def test_load_dataset_summary_uses_fid_scores_when_metrics_json_lacks_fid(tmp_path: Path) -> None:
+def test_load_dataset_summary_uses_legacy_fid_scores_when_metrics_json_lacks_fud(tmp_path: Path) -> None:
     metrics_root = tmp_path / "paired" / "ablation_results"
     dataset_root = tmp_path / "paired"
     tile_id = "tile_a"
@@ -485,7 +601,7 @@ def test_load_dataset_summary_uses_fid_scores_when_metrics_json_lacks_fid(tmp_pa
             },
         },
     )
-    _write_fid_scores(
+    _write_metric_scores(
         metrics_root / "fid_scores.json",
         {
             "cell_types": 68.0,
@@ -504,9 +620,9 @@ def test_load_dataset_summary_uses_fid_scores_when_metrics_json_lacks_fid(tmp_pa
         enable_style_hed_backfill=False,
     )
 
-    assert "fid" in summary.metric_keys
-    assert summary.condition_stats["cell_types"]["fid"] == (68.0, 0.0)
-    assert summary.by_cardinality[4]["fid"] == 67.4
+    assert "fud" in summary.metric_keys
+    assert summary.condition_stats["cell_types"]["fud"] == (68.0, 0.0)
+    assert summary.by_cardinality[4]["fud"] == 67.4
 
 
 def test_load_dataset_summary_filters_by_min_gt_cells(tmp_path: Path) -> None:

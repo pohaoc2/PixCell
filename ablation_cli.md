@@ -187,10 +187,10 @@ python tools/compute_ablation_metrics.py \
   --jobs 2
 ```
 
-## Step 7. Compute FID
+## Step 7. Compute FUD
 
 Comment:
-- FID is dataset-level and uses all tiles in the cache by default.
+- FUD is dataset-level and uses all tiles in the cache by default when using UNI features.
 - It is written once per condition and then backfilled into every tile's `metrics.json`.
 
 ### Paired
@@ -201,7 +201,7 @@ python tools/compute_fid.py \
   --orion-root data/orion-crc33 \
   --device cuda \
   --batch-size 64 \
-  --output inference_output/paired_ablation/ablation_results/fid_scores.json
+  --output inference_output/paired_ablation/ablation_results/fud_scores.json
 ```
 
 ### Unpaired
@@ -212,7 +212,7 @@ python tools/compute_fid.py \
   --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
   --device cuda \
   --batch-size 64 \
-  --output inference_output/unpaired_ablation/ablation_results/fid_scores.json
+  --output inference_output/unpaired_ablation/ablation_results/fud_scores.json
 ```
 
 ## Step 8. Render per-tile ablation grid figures
@@ -250,7 +250,7 @@ python tools/vis/stage3_ablation_grid_figure.py \
 Comment:
 - `--min-gt-cells` filters tiles when aggregating the plotted metrics.
 - This is especially helpful for `PQ/AJI`.
-- It does not truly recompute FID on the filtered subset; it only filters the plotting inputs.
+- It does not truly recompute FUD on the filtered subset; it only filters the plotting inputs.
 - `--metric-set unpaired` swaps `Cosine/LPIPS` out for `HED` so the figure matches the unpaired main metrics.
 
 ### Paired
@@ -349,7 +349,7 @@ python tools/stage3/channel_sweep.py \
 
 - If you want a fresh rerun, remove or rename the previous output folder first.
 - For unpaired evaluation:
-  - keep `PQ`, `AJI`, `FID`
+  - keep `PQ`, `AJI`, `FUD`
   - prefer `style_hed` as the style metric
   - avoid using `LPIPS` and `cosine` as the main conclusions unless you explicitly want paired-reference similarity
 - For paired evaluation:

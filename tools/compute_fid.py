@@ -5,6 +5,7 @@ import argparse
 import json
 import sys
 import warnings
+from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable
@@ -18,18 +19,28 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.stage3.ablation_cache import list_cached_tile_ids, load_manifest
-from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, condition_metric_key
+from tools.stage3.ablation_vis_utils import (
+    FOUR_GROUP_ORDER,
+    condition_metric_key,
+    default_orion_uni_npy_path,
+)
 
 _RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR
 _FID_EPS = 1e-6
-_METRIC_NAME = "fid"
+_FEATURE_BACKENDS = ("uni", "inception")
+
+
+@dataclass(frozen=True)
+class ImageFeatureRecord:
+    image_path: Path
+    feature_path: Path | None = None
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute dataset-level FID for every ablation condition and backfill the "
-            "scores into per-tile metrics.json files."
+            "Compute dataset-level Fréchet distance for every ablation condition and "
+            "backfill the scores into per-tile metrics.json files."
         )
     )
     parser.add_argument(
@@ -48,19 +59,35 @@ def parse_args() -> argparse.Namespace:
         "--device",
         type=str,
         default="cuda",
-        help="Torch device to use for Inception v3 inference.",
+        help="Torch device to use for feature extraction.",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=64,
-        help="Inception v3 batch size.",
+        help="Feature extraction batch size.",
+    )
+    parser.add_argument(
+        "--feature-backend",
+        choices=_FEATURE_BACKENDS,
+        default="uni",
+        help=(
+            "Feature space used for Fréchet distance. "
+            "'uni' (default) uses histopathology UNI-2h embeddings; "
+            "'inception' uses ImageNet Inception v3 features."
+        ),
+    )
+    parser.add_argument(
+        "--uni-model",
+        type=Path,
+        default=ROOT / "pretrained_models/uni-2h",
+        help="UNI-2h model directory used when --feature-backend=uni.",
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="JSON output path. Defaults to <cache-dir>/fid_scores.json.",
+        help="JSON output path. Defaults to <cache-dir>/fud_scores.json for UNI or <cache-dir>/fid_scores.json for Inception.",
     )
     return parser.parse_args()
 
@@ -71,6 +98,22 @@ def ordered_condition_keys() -> list[str]:
         for size in range(1, len(FOUR_GROUP_ORDER) + 1)
         for cond in combinations(FOUR_GROUP_ORDER, size)
     ]
+
+
+def _generated_uni_feature_cache_path(tile_dir: Path, image_rel: Path) -> Path:
+    return tile_dir / "features" / image_rel.parent / f"{image_rel.stem}_uni.npy"
+
+
+def metric_key_for_backend(feature_backend: str) -> str:
+    return "fud" if feature_backend == "uni" else "fid"
+
+
+def metric_label_for_backend(feature_backend: str) -> str:
+    return metric_key_for_backend(feature_backend).upper()
+
+
+def default_output_path(cache_dir: Path, feature_backend: str) -> Path:
+    return cache_dir / f"{metric_key_for_backend(feature_backend)}_scores.json"
 
 
 def resolve_device(requested: str) -> str:
@@ -85,14 +128,16 @@ def resolve_device(requested: str) -> str:
 def collect_condition_paths(
     cache_dir: Path,
     orion_root: Path,
-) -> tuple[list[str], list[Path], dict[str, list[Path]]]:
+    *,
+    feature_backend: str,
+) -> tuple[list[str], list[ImageFeatureRecord], dict[str, list[ImageFeatureRecord]]]:
     condition_keys = ordered_condition_keys()
-    condition_to_paths: dict[str, list[Path]] = {key: [] for key in condition_keys}
+    condition_to_paths: dict[str, list[ImageFeatureRecord]] = {key: [] for key in condition_keys}
     tile_ids = list_cached_tile_ids(cache_dir)
     if not tile_ids:
         raise FileNotFoundError(f"no cached tile manifests found under {cache_dir}")
 
-    real_paths: list[Path] = []
+    real_paths: list[ImageFeatureRecord] = []
     all_key = condition_metric_key(FOUR_GROUP_ORDER)
 
     for tile_id in tile_ids:
@@ -113,11 +158,27 @@ def collect_condition_paths(
                 image_path = tile_dir / entry["image_path"]
                 if not image_path.is_file():
                     raise FileNotFoundError(f"missing generated image: {image_path}")
-                per_tile_paths[cond_key] = image_path
+                feature_path = None
+                if feature_backend == "uni":
+                    feature_path = _generated_uni_feature_cache_path(
+                        tile_dir,
+                        Path(entry["image_path"]),
+                    )
+                per_tile_paths[cond_key] = ImageFeatureRecord(
+                    image_path=image_path,
+                    feature_path=feature_path,
+                )
 
         all_path = tile_dir / "all" / "generated_he.png"
         if all_path.is_file():
-            per_tile_paths[all_key] = all_path
+            per_tile_paths[all_key] = ImageFeatureRecord(
+                image_path=all_path,
+                feature_path=(
+                    _generated_uni_feature_cache_path(tile_dir, Path("all/generated_he.png"))
+                    if feature_backend == "uni"
+                    else None
+                ),
+            )
 
         missing = [key for key in condition_keys if key not in per_tile_paths]
         if missing:
@@ -129,7 +190,12 @@ def collect_condition_paths(
         if not real_path.is_file():
             raise FileNotFoundError(f"missing real H&E image: {real_path}")
 
-        real_paths.append(real_path)
+        real_feature_path = None
+        if feature_backend == "uni":
+            candidate = default_orion_uni_npy_path(orion_root, tile_id)
+            if candidate.is_file():
+                real_feature_path = candidate
+        real_paths.append(ImageFeatureRecord(image_path=real_path, feature_path=real_feature_path))
         for cond_key in condition_keys:
             condition_to_paths[cond_key].append(per_tile_paths[cond_key])
 
@@ -162,7 +228,7 @@ def load_inception_model(device: str) -> Any:
     return model
 
 
-def iter_batches(items: list[Path], batch_size: int) -> Iterable[list[Path]]:
+def iter_batches(items: list[Any], batch_size: int) -> Iterable[list[Any]]:
     for start in range(0, len(items), batch_size):
         yield items[start : start + batch_size]
 
@@ -175,24 +241,24 @@ def load_image_tensor(image_path: Path, preprocess: Any) -> Any:
         return preprocess(rgb)
 
 
-def extract_features(
-    image_paths: list[Path],
+def extract_inception_features(
+    image_records: list[ImageFeatureRecord],
     *,
     model: Any,
     device: str,
     batch_size: int,
     preprocess: Any,
 ) -> np.ndarray:
-    if not image_paths:
+    if not image_records:
         raise ValueError("cannot extract features from an empty image set")
 
     import torch
 
     outputs: list[np.ndarray] = []
     with torch.no_grad():
-        for batch_paths in iter_batches(image_paths, batch_size):
+        for batch_records in iter_batches(image_records, batch_size):
             batch = torch.stack(
-                [load_image_tensor(path, preprocess) for path in batch_paths],
+                [load_image_tensor(record.image_path, preprocess) for record in batch_records],
                 dim=0,
             ).to(device)
             features = model(batch)
@@ -201,6 +267,68 @@ def extract_features(
             outputs.append(features.detach().cpu().numpy().astype(np.float64, copy=False))
 
     return np.concatenate(outputs, axis=0)
+
+
+def _load_rgb_pil(path: Path) -> Image.Image:
+    with Image.open(path) as image:
+        return image.convert("RGB")
+
+
+def load_uni_extractor(*, uni_model: Path, device: str):
+    from tools.stage3.compute_ablation_uni_cosine import load_uni_extractor as _load_uni_extractor
+
+    return _load_uni_extractor(uni_model=uni_model, device=device)
+
+
+def all_features_cached(image_records: list[ImageFeatureRecord]) -> bool:
+    return bool(image_records) and all(
+        record.feature_path is not None and record.feature_path.is_file()
+        for record in image_records
+    )
+
+
+def extract_uni_features(
+    image_records: list[ImageFeatureRecord],
+    *,
+    extractor: Any | None,
+    batch_size: int,
+) -> np.ndarray:
+    if not image_records:
+        raise ValueError("cannot extract features from an empty image set")
+
+    outputs: list[np.ndarray] = []
+    pending_records: list[ImageFeatureRecord] = []
+
+    def flush_pending() -> None:
+        if not pending_records:
+            return
+        if extractor is None:
+            raise ValueError("UNI extractor is required when cached UNI features are missing")
+        images = [_load_rgb_pil(record.image_path) for record in pending_records]
+        features = np.asarray(extractor.extract_batch(images), dtype=np.float64)
+        if features.ndim == 1:
+            features = features[np.newaxis, :]
+        if len(features) != len(pending_records):
+            raise ValueError(
+                "UNI extractor returned a different number of features than input images"
+            )
+        for record, feature in zip(pending_records, features):
+            if record.feature_path is not None:
+                record.feature_path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(record.feature_path, feature.astype(np.float32, copy=False))
+            outputs.append(feature.astype(np.float64, copy=False))
+        pending_records.clear()
+
+    for record in image_records:
+        if record.feature_path is not None and record.feature_path.is_file():
+            outputs.append(np.load(record.feature_path).astype(np.float64).ravel())
+            continue
+        pending_records.append(record)
+        if len(pending_records) >= batch_size:
+            flush_pending()
+
+    flush_pending()
+    return np.stack(outputs, axis=0)
 
 
 def compute_statistics(features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -249,13 +377,19 @@ def compute_fid_from_stats(
     return max(fid, 0.0)
 
 
-def write_fid_scores(output_path: Path, fid_scores: dict[str, float]) -> None:
+def write_metric_scores(output_path: Path, metric_scores: dict[str, float]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    ordered = {key: float(fid_scores[key]) for key in ordered_condition_keys()}
+    ordered = {key: float(metric_scores[key]) for key in ordered_condition_keys()}
     output_path.write_text(json.dumps(ordered, indent=2) + "\n", encoding="utf-8")
 
 
-def backfill_metrics(cache_dir: Path, tile_ids: list[str], fid_scores: dict[str, float]) -> None:
+def backfill_metrics(
+    cache_dir: Path,
+    tile_ids: list[str],
+    metric_scores: dict[str, float],
+    *,
+    metric_key: str,
+) -> None:
     for tile_id in tile_ids:
         metrics_path = cache_dir / tile_id / "metrics.json"
         if not metrics_path.is_file():
@@ -267,12 +401,16 @@ def backfill_metrics(cache_dir: Path, tile_ids: list[str], fid_scores: dict[str,
             raise ValueError(f"invalid per_condition payload in {metrics_path}")
 
         for cond_key, record in per_condition.items():
-            if cond_key not in fid_scores:
+            if cond_key not in metric_scores:
                 continue
             if not isinstance(record, dict):
                 record = {}
                 per_condition[cond_key] = record
-            record[_METRIC_NAME] = float(fid_scores[cond_key])
+            record[metric_key] = float(metric_scores[cond_key])
+            if metric_key == "fud":
+                record.pop("fid", None)
+            elif metric_key == "fid":
+                record.pop("fud", None)
 
         metrics_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -281,45 +419,76 @@ def main() -> None:
     args = parse_args()
     cache_dir = args.cache_dir.resolve()
     orion_root = args.orion_root.resolve()
-    output_path = args.output.resolve() if args.output is not None else cache_dir / "fid_scores.json"
     device = resolve_device(args.device)
+    feature_backend = str(args.feature_backend)
+    uni_model = args.uni_model.resolve()
+    metric_key = metric_key_for_backend(feature_backend)
+    metric_label = metric_label_for_backend(feature_backend)
+    output_path = args.output.resolve() if args.output is not None else default_output_path(cache_dir, feature_backend)
 
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
 
-    tile_ids, real_paths, condition_to_paths = collect_condition_paths(cache_dir, orion_root)
-    preprocess = build_preprocess()
-    model = load_inception_model(device)
-
-    print(f"Extracting real H&E features once for {len(real_paths)} images on {device}.")
-    real_features = extract_features(
-        real_paths,
-        model=model,
-        device=device,
-        batch_size=args.batch_size,
-        preprocess=preprocess,
+    tile_ids, real_paths, condition_to_paths = collect_condition_paths(
+        cache_dir,
+        orion_root,
+        feature_backend=feature_backend,
     )
-    real_mu, real_sigma = compute_statistics(real_features)
 
-    fid_scores: dict[str, float] = {}
-    condition_keys = ordered_condition_keys()
-    for index, cond_key in enumerate(condition_keys, start=1):
-        gen_paths = condition_to_paths[cond_key]
-        print(f"[{index}/{len(condition_keys)}] Processing {cond_key}: {len(gen_paths)} images")
-        gen_features = extract_features(
-            gen_paths,
+    print(
+        f"Extracting real H&E features once for {len(real_paths)} images on {device} "
+        f"using {feature_backend}."
+    )
+    if feature_backend == "uni":
+        extractor: Any | None = None
+        all_uni_records = list(real_paths)
+        for cond_key in ordered_condition_keys():
+            all_uni_records.extend(condition_to_paths[cond_key])
+        if not all_features_cached(all_uni_records):
+            extractor = load_uni_extractor(uni_model=uni_model, device=device)
+        real_features = extract_uni_features(
+            real_paths,
+            extractor=extractor,
+            batch_size=args.batch_size,
+        )
+    else:
+        preprocess = build_preprocess()
+        model = load_inception_model(device)
+        real_features = extract_inception_features(
+            real_paths,
             model=model,
             device=device,
             batch_size=args.batch_size,
             preprocess=preprocess,
         )
-        gen_mu, gen_sigma = compute_statistics(gen_features)
-        fid_scores[cond_key] = compute_fid_from_stats(real_mu, real_sigma, gen_mu, gen_sigma)
+    real_mu, real_sigma = compute_statistics(real_features)
 
-    write_fid_scores(output_path, fid_scores)
-    backfill_metrics(cache_dir, tile_ids, fid_scores)
-    print(f"Wrote FID scores to {output_path}")
-    print(f"Backfilled fid into {len(tile_ids)} metrics.json files")
+    metric_scores: dict[str, float] = {}
+    condition_keys = ordered_condition_keys()
+    for index, cond_key in enumerate(condition_keys, start=1):
+        gen_records = condition_to_paths[cond_key]
+        print(f"[{index}/{len(condition_keys)}] Processing {cond_key}: {len(gen_records)} images")
+        if feature_backend == "uni":
+            gen_features = extract_uni_features(
+                gen_records,
+                extractor=extractor,
+                batch_size=args.batch_size,
+            )
+        else:
+            gen_features = extract_inception_features(
+                gen_records,
+                model=model,
+                device=device,
+                batch_size=args.batch_size,
+                preprocess=preprocess,
+            )
+        gen_mu, gen_sigma = compute_statistics(gen_features)
+        metric_scores[cond_key] = compute_fid_from_stats(real_mu, real_sigma, gen_mu, gen_sigma)
+
+    write_metric_scores(output_path, metric_scores)
+    backfill_metrics(cache_dir, tile_ids, metric_scores, metric_key=metric_key)
+    print(f"Wrote {metric_label} scores to {output_path}")
+    print(f"Backfilled {metric_key} into {len(tile_ids)} metrics.json files")
 
 
 if __name__ == "__main__":
