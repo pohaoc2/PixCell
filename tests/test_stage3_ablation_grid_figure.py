@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 import json
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
 from tools.stage3.ablation_grid_figure import (
     _cardinality_color,
     _condition_label,
+    _draw_dot_row,
     _draw_metric_bars_cell,
     _load_cellvit_contours,
     _sort_conditions_by_metric,
@@ -92,6 +94,28 @@ def test_draw_metric_bars_cell_no_crash():
         ax,
         {"cosine": 0.995, "lpips": None, "aji": 0.7, "pq": None},
     )
+    plt.close(fig)
+
+
+def test_draw_dot_row_uses_circle_markers():
+    import matplotlib.pyplot as plt
+    from matplotlib.markers import MarkerStyle
+
+    fig, ax = plt.subplots()
+    _draw_dot_row(ax, ("cell_types", "microenv"))
+
+    assert len(ax.collections) == 4
+    expected = MarkerStyle("o").get_path().transformed(MarkerStyle("o").get_transform()).vertices
+    actual = ax.collections[0].get_paths()[0].vertices
+    assert np.allclose(actual, expected)
+    assert np.allclose(ax.collections[0].get_offsets()[0], [0.18, 0.46])
+    assert ax.collections[0].get_sizes()[0] == pytest.approx(68.0)
+    assert np.allclose(ax.collections[0].get_facecolors()[0][:3], [0.0, 0.0, 0.0])
+    assert np.allclose(ax.collections[1].get_facecolors()[0][:3], [1.0, 1.0, 1.0])
+    assert ax.collections[0].get_clip_on() is False
+    assert ax.patch.get_alpha() == pytest.approx(0.0)
+    assert not ax.texts
+
     plt.close(fig)
 
 

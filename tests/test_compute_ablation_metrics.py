@@ -19,13 +19,14 @@ from tools.compute_ablation_metrics import (
     _cellvit_json_to_instance_mask,
     _empty_metrics_record,
     _merge_cosine_into_metrics,
+    _resolve_metric_selection,
     run_cellvit,
 )
 
 
 def test_empty_record_has_all_keys():
     record = _empty_metrics_record()
-    assert set(record.keys()) == {"cosine", "lpips", "aji", "pq"}
+    assert set(record.keys()) == {"cosine", "lpips", "aji", "pq", "style_hed"}
     assert all(value is None for value in record.values())
 
 
@@ -36,12 +37,17 @@ def test_merge_cosine_preserves_existing():
             "lpips": 0.3,
             "aji": None,
             "pq": None,
+            "style_hed": None,
         }
     }
     cosine_scores = {"cell_types": 0.9946}
     result = _merge_cosine_into_metrics(existing, cosine_scores)
     assert result["cell_types"]["cosine"] == pytest.approx(0.9946)
     assert result["cell_types"]["lpips"] == pytest.approx(0.3)
+
+
+def test_resolve_metric_selection_all_includes_style_hed():
+    assert _resolve_metric_selection(["all"]) == ["cosine", "lpips", "aji", "pq", "style_hed"]
 
 
 def test_aji_perfect_match():

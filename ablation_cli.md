@@ -151,8 +151,8 @@ python tools/cellvit/import_results.py \
 Comment:
 - Paired main metrics usually keep: `all`
 - Unpaired main metrics usually keep: `aji pq style_hed`
-- `all` still means `cosine lpips aji pq`
-- `style_hed` is optional and must be requested explicitly
+- `all` now means `cosine lpips aji pq style_hed`
+- Request a subset explicitly if you want to skip the slower HED pass
 
 ### Paired
 
@@ -176,7 +176,7 @@ python tools/compute_ablation_metrics.py \
   --jobs 2
 ```
 
-If you want the legacy metrics plus `style_hed` for unpaired:
+If you want all metrics explicitly for unpaired:
 
 ```bash
 python tools/compute_ablation_metrics.py \

@@ -29,7 +29,12 @@ from PIL import Image
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, condition_metric_key
+from tools.stage3.ablation_vis_utils import (
+    FOUR_GROUP_ORDER,
+    condition_metric_key,
+    normalize_group_name,
+    ordered_subset_condition_tuples,
+)
 from tools.summarize_ablation_report import (
     DEFAULT_METRIC_ORDER,
     METRIC_SPEC_BY_KEY,
@@ -83,6 +88,12 @@ GROUP_LABELS = {
     "vasculature": "Vasculature",
     "microenv": "Microenv",
 }
+GROUP_SHORT_LABELS = {
+    "cell_types": "CT",
+    "cell_state": "CS",
+    "vasculature": "Vas",
+    "microenv": "Env",
+}
 METRIC_LABELS = {
     "cosine": "Cosine",
     "lpips": "LPIPS",
@@ -101,6 +112,7 @@ class DatasetSummary:
     dataset_root: Path
     tile_count: int
     metric_keys: list[str]
+    condition_stats: dict[str, dict[str, tuple[float, float]]]
     by_cardinality: dict[int, dict[str, float]]
     by_cardinality_stats: dict[int, dict[str, tuple[float, float]]]
     best_worst: dict[str, dict[str, str | float]]
@@ -120,6 +132,231 @@ def _mean_std(values: list[float]) -> tuple[float, float] | None:
     if not values:
         return None
     return float(statistics.mean(values)), float(statistics.pstdev(values)) if len(values) > 1 else 0.0
+
+
+def load_fid_scores(metrics_root: Path) -> dict[str, float]:
+    path = Path(metrics_root) / "fid_scores.json"
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[str, float] = {}
+    for cond_key, value in payload.items():
+        try:
+            out[str(cond_key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _has_gt_cell_masks(root: Path) -> bool:
+    exp_dir = Path(root) / "exp_channels"
+    return (exp_dir / "cell_masks").is_dir() or (exp_dir / "cell_mask").is_dir()
+
+
+def resolve_gt_root(
+    *,
+    dataset_root: Path,
+    slug: str,
+    reference_root: Path | None = None,
+) -> Path | None:
+    candidates: list[Path] = []
+    if reference_root is not None:
+        candidates.append(reference_root)
+    if slug == "unpaired":
+        candidates.extend(
+            [
+                dataset_root / "data" / "orion-crc33-unpaired",
+                ROOT / "inference_output" / "unpaired_ablation" / "data" / "orion-crc33-unpaired",
+            ]
+        )
+    candidates.extend(
+        [
+            dataset_root / "data" / "orion-crc33",
+            ROOT / "data" / "orion-crc33",
+        ]
+    )
+    for candidate in candidates:
+        if _has_gt_cell_masks(candidate):
+            return candidate
+    return None
+
+
+def filter_metrics_paths_by_gt_cells(
+    metrics_root: Path,
+    *,
+    gt_root: Path | None,
+    min_gt_cells: int = 0,
+) -> tuple[list[Path], int]:
+    metrics_paths = sorted(Path(metrics_root).glob("*/metrics.json"))
+    if not metrics_paths:
+        raise FileNotFoundError(f"no per-tile metrics.json files found under {Path(metrics_root).resolve()}")
+    if min_gt_cells <= 0 or gt_root is None:
+        return metrics_paths, 0
+
+    from tools.compute_ablation_metrics import _instance_ids, _load_gt_instance_mask
+
+    kept: list[Path] = []
+    filtered = 0
+    for metrics_path in metrics_paths:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        tile_id = str(payload.get("tile_id", "") or metrics_path.parent.name).strip()
+        if not tile_id:
+            filtered += 1
+            continue
+        try:
+            gt = _load_gt_instance_mask(gt_root, tile_id)
+        except FileNotFoundError:
+            filtered += 1
+            continue
+        if _instance_ids(gt).size < min_gt_cells:
+            filtered += 1
+            continue
+        kept.append(metrics_path)
+    return kept, filtered
+
+
+def load_condition_means_from_paths(metrics_paths: list[Path]) -> tuple[dict[str, dict[str, float]], int, list[str]]:
+    grouped: dict[str, dict[str, list[float]]] = {}
+    metric_keys: set[str] = set()
+    tile_count = 0
+    for metrics_path in metrics_paths:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        per_condition = payload.get("per_condition")
+        if not isinstance(per_condition, dict):
+            continue
+        tile_count += 1
+        for cond_key, record in per_condition.items():
+            if not isinstance(record, dict):
+                continue
+            bucket = grouped.setdefault(str(cond_key), {})
+            for metric in DEFAULT_METRIC_ORDER:
+                value = record.get(metric)
+                if value is None:
+                    continue
+                bucket.setdefault(metric, []).append(float(value))
+                metric_keys.add(metric)
+
+    condition_means: dict[str, dict[str, float]] = {}
+    for cond_key, record in grouped.items():
+        condition_means[cond_key] = {
+            metric_key: float(statistics.mean(values))
+            for metric_key, values in record.items()
+            if values
+        }
+    return condition_means, tile_count, [key for key in DEFAULT_METRIC_ORDER if key in metric_keys]
+
+
+def load_tile_condition_metrics(
+    metrics_root: Path,
+    *,
+    metrics_paths: list[Path] | None = None,
+    reference_root: Path | None = None,
+) -> tuple[list[dict[str, dict[str, float]]], list[str]]:
+    metrics_paths = sorted(metrics_paths) if metrics_paths is not None else sorted(Path(metrics_root).glob("*/metrics.json"))
+    if not metrics_paths:
+        raise FileNotFoundError(f"no per-tile metrics.json files found under {Path(metrics_root).resolve()}")
+
+    metric_keys: set[str] = set()
+    tile_records: list[tuple[Path, dict[str, dict[str, float]]]] = []
+    for metrics_path in metrics_paths:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        per_condition = payload.get("per_condition")
+        if not isinstance(per_condition, dict):
+            continue
+
+        tile_record: dict[str, dict[str, float]] = {}
+        for cond_key, record in per_condition.items():
+            if not isinstance(record, dict):
+                continue
+            normalized: dict[str, float] = {}
+            for metric in DEFAULT_METRIC_ORDER:
+                value = record.get(metric)
+                if value is None:
+                    continue
+                normalized[metric] = float(value)
+                metric_keys.add(metric)
+            if normalized:
+                tile_record[str(cond_key)] = normalized
+        tile_records.append((metrics_path.parent, tile_record))
+
+    fid_scores = load_fid_scores(metrics_root)
+    if fid_scores:
+        for _, tile_record in tile_records:
+            for cond_key, fid_value in fid_scores.items():
+                tile_record.setdefault(cond_key, {})["fid"] = float(fid_value)
+                metric_keys.add("fid")
+
+    if reference_root is not None:
+        for cache_dir, tile_record in tile_records:
+            needs_style_hed = any("style_hed" not in metrics for metrics in tile_record.values())
+            if not needs_style_hed:
+                continue
+            try:
+                scores = compute_style_hed_scores_local(cache_dir, reference_root)
+            except (FileNotFoundError, ValueError):
+                continue
+            for cond_key, value in scores.items():
+                tile_record.setdefault(cond_key, {})["style_hed"] = float(value)
+                metric_keys.add("style_hed")
+
+    return [tile_record for _, tile_record in tile_records], [metric for metric in DEFAULT_METRIC_ORDER if metric in metric_keys]
+
+
+def summarize_by_cardinality_tile_stats(
+    tile_records: list[dict[str, dict[str, float]]],
+    metric_keys: list[str],
+) -> tuple[dict[int, dict[str, float]], dict[int, dict[str, tuple[float, float]]]]:
+    grouped: dict[int, dict[str, list[float]]] = {}
+    for tile_record in tile_records:
+        per_tile: dict[int, dict[str, list[float]]] = {}
+        for cond_key, metrics in tile_record.items():
+            bucket = per_tile.setdefault(len(cond_key.split("+")), {})
+            for metric_key in metric_keys:
+                value = metrics.get(metric_key)
+                if value is None:
+                    continue
+                bucket.setdefault(metric_key, []).append(float(value))
+
+        for group_count, metric_lists in per_tile.items():
+            dest = grouped.setdefault(group_count, {})
+            for metric_key, values in metric_lists.items():
+                if values:
+                    dest.setdefault(metric_key, []).append(float(statistics.mean(values)))
+
+    means: dict[int, dict[str, float]] = {}
+    stats_summary: dict[int, dict[str, tuple[float, float]]] = {}
+    for group_count, metric_lists in grouped.items():
+        means[group_count] = {}
+        stats_summary[group_count] = {}
+        for metric_key, values in metric_lists.items():
+            stats = _mean_std(values)
+            if stats is None:
+                continue
+            means[group_count][metric_key] = float(stats[0])
+            stats_summary[group_count][metric_key] = stats
+    return means, stats_summary
+
+
+def summarize_condition_stats(
+    tile_records: list[dict[str, dict[str, float]]],
+    metric_keys: list[str],
+) -> dict[str, dict[str, tuple[float, float]]]:
+    summary: dict[str, dict[str, tuple[float, float]]] = {}
+    for cond in ordered_subset_condition_tuples():
+        cond_key = condition_metric_key(cond)
+        summary[cond_key] = {}
+        for metric_key in metric_keys:
+            values = [
+                float(tile_record[cond_key][metric_key])
+                for tile_record in tile_records
+                if cond_key in tile_record and metric_key in tile_record[cond_key]
+            ]
+            stats = _mean_std(values)
+            if stats is not None:
+                summary[cond_key][metric_key] = stats
+    return summary
 
 
 def summarize_added_group_effect_stats(
@@ -466,6 +703,31 @@ def add_missing_style_hed_means(
     return augmented, ordered
 
 
+def add_missing_fid_means(
+    condition_means: dict[str, dict[str, float]],
+    metrics_root: Path,
+    metric_keys: list[str],
+) -> tuple[dict[str, dict[str, float]], list[str]]:
+    if "fid" in metric_keys:
+        return condition_means, metric_keys
+
+    fid_scores = load_fid_scores(metrics_root)
+    if not fid_scores:
+        return condition_means, metric_keys
+
+    augmented = {
+        cond_key: dict(metrics)
+        for cond_key, metrics in condition_means.items()
+    }
+    for cond_key, value in fid_scores.items():
+        augmented.setdefault(cond_key, {})["fid"] = float(value)
+
+    present = set(metric_keys)
+    present.add("fid")
+    ordered = [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
+    return augmented, ordered
+
+
 def load_dataset_summary(
     *,
     slug: str,
@@ -473,20 +735,65 @@ def load_dataset_summary(
     metrics_root: Path,
     dataset_root: Path,
     reference_root: Path | None = None,
+    enable_style_hed_backfill: bool = True,
+    min_gt_cells: int = 0,
 ) -> DatasetSummary:
-    condition_means, tile_count, metric_keys = load_condition_means(metrics_root)
+    resolved_gt_root = resolve_gt_root(
+        dataset_root=dataset_root,
+        slug=slug,
+        reference_root=reference_root,
+    )
+    resolved_reference_root = (
+        resolve_reference_root(
+            dataset_root=dataset_root,
+            slug=slug,
+            reference_root=reference_root,
+        )
+        if enable_style_hed_backfill
+        else None
+    )
+    filtered_metrics_paths, filtered_count = filter_metrics_paths_by_gt_cells(
+        metrics_root,
+        gt_root=resolved_gt_root if min_gt_cells > 0 else None,
+        min_gt_cells=min_gt_cells,
+    )
+    if min_gt_cells > 0 and filtered_count:
+        print(
+            f"[{slug}] Filtered {filtered_count} tiles with < {min_gt_cells} GT cells "
+            f"({len(filtered_metrics_paths)} kept)",
+            file=sys.stderr,
+        )
+    if not filtered_metrics_paths:
+        raise ValueError(
+            f"no tiles remain under {metrics_root} after applying min_gt_cells={min_gt_cells}"
+        )
+
+    condition_means, tile_count, metric_keys = load_condition_means_from_paths(filtered_metrics_paths)
+    condition_means, metric_keys = add_missing_fid_means(
+        condition_means,
+        metrics_root,
+        metric_keys,
+    )
     condition_means, metric_keys = add_missing_style_hed_means(
         condition_means,
         metrics_root,
         metric_keys,
-        reference_root=resolve_reference_root(
-            dataset_root=dataset_root,
-            slug=slug,
-            reference_root=reference_root,
-        ),
+        reference_root=resolved_reference_root,
     )
-    by_cardinality = summarize_by_cardinality(condition_means, metric_keys)
-    by_cardinality_stats = summarize_by_cardinality_stats(condition_means, metric_keys)
+    tile_records, tile_metric_keys = load_tile_condition_metrics(
+        metrics_root,
+        metrics_paths=filtered_metrics_paths,
+        reference_root=resolved_reference_root,
+    )
+    if tile_metric_keys:
+        present_metrics = set(metric_keys) | set(tile_metric_keys)
+        metric_keys = [metric for metric in DEFAULT_METRIC_ORDER if metric in present_metrics]
+    condition_stats = summarize_condition_stats(tile_records, metric_keys)
+    by_cardinality, by_cardinality_stats = summarize_by_cardinality_tile_stats(tile_records, metric_keys)
+    if not by_cardinality:
+        by_cardinality = summarize_by_cardinality(condition_means, metric_keys)
+    if not by_cardinality_stats:
+        by_cardinality_stats = summarize_by_cardinality_stats(condition_means, metric_keys)
     best_worst = summarize_best_worst(condition_means, metric_keys)
     added_effects = summarize_added_group_effects(condition_means, metric_keys)
     presence_absence = summarize_presence_absence(condition_means, metric_keys)
@@ -519,6 +826,7 @@ def load_dataset_summary(
         dataset_root=dataset_root,
         tile_count=tile_count,
         metric_keys=metric_keys,
+        condition_stats=condition_stats,
         by_cardinality=by_cardinality,
         by_cardinality_stats=by_cardinality_stats,
         best_worst=best_worst,
@@ -574,73 +882,192 @@ def metric_union(summaries: list[DatasetSummary]) -> list[str]:
     return [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
 
 
+def condition_groups(value: object) -> set[str]:
+    groups: set[str] = set()
+    for token in str(value).split("+"):
+        normalized = normalize_group_name(token.strip())
+        if normalized:
+            groups.add(normalized)
+    return groups
+
+
+def condition_order_label() -> str:
+    return " / ".join(GROUP_SHORT_LABELS[group] for group in FOUR_GROUP_ORDER)
+
+
+def render_condition_glyph(condition: object) -> str:
+    active_groups = condition_groups(condition)
+    label = format_condition(condition)
+    dots = "".join(
+        (
+            f"<span class='condition-dot{' is-active' if group in active_groups else ''}' "
+            f"title='{html.escape(GROUP_SHORT_LABELS[group], quote=True)}'></span>"
+        )
+        for group in FOUR_GROUP_ORDER
+    )
+    return (
+        f"<span class='condition-glyph' aria-label='{html.escape(label, quote=True)}' "
+        f"title='{html.escape(label, quote=True)}'>{dots}</span>"
+    )
+
+
+def condition_indicator_text(condition: object) -> str:
+    active_groups = condition_groups(condition)
+    return " ".join("●" if group in active_groups else "○" for group in FOUR_GROUP_ORDER)
+
+
+def comparison_metric_keys(summary: DatasetSummary) -> list[str]:
+    if summary.slug != "unpaired":
+        return list(summary.metric_keys)
+    return [metric_key for metric_key in summary.metric_keys if metric_key not in {"cosine", "lpips"}]
+
+
+def metric_tradeoff_keys(summaries: list[DatasetSummary]) -> list[str]:
+    present = {metric for summary in summaries for metric in summary.metric_keys}
+    return [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
+
+
 def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
-    metrics = metric_union(summaries)
-    fig, axes = plt.subplots(2, 3, figsize=(13.6, 7.2))
-    axes = axes.ravel()
+    metrics = metric_tradeoff_keys(summaries)
+    fig = plt.figure(figsize=(15.6, 7.7))
+    outer = fig.add_gridspec(2, 3, wspace=0.22, hspace=0.28)
+    condition_tuples = ordered_subset_condition_tuples()
+    condition_keys = [condition_metric_key(cond) for cond in condition_tuples]
+    x_positions = list(range(len(condition_keys)))
+    spans: list[tuple[int, int, int]] = []
+    start = 0
+    for index in range(1, len(condition_tuples)):
+        if len(condition_tuples[index]) != len(condition_tuples[index - 1]):
+            spans.append((len(condition_tuples[index - 1]), start, index - 1))
+            start = index
+    spans.append((len(condition_tuples[-1]), start, len(condition_tuples) - 1))
     dataset_styles = {
-        "paired": {"linestyle": "-", "markerfacecolor": None},
-        "unpaired": {"linestyle": ":", "markerfacecolor": "white"},
+        "paired": {"linestyle": "-", "markerfacecolor": INK, "markeredgecolor": INK, "error_linestyle": "solid"},
+        "unpaired": {"linestyle": ":", "markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": (0, (4, 2))},
     }
 
-    for ax, metric_key in zip(axes, metrics, strict=False):
+    for index, metric_key in enumerate(metrics):
+        row, col = divmod(index, 3)
+        subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
+        ax = fig.add_subplot(subgrid[0, 0])
+        dot_ax = fig.add_subplot(subgrid[1, 0], sharex=ax)
         all_values: list[float] = []
         for summary in summaries:
-            x_values = sorted(summary.by_cardinality_stats)
             valid: list[tuple[int, float, float]] = []
-            for group_count in x_values:
-                stats = summary.by_cardinality_stats.get(group_count, {}).get(metric_key)
+            for x_value, cond_key in zip(x_positions, condition_keys, strict=True):
+                stats = summary.condition_stats.get(cond_key, {}).get(metric_key)
                 if stats is None:
                     continue
-                valid.append((group_count, float(stats[0]), float(stats[1])))
+                valid.append((x_value, float(stats[0]), float(stats[1])))
             if not valid:
                 continue
             xs, ys, stds = zip(*valid)
             for value, std_value in zip(ys, stds, strict=True):
                 all_values.extend([value - std_value, value + std_value])
             style = dataset_styles[summary.slug]
-            ax.errorbar(
+            container = ax.errorbar(
                 xs,
                 ys,
                 yerr=stds,
                 color=INK,
                 linestyle=style["linestyle"],
                 marker="o",
-                markerfacecolor=INK if style["markerfacecolor"] is None else style["markerfacecolor"],
-                markeredgecolor=INK,
+                markerfacecolor=style["markerfacecolor"],
+                markeredgecolor=style["markeredgecolor"],
                 markeredgewidth=1.1,
-                linewidth=2.0,
-                markersize=5.4,
-                capsize=3.0,
-                elinewidth=1.0,
+                linewidth=1.6,
+                markersize=4.8,
+                capsize=2.0,
+                elinewidth=0.9,
+                zorder=4,
             )
+            _, _, barlinecols = container.lines
+            error_linestyle = style["error_linestyle"]
+            for barlinecol in barlinecols:
+                barlinecol.set_linestyle(error_linestyle)
 
         if not all_values:
             ax.axis("off")
+            dot_ax.axis("off")
             continue
 
         lo, hi = _tight_range(all_values)
         spec = METRIC_SPEC_BY_KEY[metric_key]
         arrow = "↑" if spec.higher_is_better else "↓"
-        ax.set_title(f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}", color=INK, fontweight="bold")
-        ax.set_xlim(0.85, 4.15)
-        ax.set_xticks([1, 2, 3, 4])
-        ax.set_xticklabels(["1g", "2g", "3g", "4g"])
+        ax.set_title(
+            f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}",
+            color=INK,
+            fontweight="bold",
+            pad=16,
+        )
+        for _, start_idx, end_idx in spans[:-1]:
+            ax.axvline(end_idx + 0.5, color="#BEBEBE", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
+            dot_ax.axvline(end_idx + 0.5, color="#D0D0D0", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
+        for cardinality, start_idx, end_idx in spans:
+            center = (start_idx + end_idx) / 2
+            ax.text(
+                center,
+                1.01,
+                f"{cardinality}g",
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="bottom",
+                fontsize=7.2,
+                color="#666666",
+            )
+        ax.set_xlim(-0.55, len(condition_keys) - 0.45)
+        ax.set_xticks([])
         ax.set_ylim(lo, hi)
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.spines["bottom"].set_color(INK)
         ax.spines["left"].set_color(INK)
-        ax.tick_params(axis="x", colors=INK)
-        ax.tick_params(axis="y", colors=INK)
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", colors=INK, labelsize=8.6)
         ax.set_axisbelow(True)
+        dot_ax.set_facecolor("white")
+        for x_value, cond in zip(x_positions, condition_tuples, strict=True):
+            active_groups = set(cond)
+            for row_index, group in enumerate(FOUR_GROUP_ORDER):
+                y_value = 3 - row_index
+                is_active = group in active_groups
+                dot_ax.scatter(
+                    x_value,
+                    y_value,
+                    s=24 if is_active else 21,
+                    facecolors=INK if is_active else "white",
+                    edgecolors=INK if is_active else "#A0A0A0",
+                    linewidths=0.9 if is_active else 1.0,
+                    zorder=3,
+                )
+        dot_ax.set_xlim(-0.55, len(condition_keys) - 0.45)
+        dot_ax.set_ylim(-0.6, 3.6)
+        dot_ax.axis("off")
+        if col == 0:
+            ymin, ymax = dot_ax.get_ylim()
+            for row_index, group in enumerate(FOUR_GROUP_ORDER):
+                y_value = 3 - row_index
+                y_axes = (y_value - ymin) / (ymax - ymin)
+                dot_ax.text(
+                    -0.05,
+                    y_axes,
+                    GROUP_SHORT_LABELS[group],
+                    transform=dot_ax.transAxes,
+                    ha="right",
+                    va="center",
+                    fontsize=7.0,
+                    color=INK,
+                )
 
-    for ax in axes[len(metrics):]:
-        ax.axis("off")
+    for index in range(len(metrics), 6):
+        row, col = divmod(index, 3)
+        subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
+        fig.add_subplot(subgrid[0, 0]).axis("off")
+        fig.add_subplot(subgrid[1, 0]).axis("off")
 
     handles = [
-        Line2D([0], [0], color="#444444", linestyle="-", marker="o", markersize=5.4, linewidth=2.0, label="Paired"),
+        Line2D([0], [0], color="#444444", linestyle="-", marker="o", markerfacecolor=INK, markeredgecolor=INK, markersize=5.0, linewidth=1.6, label="Paired"),
         Line2D(
             [0],
             [0],
@@ -649,14 +1076,14 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             marker="o",
             markerfacecolor="white",
             markeredgecolor="#444444",
-            markersize=5.4,
-            linewidth=2.0,
+            markersize=5.0,
+            linewidth=1.6,
             label="Unpaired",
         ),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01))
-    fig.suptitle("Metric trends by active channel-group count", y=1.03, fontsize=15, fontweight="bold")
-    fig.tight_layout()
+    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.962), fontsize=9.6)
+    fig.suptitle("Metric tradeoffs across all 15 channel-group combinations", y=0.992, fontsize=14.0, fontweight="bold")
+    fig.subplots_adjust(left=0.055, right=0.99, bottom=0.075, top=0.885)
     return fig
 
 
@@ -756,13 +1183,14 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
 
 
 def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
-    fig, axes = plt.subplots(1, 2, figsize=(12.4, 4.4))
+    fig, axes = plt.subplots(1, 2, figsize=(10.4, 3.5), gridspec_kw={"wspace": 0.16})
     x = np.arange(len(FOUR_GROUP_ORDER))
-    width = 0.34
+    width = 0.28
     styles = {
-        "paired": {"offset": -width / 2, "facecolor": INK, "alpha": 0.92, "hatch": None},
+        "paired": {"offset": -width / 2, "facecolor": "white", "alpha": 1.0, "hatch": None},
         "unpaired": {"offset": width / 2, "facecolor": "white", "alpha": 1.0, "hatch": "//"},
     }
+    x_tick_labels = ["Cell\ntypes", "Cell\nstate", "Vasc.", "Env."]
     panel_keys = [
         ("mean_diff", r"Mean normalized $|\Delta \mathrm{pixel}|$"),
         ("pct_pixels_above_10", r"Pixels with normalized $|\Delta \mathrm{pixel}| > 10$ (%)"),
@@ -788,24 +1216,26 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                     capsize=3,
                     error_kw={"ecolor": INK, "elinewidth": 1.0, "capthick": 1.0},
                 )
-        ax.set_title(title, fontweight="bold")
+        ax.set_title(title, fontweight="bold", fontsize=11.0, pad=7)
         ax.set_xticks(x)
-        ax.set_xticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], rotation=15, ha="right")
+        ax.set_xticklabels(x_tick_labels)
         for tick in ax.get_xticklabels():
             tick.set_color(INK)
+            tick.set_fontsize(9.5)
         lo, hi = _tight_range(values_for_range)
         ax.set_ylim(max(0.0, lo), hi)
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="y", labelsize=9.5)
         ax.set_axisbelow(True)
     handles = [
-        Patch(facecolor=INK, edgecolor=INK, alpha=0.92, label="Paired"),
+        Patch(facecolor="white", edgecolor=INK, label="Paired"),
         Patch(facecolor="white", edgecolor=INK, hatch="//", label="Unpaired"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.05))
-    fig.suptitle("Representative leave-one-out channel impact", y=1.08, fontsize=15, fontweight="bold")
-    fig.tight_layout()
+    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01), fontsize=10.0)
+    fig.suptitle("Representative leave-one-out channel impact", y=1.03, fontsize=13.5, fontweight="bold")
+    fig.subplots_adjust(left=0.07, right=0.985, bottom=0.19, top=0.77, wspace=0.16)
     return fig
 
 
@@ -836,22 +1266,28 @@ def metric_plain_text(metric_key: str) -> str:
 
 def render_best_worst_table(summary: DatasetSummary) -> str:
     rows: list[str] = []
-    for metric_key in summary.metric_keys:
+    for metric_key in comparison_metric_keys(summary):
         record = summary.best_worst.get(metric_key)
         if not record:
             continue
         rows.append(
             "<tr>"
             f"<td>{metric_name_cell(metric_key)}</td>"
-            f"<td>{html.escape(format_condition(record['best_condition']))}</td>"
+            f"<td class='condition-cell'>{render_condition_glyph(record['best_condition'])}</td>"
             f"<td>{float(record['best_value']):.3f}</td>"
-            f"<td>{html.escape(format_condition(record['worst_condition']))}</td>"
+            f"<td class='condition-cell'>{render_condition_glyph(record['worst_condition'])}</td>"
             f"<td>{float(record['worst_value']):.3f}</td>"
             "</tr>"
         )
     return (
         "<table class='metric-table'>"
-        "<thead><tr><th>Metric</th><th>Best condition</th><th>Value</th><th>Worst condition</th><th>Value</th></tr></thead>"
+        "<thead><tr>"
+        "<th>Metric</th>"
+        f"<th>Best condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
+        "<th>Value</th>"
+        f"<th>Worst condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
+        "<th>Value</th>"
+        "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -860,16 +1296,16 @@ def render_comparison_table(summaries: list[DatasetSummary]) -> str:
     rows: list[str] = []
     for summary in summaries:
         records: list[str] = []
-        for metric_key in summary.metric_keys:
+        for metric_key in comparison_metric_keys(summary):
             record = summary.best_worst.get(metric_key)
             if not record:
                 continue
             records.append(
                 "<tr>"
                 f"<td class='metric-text'>{metric_plain_text(metric_key)}</td>"
-                f"<td>{html.escape(format_condition(record['best_condition']))}</td>"
+                f"<td class='condition-cell'>{render_condition_glyph(record['best_condition'])}</td>"
                 f"<td>{float(record['best_value']):.3f}</td>"
-                f"<td>{html.escape(format_condition(record['worst_condition']))}</td>"
+                f"<td class='condition-cell'>{render_condition_glyph(record['worst_condition'])}</td>"
                 f"<td>{float(record['worst_value']):.3f}</td>"
                 "</tr>"
             )
@@ -883,7 +1319,14 @@ def render_comparison_table(summaries: list[DatasetSummary]) -> str:
         rows.extend(records)
     return (
         "<table class='metric-table comparison-table'>"
-        "<thead><tr><th>Dataset</th><th>Metric</th><th>Best condition</th><th>Best</th><th>Worst condition</th><th>Worst</th></tr></thead>"
+        "<thead><tr>"
+        "<th>Dataset</th>"
+        "<th>Metric</th>"
+        f"<th>Best condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
+        "<th>Best</th>"
+        f"<th>Worst condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
+        "<th>Worst</th>"
+        "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -1194,7 +1637,36 @@ def render_report_html(
       padding-right: 14px;
     }}
     .comparison-table .metric-text {{
+      font-weight: 700;
+    }}
+    .comparison-table .condition-cell {{
+      white-space: nowrap;
+    }}
+    .condition-order {{
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 0.74rem;
       font-weight: 400;
+      line-height: 1.25;
+    }}
+    .condition-glyph {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }}
+    .condition-dot {{
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 1.6px solid #000;
+      background: #fff;
+      display: inline-block;
+      flex: 0 0 auto;
+    }}
+    .condition-dot.is-active {{
+      background: #000;
     }}
     .evidence-grid {{
       display: grid;
@@ -1260,12 +1732,12 @@ def render_report_html(
       </section>
       <section class="figure-card">
         <h2>Leave-One-Out Impact</h2>
-        <p>Grouped bars show mean ± SD across tiles, with paired versus unpaired separated by fill pattern.</p>
+        <p>Grouped bars show mean ± SD across tiles, with paired bars on white fill and unpaired bars hatched for contrast.</p>
         <img src="{loo_uri}" alt="Leave one out summary bars" />
       </section>
       <section class="figure-card">
         <h2>Paired vs Unpaired Best/Worst Conditions</h2>
-        <p>A compact paper-style table compares each metric’s best and worst ablation condition across paired and unpaired settings.</p>
+        <p>A compact paper-style table compares each metric’s best and worst ablation condition across paired and unpaired settings. Filled circles indicate included groups in {html.escape(condition_order_label())} order.</p>
         {comparison_table}
       </section>
       {dataset_sections}
@@ -1287,7 +1759,7 @@ def plain_takeaway_text(text: str) -> str:
 def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     rows: list[list[str]] = []
     for summary in summaries:
-        for metric_key in summary.metric_keys:
+        for metric_key in comparison_metric_keys(summary):
             record = summary.best_worst.get(metric_key)
             if not record:
                 continue
@@ -1295,9 +1767,9 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
                 [
                     summary.title,
                     humanize_token(metric_key),
-                    format_condition(record["best_condition"]),
+                    condition_indicator_text(record["best_condition"]),
                     f"{float(record['best_value']):.3f}",
-                    format_condition(record["worst_condition"]),
+                    condition_indicator_text(record["worst_condition"]),
                     f"{float(record['worst_value']):.3f}",
                 ]
             )
@@ -1307,12 +1779,19 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
     ax.axis("off")
     table = ax.table(
         cellText=rows,
-        colLabels=["Dataset", "Metric", "Best condition", "Best", "Worst condition", "Worst"],
+        colLabels=[
+            "Dataset",
+            "Metric",
+            f"Best ({condition_order_label()})",
+            "Best",
+            f"Worst ({condition_order_label()})",
+            "Worst",
+        ],
         cellLoc="left",
         colLoc="left",
         loc="center",
         bbox=[0.0, 0.02, 1.0, 0.92],
-        colWidths=[0.12, 0.12, 0.26, 0.08, 0.26, 0.08],
+        colWidths=[0.12, 0.12, 0.19, 0.08, 0.19, 0.08],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(10.0)
@@ -1326,7 +1805,7 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
         else:
             cell.set_facecolor("white")
             cell.set_text_props(color=INK, weight="normal")
-            if col == 0:
+            if col in {0, 1}:
                 cell.set_text_props(weight="bold", color=INK)
 
     ax.set_title("Paired vs Unpaired Best/Worst Conditions", fontsize=15, fontweight="bold", pad=12)
@@ -1454,6 +1933,12 @@ def parse_args() -> argparse.Namespace:
         help="HTML output path.",
     )
     parser.add_argument(
+        "--min-gt-cells",
+        type=int,
+        default=0,
+        help="Skip tiles with fewer than this many GT cell instances in each dataset (default: 0 = no filter).",
+    )
+    parser.add_argument(
         "--title",
         type=str,
         default="Channel Ablation Scientific Report",
@@ -1482,6 +1967,7 @@ def main() -> None:
             metrics_root=args.paired_metrics_root.resolve(),
             dataset_root=args.paired_dataset_root.resolve(),
             reference_root=args.paired_reference_root.resolve(),
+            min_gt_cells=args.min_gt_cells,
         ),
         load_dataset_summary(
             slug="unpaired",
@@ -1489,6 +1975,7 @@ def main() -> None:
             metrics_root=args.unpaired_metrics_root.resolve(),
             dataset_root=args.unpaired_dataset_root.resolve(),
             reference_root=args.unpaired_reference_root.resolve(),
+            min_gt_cells=args.min_gt_cells,
         ),
     ]
     report = render_report_html(
