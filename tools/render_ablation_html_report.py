@@ -9,6 +9,7 @@ import json
 import os
 import statistics
 import sys
+import textwrap
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -37,7 +38,6 @@ from tools.summarize_ablation_report import (
     effect_notes,
     fid_answer_notes,
     load_condition_means,
-    load_leave_one_out_summary,
     loo_notes,
     summarize_added_group_effects,
     summarize_best_worst,
@@ -102,12 +102,14 @@ class DatasetSummary:
     tile_count: int
     metric_keys: list[str]
     by_cardinality: dict[int, dict[str, float]]
+    by_cardinality_stats: dict[int, dict[str, tuple[float, float]]]
     best_worst: dict[str, dict[str, str | float]]
     added_effects: dict[str, dict[str, float]]
     presence_absence: dict[str, dict[str, float]]
     added_effect_stats: dict[str, dict[str, tuple[float, float]]]
     presence_absence_stats: dict[str, dict[str, tuple[float, float]]]
     loo_summary: dict[str, dict[str, float]]
+    loo_stats: dict[str, dict[str, tuple[float, float]]]
     representative_tile: str | None
     key_takeaways: list[str]
     ablation_grid_path: Path | None
@@ -152,6 +154,29 @@ def summarize_added_group_effect_stats(
     return summary
 
 
+def summarize_by_cardinality_stats(
+    condition_means: dict[str, dict[str, float]],
+    metric_keys: list[str],
+) -> dict[int, dict[str, tuple[float, float]]]:
+    grouped: dict[int, dict[str, list[float]]] = {}
+    for cond_key, metrics in condition_means.items():
+        bucket = grouped.setdefault(len(cond_key.split("+")), {})
+        for metric_key in metric_keys:
+            value = metrics.get(metric_key)
+            if value is None:
+                continue
+            bucket.setdefault(metric_key, []).append(float(value))
+
+    summary: dict[int, dict[str, tuple[float, float]]] = {}
+    for group_count, metric_lists in grouped.items():
+        summary[group_count] = {}
+        for metric_key, values in metric_lists.items():
+            stats = _mean_std(values)
+            if stats is not None:
+                summary[group_count][metric_key] = stats
+    return summary
+
+
 def summarize_presence_absence_stats(
     condition_means: dict[str, dict[str, float]],
     metric_keys: list[str],
@@ -183,6 +208,78 @@ def summarize_presence_absence_stats(
             if stats is not None:
                 summary[group][metric_key] = stats
     return summary
+
+
+def load_leave_one_out_summary_stats(
+    loo_root: Path,
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, tuple[float, float]]], str | None]:
+    stats_paths = sorted(Path(loo_root).glob("*/leave_one_out_diff_stats.json"))
+    if not stats_paths:
+        return {}, {}, None
+
+    grouped: dict[str, dict[str, list[float]]] = {
+        group: {"mean_diff": [], "max_diff": [], "pct_pixels_above_10": []}
+        for group in FOUR_GROUP_ORDER
+    }
+    tile_vectors: dict[str, dict[str, float]] = {}
+
+    for stats_path in stats_paths:
+        payload = json.loads(stats_path.read_text(encoding="utf-8"))
+        vector: dict[str, float] = {}
+        for group in FOUR_GROUP_ORDER:
+            record = payload.get(group)
+            if not isinstance(record, dict):
+                continue
+            for key in ("mean_diff", "max_diff", "pct_pixels_above_10"):
+                value = record.get(key)
+                if value is None:
+                    continue
+                grouped[group][key].append(float(value))
+                if key in {"mean_diff", "pct_pixels_above_10"}:
+                    vector[f"{group}:{key}"] = float(value)
+        if vector:
+            tile_vectors[stats_path.parent.name] = vector
+
+    means: dict[str, dict[str, float]] = {}
+    stats_summary: dict[str, dict[str, tuple[float, float]]] = {}
+    for group, stats in grouped.items():
+        means[group] = {}
+        stats_summary[group] = {}
+        for key, values in stats.items():
+            stats_pair = _mean_std(values)
+            if stats_pair is None:
+                continue
+            means[group][key] = stats_pair[0]
+            stats_summary[group][key] = stats_pair
+
+    representative_tile = None
+    if tile_vectors:
+        axes = sorted({axis for vector in tile_vectors.values() for axis in vector})
+        axis_means = {
+            axis: statistics.mean([vector[axis] for vector in tile_vectors.values() if axis in vector])
+            for axis in axes
+        }
+        axis_stds = {}
+        for axis in axes:
+            values = [vector[axis] for vector in tile_vectors.values() if axis in vector]
+            axis_std = statistics.pstdev(values) if len(values) > 1 else 1.0
+            axis_stds[axis] = axis_std if axis_std > 0 else 1.0
+
+        best_tile = None
+        best_distance = None
+        for tile_id, vector in tile_vectors.items():
+            distance = 0.0
+            for axis in axes:
+                if axis not in vector:
+                    continue
+                z_score = (vector[axis] - axis_means[axis]) / axis_stds[axis]
+                distance += z_score * z_score
+            if best_distance is None or distance < best_distance:
+                best_tile = tile_id
+                best_distance = distance
+        representative_tile = best_tile
+
+    return means, stats_summary, representative_tile
 
 
 def resolve_first_existing(candidates: list[Path]) -> Path | None:
@@ -389,12 +486,15 @@ def load_dataset_summary(
         ),
     )
     by_cardinality = summarize_by_cardinality(condition_means, metric_keys)
+    by_cardinality_stats = summarize_by_cardinality_stats(condition_means, metric_keys)
     best_worst = summarize_best_worst(condition_means, metric_keys)
     added_effects = summarize_added_group_effects(condition_means, metric_keys)
     presence_absence = summarize_presence_absence(condition_means, metric_keys)
     added_effect_stats = summarize_added_group_effect_stats(condition_means, metric_keys)
     presence_absence_stats = summarize_presence_absence_stats(condition_means, metric_keys)
-    loo_summary, representative_tile = load_leave_one_out_summary(resolve_loo_root(metrics_root, dataset_root))
+    loo_summary, loo_stats, representative_tile = load_leave_one_out_summary_stats(
+        resolve_loo_root(metrics_root, dataset_root)
+    )
     ablation_grid_path, loo_diff_path = resolve_representative_paths(metrics_root, dataset_root, representative_tile)
 
     notes: list[str] = []
@@ -420,12 +520,14 @@ def load_dataset_summary(
         tile_count=tile_count,
         metric_keys=metric_keys,
         by_cardinality=by_cardinality,
+        by_cardinality_stats=by_cardinality_stats,
         best_worst=best_worst,
         added_effects=added_effects,
         presence_absence=presence_absence,
         added_effect_stats=added_effect_stats,
         presence_absence_stats=presence_absence_stats,
         loo_summary=loo_summary,
+        loo_stats=loo_stats,
         representative_tile=representative_tile,
         key_takeaways=deduped_notes[:8],
         ablation_grid_path=ablation_grid_path,
@@ -453,6 +555,12 @@ def figure_to_data_uri(fig: plt.Figure, *, dpi: int = 180) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+def save_figure_png(fig: plt.Figure, output_path: Path, *, dpi: int = 220) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
 def image_file_to_data_uri(path: Path) -> str:
     mime = "image/png"
     if path.suffix.lower() in {".jpg", ".jpeg"}:
@@ -466,7 +574,7 @@ def metric_union(summaries: list[DatasetSummary]) -> list[str]:
     return [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
 
 
-def render_metric_trends_figure(summaries: list[DatasetSummary]) -> str:
+def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     metrics = metric_union(summaries)
     fig, axes = plt.subplots(2, 3, figsize=(13.6, 7.2))
     axes = axes.ravel()
@@ -477,27 +585,34 @@ def render_metric_trends_figure(summaries: list[DatasetSummary]) -> str:
 
     for ax, metric_key in zip(axes, metrics, strict=False):
         all_values: list[float] = []
-        color = METRIC_COLORS.get(metric_key, OKABE_GRAY)
         for summary in summaries:
-            x_values = sorted(summary.by_cardinality)
-            y_values = [summary.by_cardinality[group_count].get(metric_key) for group_count in x_values]
-            valid = [(x, float(y)) for x, y in zip(x_values, y_values, strict=True) if y is not None]
+            x_values = sorted(summary.by_cardinality_stats)
+            valid: list[tuple[int, float, float]] = []
+            for group_count in x_values:
+                stats = summary.by_cardinality_stats.get(group_count, {}).get(metric_key)
+                if stats is None:
+                    continue
+                valid.append((group_count, float(stats[0]), float(stats[1])))
             if not valid:
                 continue
-            xs, ys = zip(*valid)
-            all_values.extend(ys)
+            xs, ys, stds = zip(*valid)
+            for value, std_value in zip(ys, stds, strict=True):
+                all_values.extend([value - std_value, value + std_value])
             style = dataset_styles[summary.slug]
-            ax.plot(
+            ax.errorbar(
                 xs,
                 ys,
-                color=color,
+                yerr=stds,
+                color=INK,
                 linestyle=style["linestyle"],
                 marker="o",
-                markerfacecolor=color if style["markerfacecolor"] is None else style["markerfacecolor"],
-                markeredgecolor=color,
+                markerfacecolor=INK if style["markerfacecolor"] is None else style["markerfacecolor"],
+                markeredgecolor=INK,
                 markeredgewidth=1.1,
-                linewidth=2.1,
+                linewidth=2.0,
                 markersize=5.4,
+                capsize=3.0,
+                elinewidth=1.0,
             )
 
         if not all_values:
@@ -542,7 +657,7 @@ def render_metric_trends_figure(summaries: list[DatasetSummary]) -> str:
     fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01))
     fig.suptitle("Metric trends by active channel-group count", y=1.03, fontsize=15, fontweight="bold")
     fig.tight_layout()
-    return figure_to_data_uri(fig)
+    return fig
 
 
 def heatmap_metric_keys(summary: DatasetSummary) -> list[str]:
@@ -568,9 +683,9 @@ def _heatmap_matrix(
     return matrix, stds
 
 
-def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
-    fig = plt.figure(figsize=(14.8, 5.8 * len(summaries)))
-    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.055], wspace=0.34, hspace=0.52)
+def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    fig = plt.figure(figsize=(12.2, 3.9 * len(summaries)))
+    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.045], wspace=0.20, hspace=0.34)
     all_values: list[float] = []
     im = None
     for summary in summaries:
@@ -591,11 +706,11 @@ def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
             metric_keys = heatmap_metric_keys(summary)
             matrix, stds = _heatmap_matrix(summary, source, metric_keys)
             masked = np.ma.masked_invalid(matrix)
-            im = ax.imshow(masked, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="equal")
-            ax.set_title(f"{summary.title}: {panel_title}", fontsize=12.5, fontweight="bold", color=INK)
+            im = ax.imshow(masked, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+            ax.set_title(f"{summary.title}: {panel_title}", fontsize=11.0, fontweight="bold", color=INK)
             ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
             if col == 0:
-                ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=11.5, color=INK)
+                ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
             else:
                 ax.set_yticklabels([])
             ax.set_xticks(range(len(metric_keys)))
@@ -603,9 +718,8 @@ def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
                 [METRIC_LABELS.get(metric, metric) for metric in metric_keys],
                 rotation=0,
                 ha="center",
-                fontsize=11.5,
+                fontsize=10.0,
                 color=INK,
-                fontweight="bold",
             )
             for r in range(matrix.shape[0]):
                 for c in range(matrix.shape[1]):
@@ -619,17 +733,17 @@ def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
                         f"{value:+.3f}\n±{std_value:.3f}",
                         ha="center",
                         va="center",
-                        fontsize=10.0,
+                        fontsize=8.6,
                         fontweight="semibold",
                         color="white" if abs(value) > vmax * 0.45 else "#111111",
                     )
             ax.set_xticks(np.arange(-0.5, len(metric_keys), 1), minor=True)
             ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
-            ax.grid(which="minor", color=INK, linewidth=0.9)
+            ax.grid(which="minor", color=INK, linewidth=0.8)
             ax.tick_params(which="minor", bottom=False, left=False)
             for spine in ax.spines.values():
                 spine.set_visible(False)
-            ax.tick_params(axis="x", length=0, pad=10)
+            ax.tick_params(axis="x", length=0, pad=8)
             ax.tick_params(axis="y", length=0)
 
     cax = fig.add_subplot(grid[:, 2])
@@ -637,17 +751,17 @@ def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
     cbar.set_label("Oriented delta (positive = helps)", color=INK)
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     fig.suptitle("Channel effect matrices", y=0.98, fontsize=15, fontweight="bold")
-    fig.subplots_adjust(left=0.10, right=0.93, top=0.92, bottom=0.12)
-    return figure_to_data_uri(fig)
+    fig.subplots_adjust(left=0.08, right=0.94, top=0.89, bottom=0.11)
+    return fig
 
 
-def render_leave_one_out_figure(summaries: list[DatasetSummary]) -> str:
+def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     fig, axes = plt.subplots(1, 2, figsize=(12.4, 4.4))
     x = np.arange(len(FOUR_GROUP_ORDER))
     width = 0.34
     styles = {
-        "paired": {"offset": -width / 2, "alpha": 0.92, "hatch": None, "edgecolor": "#3B3B3B"},
-        "unpaired": {"offset": width / 2, "alpha": 0.55, "hatch": "//", "edgecolor": "#3B3B3B"},
+        "paired": {"offset": -width / 2, "facecolor": INK, "alpha": 0.92, "hatch": None},
+        "unpaired": {"offset": width / 2, "facecolor": "white", "alpha": 1.0, "hatch": "//"},
     }
     panel_keys = [
         ("mean_diff", r"Mean normalized $|\Delta \mathrm{pixel}|$"),
@@ -659,23 +773,26 @@ def render_leave_one_out_figure(summaries: list[DatasetSummary]) -> str:
             for summary in summaries:
                 style = styles[summary.slug]
                 value = float(summary.loo_summary.get(group, {}).get(metric_key, 0.0))
-                values_for_range.append(value)
+                std_value = float(summary.loo_stats.get(group, {}).get(metric_key, (value, 0.0))[1])
+                values_for_range.extend([value - std_value, value + std_value])
                 ax.bar(
                     group_index + style["offset"],
                     value,
                     width=width,
-                    color=GROUP_COLORS[group],
+                    color=style["facecolor"],
                     alpha=style["alpha"],
-                    edgecolor=style["edgecolor"],
+                    edgecolor=INK,
                     hatch=style["hatch"],
                     linewidth=1.0,
+                    yerr=std_value,
+                    capsize=3,
+                    error_kw={"ecolor": INK, "elinewidth": 1.0, "capthick": 1.0},
                 )
         ax.set_title(title, fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], rotation=15, ha="right")
-        for tick, group in zip(ax.get_xticklabels(), FOUR_GROUP_ORDER, strict=True):
-            tick.set_color(GROUP_COLORS[group])
-            tick.set_fontweight("bold")
+        for tick in ax.get_xticklabels():
+            tick.set_color(INK)
         lo, hi = _tight_range(values_for_range)
         ax.set_ylim(max(0.0, lo), hi)
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
@@ -683,30 +800,38 @@ def render_leave_one_out_figure(summaries: list[DatasetSummary]) -> str:
         ax.spines["right"].set_visible(False)
         ax.set_axisbelow(True)
     handles = [
-        Patch(facecolor="#8E8E8E", edgecolor="#3B3B3B", alpha=0.92, label="Paired"),
-        Patch(facecolor="#8E8E8E", edgecolor="#3B3B3B", alpha=0.55, hatch="//", label="Unpaired"),
+        Patch(facecolor=INK, edgecolor=INK, alpha=0.92, label="Paired"),
+        Patch(facecolor="white", edgecolor=INK, hatch="//", label="Unpaired"),
     ]
     fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.05))
     fig.suptitle("Representative leave-one-out channel impact", y=1.08, fontsize=15, fontweight="bold")
     fig.tight_layout()
-    return figure_to_data_uri(fig)
+    return fig
+
+
+def humanize_token(value: object) -> str:
+    raw = str(value).strip()
+    if not raw:
+        return raw
+    if raw in METRIC_LABELS:
+        return METRIC_LABELS[raw]
+    if raw in GROUP_LABELS:
+        return GROUP_LABELS[raw]
+    if "+" in raw:
+        return " + ".join(humanize_token(part) for part in raw.split("+"))
+    return raw.replace("_", " ")
 
 
 def format_condition(value: object) -> str:
-    return str(value).replace("+", " + ")
+    return humanize_token(value)
 
 
 def metric_name_cell(metric_key: str) -> str:
-    color = METRIC_COLORS.get(metric_key, OKABE_GRAY)
-    return (
-        f"<span class='metric-name' style='--metric-color:{color}'>"
-        f"{html.escape(METRIC_LABELS.get(metric_key, metric_key))}"
-        "</span>"
-    )
+    return f"<span class='metric-name'>{html.escape(humanize_token(metric_key))}</span>"
 
 
 def metric_plain_text(metric_key: str) -> str:
-    return html.escape(METRIC_LABELS.get(metric_key, metric_key))
+    return html.escape(humanize_token(metric_key))
 
 
 def render_best_worst_table(summary: DatasetSummary) -> str:
@@ -764,7 +889,7 @@ def render_comparison_table(summaries: list[DatasetSummary]) -> str:
 
 
 def render_notes_list(notes: list[str]) -> str:
-    items = "".join(f"<li>{html.escape(note.lstrip('- ').strip())}</li>" for note in notes)
+    items = "".join(f"<li>{render_takeaway_text(note.lstrip('- ').strip())}</li>" for note in notes)
     return f"<ul class='takeaways'>{items}</ul>"
 
 
@@ -802,12 +927,18 @@ def render_evidence_block(
 def metric_direction_badge(metric_key: str) -> str:
     spec = METRIC_SPEC_BY_KEY[metric_key]
     arrow = "↑" if spec.higher_is_better else "↓"
-    color = METRIC_COLORS.get(metric_key, OKABE_GRAY)
-    return (
-        f"<span class='metric-chip' style='--metric-color:{color}'>"
-        f"{html.escape(METRIC_LABELS.get(metric_key, metric_key))} {arrow}"
-        "</span>"
-    )
+    return f"<span class='metric-chip'>{html.escape(humanize_token(metric_key))} {arrow}</span>"
+
+
+def render_takeaway_text(text: str) -> str:
+    parts = text.split("`")
+    rendered: list[str] = []
+    for index, part in enumerate(parts):
+        if index % 2 == 1:
+            rendered.append(f"<strong>{html.escape(humanize_token(part))}</strong>")
+        else:
+            rendered.append(html.escape(part))
+    return "".join(rendered)
 
 
 def render_dataset_section(
@@ -842,9 +973,9 @@ def render_report_html(
     *,
     self_contained: bool = False,
 ) -> str:
-    trend_uri = render_metric_trends_figure(summaries)
-    heatmap_uri = render_channel_effect_heatmaps(summaries)
-    loo_uri = render_leave_one_out_figure(summaries)
+    trend_uri = figure_to_data_uri(build_metric_trends_figure(summaries))
+    heatmap_uri = figure_to_data_uri(build_channel_effect_heatmaps_figure(summaries))
+    loo_uri = figure_to_data_uri(build_leave_one_out_figure(summaries))
     comparison_table = render_comparison_table(summaries)
 
     best_structure = []
@@ -986,11 +1117,11 @@ def render_report_html(
       display: inline-block;
       padding: 0;
       background: transparent;
-      color: var(--metric-color);
+      color: var(--ink);
       border: none;
       box-shadow: none;
       font-size: 0.9rem;
-      font-weight: 700;
+      font-weight: 600;
       letter-spacing: 0.01em;
     }}
     .card {{
@@ -1003,6 +1134,9 @@ def render_report_html(
     }}
     .takeaways li {{
       margin-bottom: 8px;
+    }}
+    .takeaways strong {{
+      font-weight: 700;
     }}
     .metric-table {{
       width: 100%;
@@ -1027,9 +1161,8 @@ def render_report_html(
       border-radius: 999px;
       background: #f5f5f2;
       border: 1px solid #e2e1db;
-      box-shadow: inset 3px 0 0 var(--metric-color);
-      color: var(--metric-color);
-      font-weight: 600;
+      color: var(--ink);
+      font-weight: 500;
     }}
     .comparison-table td:first-child {{
       font-weight: 600;
@@ -1118,7 +1251,6 @@ def render_report_html(
     <div class="report-grid">
       <section class="figure-card">
         <h2>Metric Tradeoffs</h2>
-        <p>Metric identity is encoded by color across the report; paired and unpaired are separated by solid versus dotted styling.</p>
         <img src="{trend_uri}" alt="Metric trends by active group count" />
       </section>
       <section class="figure-card">
@@ -1128,7 +1260,7 @@ def render_report_html(
       </section>
       <section class="figure-card">
         <h2>Leave-One-Out Impact</h2>
-        <p>Grouped bars summarize representative leave-one-out changes, with channel identity carried by color and paired versus unpaired by fill pattern.</p>
+        <p>Grouped bars show mean ± SD across tiles, with paired versus unpaired separated by fill pattern.</p>
         <img src="{loo_uri}" alt="Leave one out summary bars" />
       </section>
       <section class="figure-card">
@@ -1142,6 +1274,139 @@ def render_report_html(
 </body>
 </html>
 """
+
+
+def plain_takeaway_text(text: str) -> str:
+    parts = text.split("`")
+    plain: list[str] = []
+    for index, part in enumerate(parts):
+        plain.append(humanize_token(part) if index % 2 == 1 else part)
+    return "".join(plain)
+
+
+def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    rows: list[list[str]] = []
+    for summary in summaries:
+        for metric_key in summary.metric_keys:
+            record = summary.best_worst.get(metric_key)
+            if not record:
+                continue
+            rows.append(
+                [
+                    summary.title,
+                    humanize_token(metric_key),
+                    format_condition(record["best_condition"]),
+                    f"{float(record['best_value']):.3f}",
+                    format_condition(record["worst_condition"]),
+                    f"{float(record['worst_value']):.3f}",
+                ]
+            )
+
+    fig_height = max(3.8, 1.7 + 0.42 * max(len(rows), 1))
+    fig, ax = plt.subplots(figsize=(15.5, fig_height))
+    ax.axis("off")
+    table = ax.table(
+        cellText=rows,
+        colLabels=["Dataset", "Metric", "Best condition", "Best", "Worst condition", "Worst"],
+        cellLoc="left",
+        colLoc="left",
+        loc="center",
+        bbox=[0.0, 0.02, 1.0, 0.92],
+        colWidths=[0.12, 0.12, 0.26, 0.08, 0.26, 0.08],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10.0)
+    table.scale(1.0, 1.35)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#C9C3B9")
+        cell.set_linewidth(0.8)
+        if row == 0:
+            cell.set_facecolor("#F3F3EF")
+            cell.set_text_props(weight="bold", color=INK)
+        else:
+            cell.set_facecolor("white")
+            cell.set_text_props(color=INK, weight="normal")
+            if col == 0:
+                cell.set_text_props(weight="bold", color=INK)
+
+    ax.set_title("Paired vs Unpaired Best/Worst Conditions", fontsize=15, fontweight="bold", pad=12)
+    return fig
+
+
+def draw_evidence_panel(ax: plt.Axes, label: str, path: Path | None) -> None:
+    ax.set_title(label, fontsize=11.5, fontweight="bold", pad=10, color=INK)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_color("#D9D5CA")
+        spine.set_linewidth(1.0)
+    if path is None or not path.is_file():
+        ax.set_facecolor("#F6F4EF")
+        ax.text(0.5, 0.5, "Figure not found", ha="center", va="center", color=OKABE_GRAY, fontsize=11.0)
+        return
+    ax.imshow(np.asarray(load_rgb_pil_local(path)))
+
+
+def build_dataset_summary_figure(summary: DatasetSummary) -> plt.Figure:
+    fig = plt.figure(figsize=(15.0, 7.2))
+    grid = fig.add_gridspec(1, 3, width_ratios=[0.96, 1.0, 1.0], wspace=0.08)
+    text_ax = fig.add_subplot(grid[0, 0])
+    text_ax.axis("off")
+
+    representative = summary.representative_tile or "not found"
+    metrics_text = ", ".join(
+        f"{humanize_token(metric_key)} {'↑' if METRIC_SPEC_BY_KEY[metric_key].higher_is_better else '↓'}"
+        for metric_key in summary.metric_keys
+    )
+    metrics_text = textwrap.fill(metrics_text, width=34)
+    takeaway_blocks = [
+        textwrap.fill(
+            plain_takeaway_text(note.lstrip("- ").strip()),
+            width=40,
+            initial_indent="- ",
+            subsequent_indent="  ",
+        )
+        for note in summary.key_takeaways[:6]
+    ]
+    takeaways_text = "\n\n".join(takeaway_blocks) if takeaway_blocks else "Representative findings unavailable."
+
+    text_ax.text(0.0, 0.99, summary.title, fontsize=19, fontweight="bold", color=INK, va="top")
+    text_ax.text(
+        0.0,
+        0.91,
+        f"{summary.tile_count} tiles\nRepresentative tile: {representative}",
+        fontsize=11.0,
+        color=OKABE_GRAY,
+        va="top",
+        linespacing=1.5,
+    )
+    text_ax.text(0.0, 0.77, "Metrics", fontsize=12.5, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.72, metrics_text, fontsize=10.8, color=INK, va="top", linespacing=1.4)
+    text_ax.text(0.0, 0.58, "Key takeaways", fontsize=12.5, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.53, takeaways_text, fontsize=10.7, color=INK, va="top", linespacing=1.45)
+
+    draw_evidence_panel(fig.add_subplot(grid[0, 1]), "Representative ablation grid", summary.ablation_grid_path)
+    draw_evidence_panel(fig.add_subplot(grid[0, 2]), "Representative leave-one-out diff", summary.loo_diff_path)
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.96, bottom=0.06)
+    return fig
+
+
+def export_report_png_pages(summaries: list[DatasetSummary], png_dir: Path) -> list[Path]:
+    page_builders: list[tuple[str, plt.Figure]] = [
+        ("01_metric_tradeoffs.png", build_metric_trends_figure(summaries)),
+        ("02_channel_effect_sizes.png", build_channel_effect_heatmaps_figure(summaries)),
+        ("03_leave_one_out_impact.png", build_leave_one_out_figure(summaries)),
+        ("04_paired_vs_unpaired.png", build_comparison_table_figure(summaries)),
+    ]
+    for index, summary in enumerate(summaries, start=5):
+        page_builders.append((f"{index:02d}_{summary.slug}_summary.png", build_dataset_summary_figure(summary)))
+
+    output_paths: list[Path] = []
+    for filename, fig in page_builders:
+        output_path = png_dir / filename
+        save_figure_png(fig, output_path)
+        output_paths.append(output_path)
+    return output_paths
 
 
 def parse_args() -> argparse.Namespace:
@@ -1199,6 +1464,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Embed representative evidence images so the HTML can be opened as a standalone file.",
     )
+    parser.add_argument(
+        "--png-dir",
+        type=Path,
+        default=ROOT / "figures" / "pngs",
+        help="Directory where standalone PNG pages will be written.",
+    )
     return parser.parse_args()
 
 
@@ -1228,7 +1499,9 @@ def main() -> None:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report, encoding="utf-8")
+    png_paths = export_report_png_pages(summaries, args.png_dir.resolve())
     print(f"Rendered ablation HTML report -> {args.output}")
+    print(f"Saved {len(png_paths)} PNG pages -> {args.png_dir}")
 
 
 if __name__ == "__main__":

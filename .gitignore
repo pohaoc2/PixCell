@@ -21,9 +21,10 @@
 pretrained_models/
 checkpoints/
 __pycache__/
+*.html
+
 # Editors
 .vscode/
-
 .idea/
 
 # Spyder project settings
