@@ -5,6 +5,7 @@ import argparse
 import base64
 import html
 import io
+import json
 import os
 import statistics
 import sys
@@ -22,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from PIL import Image
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -44,13 +46,23 @@ from tools.summarize_ablation_report import (
 )
 
 OKABE_BLUE = "#4C78A8"
-OKABE_ORANGE = "#C97B45"
+OKABE_ORANGE = "#E28E2B"
 OKABE_GREEN = "#5C8F5B"
 OKABE_PURPLE = "#8D6A9F"
-OKABE_RED = "#B65F5A"
+OKABE_RED = "#B22222"
 OKABE_TEAL = "#5B8F96"
 OKABE_GRAY = "#565656"
+INK = "#000000"
 SOFT_GRID = "#D7D6D2"
+_RGB_FROM_HED = np.array(
+    [
+        [0.65, 0.70, 0.29],
+        [0.07, 0.99, 0.11],
+        [0.27, 0.57, 0.78],
+    ],
+    dtype=np.float64,
+)
+_HED_FROM_RGB = np.linalg.inv(_RGB_FROM_HED)
 METRIC_COLORS = {
     "cosine": OKABE_BLUE,
     "lpips": OKABE_ORANGE,
@@ -209,14 +221,173 @@ def resolve_representative_paths(
     return ablation_grid, loo_diff
 
 
+def load_manifest_local(cache_dir: Path) -> dict:
+    manifest_path = cache_dir / "manifest.json"
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def tile_id_from_manifest_local(cache_dir: Path) -> str:
+    manifest = load_manifest_local(cache_dir)
+    tile_id = str(manifest.get("tile_id", "")).strip()
+    if not tile_id:
+        raise ValueError(f"manifest.json must contain tile_id: {cache_dir / 'manifest.json'}")
+    return tile_id
+
+
+def iter_condition_images_local(cache_dir: Path) -> dict[str, Path]:
+    manifest = load_manifest_local(cache_dir)
+    per_condition: dict[str, Path] = {}
+    for section in manifest.get("sections", []):
+        for entry in section.get("entries", []):
+            key = condition_metric_key(tuple(entry["active_groups"]))
+            per_condition[key] = cache_dir / entry["image_path"]
+    all4_path = cache_dir / "all" / "generated_he.png"
+    if all4_path.is_file():
+        per_condition[condition_metric_key(FOUR_GROUP_ORDER)] = all4_path
+    return per_condition
+
+
+def load_rgb_pil_local(path: Path, *, size: tuple[int, int] | None = None) -> Image.Image:
+    image = Image.open(path).convert("RGB")
+    if size is not None and image.size != size:
+        image = image.resize(size, Image.BILINEAR)
+    return image
+
+
+def rgb_to_hed_local(image: Image.Image) -> np.ndarray:
+    arr = np.asarray(image, dtype=np.float64) / 255.0
+    arr = np.clip(arr, 1e-6, 1.0)
+    optical_density = -np.log(arr)
+    return optical_density @ _HED_FROM_RGB.T
+
+
+def tissue_mask_from_rgb_local(image: Image.Image) -> np.ndarray:
+    arr = np.asarray(image, dtype=np.float32) / 255.0
+    return np.mean(arr, axis=2) < 0.95
+
+
+def masked_mean_std_local(values: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
+    data = values[np.asarray(mask, dtype=bool)]
+    if data.size == 0:
+        data = values.reshape(-1)
+    return float(np.mean(data)), float(np.std(data))
+
+
+def compute_style_hed_scores_local(cache_dir: Path, reference_root: Path) -> dict[str, float]:
+    tile_id = tile_id_from_manifest_local(cache_dir)
+    ref_path = resolve_first_existing(
+        [reference_root / "he" / f"{tile_id}{ext}" for ext in (".png", ".jpg", ".jpeg", ".tif")]
+    )
+    if ref_path is None:
+        raise FileNotFoundError(f"reference H&E not found for tile {tile_id!r}")
+
+    ref_img = load_rgb_pil_local(ref_path)
+    ref_hed = rgb_to_hed_local(ref_img)
+    ref_mask = tissue_mask_from_rgb_local(ref_img)
+    scores: dict[str, float] = {}
+
+    for cond_key, img_path in iter_condition_images_local(cache_dir).items():
+        if not img_path.is_file():
+            raise FileNotFoundError(f"generated image not found: {img_path}")
+        gen_img = load_rgb_pil_local(img_path, size=ref_img.size)
+        gen_hed = rgb_to_hed_local(gen_img)
+        gen_mask = tissue_mask_from_rgb_local(gen_img)
+        tissue_mask = ref_mask | gen_mask
+
+        score = 0.0
+        for stain_channel in (0, 1):
+            ref_mean, ref_std = masked_mean_std_local(ref_hed[..., stain_channel], tissue_mask)
+            gen_mean, gen_std = masked_mean_std_local(gen_hed[..., stain_channel], tissue_mask)
+            score += abs(gen_mean - ref_mean) + abs(gen_std - ref_std)
+        scores[cond_key] = float(score)
+    return scores
+
+
+def resolve_reference_root(
+    *,
+    dataset_root: Path,
+    slug: str,
+    reference_root: Path | None = None,
+) -> Path | None:
+    candidates: list[Path] = []
+    if reference_root is not None:
+        candidates.append(reference_root)
+    if slug == "unpaired":
+        candidates.extend(
+            [
+                dataset_root / "data" / "orion-crc33-unpaired",
+                ROOT / "inference_output" / "unpaired_ablation" / "data" / "orion-crc33-unpaired",
+            ]
+        )
+    candidates.extend(
+        [
+            dataset_root / "data" / "orion-crc33",
+            ROOT / "data" / "orion-crc33",
+        ]
+    )
+    for candidate in candidates:
+        if (candidate / "he").is_dir():
+            return candidate
+    return None
+
+
+def add_missing_style_hed_means(
+    condition_means: dict[str, dict[str, float]],
+    metrics_root: Path,
+    metric_keys: list[str],
+    *,
+    reference_root: Path | None,
+) -> tuple[dict[str, dict[str, float]], list[str]]:
+    if "style_hed" in metric_keys or reference_root is None:
+        return condition_means, metric_keys
+
+    grouped: dict[str, list[float]] = {}
+    for metrics_path in sorted(metrics_root.glob("*/metrics.json")):
+        cache_dir = metrics_path.parent
+        try:
+            scores = compute_style_hed_scores_local(cache_dir, reference_root)
+        except (FileNotFoundError, ValueError):
+            continue
+        for cond_key, value in scores.items():
+            grouped.setdefault(cond_key, []).append(float(value))
+
+    if not grouped:
+        return condition_means, metric_keys
+
+    augmented = {
+        cond_key: dict(metrics)
+        for cond_key, metrics in condition_means.items()
+    }
+    for cond_key, values in grouped.items():
+        if not values:
+            continue
+        augmented.setdefault(cond_key, {})["style_hed"] = float(statistics.mean(values))
+
+    present = set(metric_keys)
+    present.add("style_hed")
+    ordered = [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
+    return augmented, ordered
+
+
 def load_dataset_summary(
     *,
     slug: str,
     title: str,
     metrics_root: Path,
     dataset_root: Path,
+    reference_root: Path | None = None,
 ) -> DatasetSummary:
     condition_means, tile_count, metric_keys = load_condition_means(metrics_root)
+    condition_means, metric_keys = add_missing_style_hed_means(
+        condition_means,
+        metrics_root,
+        metric_keys,
+        reference_root=resolve_reference_root(
+            dataset_root=dataset_root,
+            slug=slug,
+            reference_root=reference_root,
+        ),
+    )
     by_cardinality = summarize_by_cardinality(condition_means, metric_keys)
     best_worst = summarize_best_worst(condition_means, metric_keys)
     added_effects = summarize_added_group_effects(condition_means, metric_keys)
@@ -282,7 +453,7 @@ def figure_to_data_uri(fig: plt.Figure, *, dpi: int = 180) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def file_to_data_uri(path: Path) -> str:
+def image_file_to_data_uri(path: Path) -> str:
     mime = "image/png"
     if path.suffix.lower() in {".jpg", ".jpeg"}:
         mime = "image/jpeg"
@@ -336,7 +507,7 @@ def render_metric_trends_figure(summaries: list[DatasetSummary]) -> str:
         lo, hi = _tight_range(all_values)
         spec = METRIC_SPEC_BY_KEY[metric_key]
         arrow = "↑" if spec.higher_is_better else "↓"
-        ax.set_title(f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}", color=color, fontweight="bold")
+        ax.set_title(f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}", color=INK, fontweight="bold")
         ax.set_xlim(0.85, 4.15)
         ax.set_xticks([1, 2, 3, 4])
         ax.set_xticklabels(["1g", "2g", "3g", "4g"])
@@ -344,10 +515,10 @@ def render_metric_trends_figure(summaries: list[DatasetSummary]) -> str:
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.spines["bottom"].set_color(color)
-        ax.spines["left"].set_color("#A4A29C")
-        ax.tick_params(axis="x", colors="#3F3A34")
-        ax.tick_params(axis="y", colors="#3F3A34")
+        ax.spines["bottom"].set_color(INK)
+        ax.spines["left"].set_color(INK)
+        ax.tick_params(axis="x", colors=INK)
+        ax.tick_params(axis="y", colors=INK)
         ax.set_axisbelow(True)
 
     for ax in axes[len(metrics):]:
@@ -374,14 +545,22 @@ def render_metric_trends_figure(summaries: list[DatasetSummary]) -> str:
     return figure_to_data_uri(fig)
 
 
+def heatmap_metric_keys(summary: DatasetSummary) -> list[str]:
+    if summary.slug != "unpaired":
+        return list(summary.metric_keys)
+    filtered = [metric for metric in summary.metric_keys if metric not in {"cosine", "lpips"}]
+    return filtered or list(summary.metric_keys)
+
+
 def _heatmap_matrix(
     summary: DatasetSummary,
     source: dict[str, dict[str, tuple[float, float]]],
+    metric_keys: list[str],
 ) -> tuple[np.ndarray, np.ndarray]:
-    matrix = np.full((len(FOUR_GROUP_ORDER), len(summary.metric_keys)), np.nan, dtype=float)
-    stds = np.full((len(FOUR_GROUP_ORDER), len(summary.metric_keys)), np.nan, dtype=float)
+    matrix = np.full((len(FOUR_GROUP_ORDER), len(metric_keys)), np.nan, dtype=float)
+    stds = np.full((len(FOUR_GROUP_ORDER), len(metric_keys)), np.nan, dtype=float)
     for row, group in enumerate(FOUR_GROUP_ORDER):
-        for col, metric_key in enumerate(summary.metric_keys):
+        for col, metric_key in enumerate(metric_keys):
             value = source.get(group, {}).get(metric_key)
             if value is not None:
                 matrix[row, col] = float(value[0])
@@ -390,13 +569,14 @@ def _heatmap_matrix(
 
 
 def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
-    fig = plt.figure(figsize=(13.4, 5.3 * len(summaries)))
-    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.06], wspace=0.20, hspace=0.46)
+    fig = plt.figure(figsize=(14.8, 5.8 * len(summaries)))
+    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.055], wspace=0.34, hspace=0.52)
     all_values: list[float] = []
     im = None
     for summary in summaries:
+        metric_keys = heatmap_metric_keys(summary)
         for source in (summary.added_effect_stats, summary.presence_absence_stats):
-            matrix, _ = _heatmap_matrix(summary, source)
+            matrix, _ = _heatmap_matrix(summary, source, metric_keys)
             all_values.extend([float(value) for value in matrix[np.isfinite(matrix)]])
     vmax = max((abs(value) for value in all_values), default=1.0)
     vmax = max(vmax, 1e-6)
@@ -408,17 +588,25 @@ def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
         ]
         for col, (panel_title, source) in enumerate(panels):
             ax = fig.add_subplot(grid[row, col])
-            matrix, stds = _heatmap_matrix(summary, source)
+            metric_keys = heatmap_metric_keys(summary)
+            matrix, stds = _heatmap_matrix(summary, source, metric_keys)
             masked = np.ma.masked_invalid(matrix)
             im = ax.imshow(masked, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="equal")
-            ax.set_title(f"{summary.title}: {panel_title}", fontweight="bold")
+            ax.set_title(f"{summary.title}: {panel_title}", fontsize=12.5, fontweight="bold", color=INK)
             ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
-            ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER])
-            ax.set_xticks(range(len(summary.metric_keys)))
-            ax.set_xticklabels([METRIC_LABELS.get(metric, metric) for metric in summary.metric_keys], rotation=20, ha="right")
-            for tick, metric_key in zip(ax.get_xticklabels(), summary.metric_keys, strict=True):
-                tick.set_color(METRIC_COLORS.get(metric_key, OKABE_GRAY))
-                tick.set_fontweight("bold")
+            if col == 0:
+                ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=11.5, color=INK)
+            else:
+                ax.set_yticklabels([])
+            ax.set_xticks(range(len(metric_keys)))
+            ax.set_xticklabels(
+                [METRIC_LABELS.get(metric, metric) for metric in metric_keys],
+                rotation=0,
+                ha="center",
+                fontsize=11.5,
+                color=INK,
+                fontweight="bold",
+            )
             for r in range(matrix.shape[0]):
                 for c in range(matrix.shape[1]):
                     value = matrix[r, c]
@@ -431,15 +619,23 @@ def render_channel_effect_heatmaps(summaries: list[DatasetSummary]) -> str:
                         f"{value:+.3f}\n±{std_value:.3f}",
                         ha="center",
                         va="center",
-                        fontsize=7.2,
+                        fontsize=10.0,
+                        fontweight="semibold",
                         color="white" if abs(value) > vmax * 0.45 else "#111111",
                     )
+            ax.set_xticks(np.arange(-0.5, len(metric_keys), 1), minor=True)
+            ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
+            ax.grid(which="minor", color=INK, linewidth=0.9)
+            ax.tick_params(which="minor", bottom=False, left=False)
             for spine in ax.spines.values():
                 spine.set_visible(False)
+            ax.tick_params(axis="x", length=0, pad=10)
+            ax.tick_params(axis="y", length=0)
 
     cax = fig.add_subplot(grid[:, 2])
     cbar = fig.colorbar(im, cax=cax)
-    cbar.set_label("Oriented delta (positive = helps)")
+    cbar.set_label("Oriented delta (positive = helps)", color=INK)
+    cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     fig.suptitle("Channel effect matrices", y=0.98, fontsize=15, fontweight="bold")
     fig.subplots_adjust(left=0.10, right=0.93, top=0.92, bottom=0.12)
     return figure_to_data_uri(fig)
@@ -509,6 +705,10 @@ def metric_name_cell(metric_key: str) -> str:
     )
 
 
+def metric_plain_text(metric_key: str) -> str:
+    return html.escape(METRIC_LABELS.get(metric_key, metric_key))
+
+
 def render_best_worst_table(summary: DatasetSummary) -> str:
     rows: list[str] = []
     for metric_key in summary.metric_keys:
@@ -534,20 +734,28 @@ def render_best_worst_table(summary: DatasetSummary) -> str:
 def render_comparison_table(summaries: list[DatasetSummary]) -> str:
     rows: list[str] = []
     for summary in summaries:
+        records: list[str] = []
         for metric_key in summary.metric_keys:
             record = summary.best_worst.get(metric_key)
             if not record:
                 continue
-            rows.append(
+            records.append(
                 "<tr>"
-                f"<td>{html.escape(summary.title)}</td>"
-                f"<td>{metric_name_cell(metric_key)}</td>"
+                f"<td class='metric-text'>{metric_plain_text(metric_key)}</td>"
                 f"<td>{html.escape(format_condition(record['best_condition']))}</td>"
                 f"<td>{float(record['best_value']):.3f}</td>"
                 f"<td>{html.escape(format_condition(record['worst_condition']))}</td>"
                 f"<td>{float(record['worst_value']):.3f}</td>"
                 "</tr>"
             )
+        if not records:
+            continue
+        records[0] = records[0].replace(
+            "<tr>",
+            f"<tr><td class='dataset-cell' rowspan='{len(records)}'>{html.escape(summary.title)}</td>",
+            1,
+        )
+        rows.extend(records)
     return (
         "<table class='metric-table comparison-table'>"
         "<thead><tr><th>Dataset</th><th>Metric</th><th>Best condition</th><th>Best</th><th>Worst condition</th><th>Worst</th></tr></thead>"
@@ -560,7 +768,17 @@ def render_notes_list(notes: list[str]) -> str:
     return f"<ul class='takeaways'>{items}</ul>"
 
 
-def render_evidence_block(summary: DatasetSummary) -> str:
+def path_to_html_src(path: Path, output_dir: Path) -> str:
+    rel_path = os.path.relpath(path.resolve(), start=output_dir.resolve())
+    return html.escape(rel_path.replace(os.sep, "/"), quote=True)
+
+
+def render_evidence_block(
+    summary: DatasetSummary,
+    output_dir: Path,
+    *,
+    self_contained: bool = False,
+) -> str:
     cards: list[str] = []
     for label, path in (
         ("Representative ablation grid", summary.ablation_grid_path),
@@ -568,9 +786,10 @@ def render_evidence_block(summary: DatasetSummary) -> str:
     ):
         if path is None:
             continue
+        src = image_file_to_data_uri(path) if self_contained else path_to_html_src(path, output_dir)
         cards.append(
             "<figure class='evidence-card'>"
-            f"<img src='{file_to_data_uri(path)}' alt='{html.escape(label)}' />"
+            f"<img src='{src}' alt='{html.escape(label)}' loading='lazy' />"
             f"<figcaption>{html.escape(label)}"
             f"<span>{html.escape(str(path))}</span></figcaption>"
             "</figure>"
@@ -591,7 +810,12 @@ def metric_direction_badge(metric_key: str) -> str:
     )
 
 
-def render_dataset_section(summary: DatasetSummary) -> str:
+def render_dataset_section(
+    summary: DatasetSummary,
+    output_dir: Path,
+    *,
+    self_contained: bool = False,
+) -> str:
     chips = "".join(metric_direction_badge(metric_key) for metric_key in summary.metric_keys)
     representative = summary.representative_tile or "not found"
     return (
@@ -605,13 +829,19 @@ def render_dataset_section(summary: DatasetSummary) -> str:
         "</div>"
         "<div class='card'>"
         "<h3>Representative evidence</h3>"
-        f"{render_evidence_block(summary)}"
+        f"{render_evidence_block(summary, output_dir, self_contained=self_contained)}"
         "</div>"
         "</section>"
     )
 
 
-def render_report_html(title: str, summaries: list[DatasetSummary]) -> str:
+def render_report_html(
+    title: str,
+    summaries: list[DatasetSummary],
+    output_path: Path,
+    *,
+    self_contained: bool = False,
+) -> str:
     trend_uri = render_metric_trends_figure(summaries)
     heatmap_uri = render_channel_effect_heatmaps(summaries)
     loo_uri = render_leave_one_out_figure(summaries)
@@ -635,7 +865,10 @@ def render_report_html(title: str, summaries: list[DatasetSummary]) -> str:
             best_structure.append(f"{summary.title}: {GROUP_LABELS[winner]}")
 
     overview_line = " | ".join(best_structure)
-    dataset_sections = "".join(render_dataset_section(summary) for summary in summaries)
+    dataset_sections = "".join(
+        render_dataset_section(summary, output_path.parent, self_contained=self_contained)
+        for summary in summaries
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -751,14 +984,14 @@ def render_report_html(title: str, summaries: list[DatasetSummary]) -> str:
     }}
     .metric-chip {{
       display: inline-block;
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: #f5f5f2;
+      padding: 0;
+      background: transparent;
       color: var(--metric-color);
-      border: 1px solid #e2e1db;
-      box-shadow: inset 3px 0 0 var(--metric-color);
-      font-size: 0.86rem;
-      font-weight: 600;
+      border: none;
+      box-shadow: none;
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
     }}
     .card {{
       padding: 16px;
@@ -800,6 +1033,35 @@ def render_report_html(title: str, summaries: list[DatasetSummary]) -> str:
     }}
     .comparison-table td:first-child {{
       font-weight: 600;
+    }}
+    .comparison-table {{
+      font-family: "Times New Roman", Times, serif;
+      font-size: 1rem;
+      border-top: 2px solid #000;
+      border-bottom: 2px solid #000;
+    }}
+    .comparison-table th, .comparison-table td {{
+      border-bottom: 1px solid #c9c3b9;
+      padding: 7px 10px;
+    }}
+    .comparison-table thead th {{
+      color: #000;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 0.95rem;
+      border-bottom: 1.5px solid #000;
+    }}
+    .comparison-table tbody tr:last-child td {{
+      border-bottom: none;
+    }}
+    .comparison-table .dataset-cell {{
+      font-weight: 700;
+      vertical-align: middle;
+      white-space: nowrap;
+      padding-right: 14px;
+    }}
+    .comparison-table .metric-text {{
+      font-weight: 400;
     }}
     .evidence-grid {{
       display: grid;
@@ -871,7 +1133,7 @@ def render_report_html(title: str, summaries: list[DatasetSummary]) -> str:
       </section>
       <section class="figure-card">
         <h2>Paired vs Unpaired Best/Worst Conditions</h2>
-        <p>The same metric colors are used in the table to keep the comparison aligned with the plots above.</p>
+        <p>A compact paper-style table compares each metric’s best and worst ablation condition across paired and unpaired settings.</p>
         {comparison_table}
       </section>
       {dataset_sections}
@@ -897,6 +1159,12 @@ def parse_args() -> argparse.Namespace:
         help="Paired dataset root used for representative figure lookup.",
     )
     parser.add_argument(
+        "--paired-reference-root",
+        type=Path,
+        default=ROOT / "data" / "orion-crc33",
+        help="Reference H&E root used to compute missing paired HED metrics.",
+    )
+    parser.add_argument(
         "--unpaired-metrics-root",
         type=Path,
         default=ROOT / "inference_output" / "unpaired_ablation" / "ablation_results",
@@ -907,6 +1175,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "inference_output" / "unpaired_ablation",
         help="Unpaired dataset root used for representative figure lookup.",
+    )
+    parser.add_argument(
+        "--unpaired-reference-root",
+        type=Path,
+        default=ROOT / "inference_output" / "unpaired_ablation" / "data" / "orion-crc33-unpaired",
+        help="Reference H&E root used to compute missing unpaired HED metrics when absent.",
     )
     parser.add_argument(
         "--output",
@@ -920,6 +1194,11 @@ def parse_args() -> argparse.Namespace:
         default="Channel Ablation Scientific Report",
         help="Title shown at the top of the HTML report.",
     )
+    parser.add_argument(
+        "--self-contained",
+        action="store_true",
+        help="Embed representative evidence images so the HTML can be opened as a standalone file.",
+    )
     return parser.parse_args()
 
 
@@ -931,15 +1210,22 @@ def main() -> None:
             title="Paired",
             metrics_root=args.paired_metrics_root.resolve(),
             dataset_root=args.paired_dataset_root.resolve(),
+            reference_root=args.paired_reference_root.resolve(),
         ),
         load_dataset_summary(
             slug="unpaired",
             title="Unpaired",
             metrics_root=args.unpaired_metrics_root.resolve(),
             dataset_root=args.unpaired_dataset_root.resolve(),
+            reference_root=args.unpaired_reference_root.resolve(),
         ),
     ]
-    report = render_report_html(args.title, summaries)
+    report = render_report_html(
+        args.title,
+        summaries,
+        args.output.resolve(),
+        self_contained=args.self_contained,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report, encoding="utf-8")
     print(f"Rendered ablation HTML report -> {args.output}")

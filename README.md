@@ -496,6 +496,7 @@ Stage 3 ablation workflow, step by step:
 5. Compute dataset-level FID: run `tools/compute_fid.py` once across all 15 ablation conditions, then backfill the per-condition `fid` values into each tile's `metrics.json`.
 6. Render tile-level ablation figures: generate one ranked 4×4 summary grid per tile from cached images plus `metrics.json`.
 7. Render the dataset-level summary figure: aggregate per-tile `metrics.json` files from a metric directory with `tools/render_dataset_metrics.py`.
+8. Render the paired-vs-unpaired scientific HTML report: compare aggregated paired and unpaired ablation runs in one paper-style HTML report with metric tradeoffs, channel-effect heatmaps, leave-one-out summaries, and representative evidence.
 
 For a consolidated paired + unpaired workflow reference, including the remapped unpaired dataset preparation steps and current metric recommendations, see [`ablation_cli.md`](ablation_cli.md).
 
@@ -508,6 +509,7 @@ For a consolidated paired + unpaired workflow reference, including the remapped 
 | `tools/compute_fid.py` | Compute dataset-level FID for all 15 ablation conditions and backfill `fid` into each per-tile `metrics.json` | `python tools/compute_fid.py --cache-dir inference_output/cache --device cuda` |
 | `tools/vis/stage3_ablation_grid_figure.py` | Stable CLI wrapper for rendering the static ranked 4×4 matplotlib figure from cached PNGs + `metrics.json` for one tile or all tiles | `python tools/vis/stage3_ablation_grid_figure.py --cache-dir inference_output/full_ablation --orion-root data/orion-crc33 --sort-by pq --no-auto-cosine --jobs 8` |
 | `tools/render_dataset_metrics.py` | Render the standalone dataset-level summary figure from per-tile `metrics.json` files, with paired/unpaired metric presets | `python tools/render_dataset_metrics.py --metric-dir inference_output/full_ablation --output figures/dataset_metrics.png --dpi 400` |
+| `tools/render_ablation_html_report.py` | Render the paired-vs-unpaired scientific HTML report from aggregated paired and unpaired ablation caches | `python tools/render_ablation_html_report.py --output docs/ablation_scientific_report.html` |
 
 Recommended end-to-end sequence:
 
@@ -518,6 +520,7 @@ Recommended end-to-end sequence:
 5. Compute `metrics.json` across all tiles.
 6. Compute dataset-level FID and backfill `fid` into each per-tile `metrics.json`.
 7. Render the tile-level figure and the dataset-level summary figure.
+8. Render the paired-vs-unpaired scientific HTML report when both runs are ready.
 
 ```bash
 python tools/stage3/generate_ablation_subset_cache.py \
@@ -553,12 +556,21 @@ python tools/render_dataset_metrics.py \
     --metric-dir inference_output/full_ablation \
     --output figures/dataset_metrics.png \
     --dpi 400
+
+python tools/render_ablation_html_report.py \
+    --paired-metrics-root inference_output/paired_ablation/ablation_results \
+    --paired-dataset-root inference_output/paired_ablation \
+    --paired-reference-root data/orion-crc33 \
+    --unpaired-metrics-root inference_output/unpaired_ablation/ablation_results \
+    --unpaired-dataset-root inference_output/unpaired_ablation \
+    --unpaired-reference-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+    --output docs/ablation_scientific_report.html
 ```
 
 The first command writes `singles/`, `pairs/`, `triples/`, `all/`, and `manifest.json` under the tile cache directory.  
 The second command randomly samples tiles from `data/orion-crc33`, writes each cache under `inference_output/full_ablation/{tile_id}`, and shows a tile-level progress bar while workers run.  
 The repair command backfills missing `all/generated_he.png`, updates each manifest to include the all-groups condition, writes UNI embeddings under `features/`, and also supports `--jobs` for per-tile parallelism.
-The last two commands render `<cache-dir>/ablation_grid.png` per tile and the standalone `dataset_metrics.png` summary figure aggregated from all per-tile `metrics.json` files under `--metric-dir`.
+The last three commands render `<cache-dir>/ablation_grid.png` per tile, the standalone `dataset_metrics.png` summary figure aggregated from all per-tile `metrics.json` files under `--metric-dir`, and the combined paired-vs-unpaired `ablation_scientific_report.html` comparison.
 
 For unpaired runs, the main metric set is usually `AJI/PQ/HED`; render that dataset summary with:
 
@@ -855,6 +867,53 @@ Notes:
 - The renderer requests `Helvetica` first and falls back to `Arial` / `DejaVu Sans` if needed.
 - `--metric-set unpaired` is the usual choice for unpaired reports because it matches the recommended `AJI/PQ/HED` metric set.
 - FID is only rendered when `fid` values are present in the per-condition records; run `tools/compute_fid.py` first, then re-run this renderer to populate that panel.
+
+### Paired-vs-unpaired scientific HTML report
+
+Use `tools/render_ablation_html_report.py` to build a single HTML report that compares paired and unpaired ablation runs side by side. It aggregates both metric trees, computes the channel-count trend plots, channel-effect heatmaps, representative leave-one-out summaries, and a paper-style best/worst condition table, then embeds representative evidence directly from the cached figure paths. If paired `metrics.json` files do not already contain `style_hed`, the renderer backfills paired HED means from the cached generated H&E images plus the paired reference H&E root.
+
+```bash
+python tools/render_ablation_html_report.py
+```
+
+Optional flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--paired-metrics-root PATH` | `inference_output/paired_ablation/ablation_results` | Parent directory containing paired per-tile `metrics.json` files |
+| `--paired-dataset-root PATH` | `inference_output/paired_ablation` | Paired dataset root used for representative ablation/leave-one-out figure lookup |
+| `--paired-reference-root PATH` | `data/orion-crc33` | Reference H&E root used to compute missing paired `HED` values |
+| `--unpaired-metrics-root PATH` | `inference_output/unpaired_ablation/ablation_results` | Parent directory containing unpaired per-tile `metrics.json` files |
+| `--unpaired-dataset-root PATH` | `inference_output/unpaired_ablation` | Unpaired dataset root used for representative ablation/leave-one-out figure lookup |
+| `--unpaired-reference-root PATH` | `inference_output/unpaired_ablation/data/orion-crc33-unpaired` | Reference H&E root used to compute missing unpaired `HED` values when needed |
+| `--output PATH` | `docs/ablation_scientific_report.html` | Output HTML path |
+| `--title TEXT` | `Channel Ablation Scientific Report` | HTML page title |
+| `--self-contained` | `False` | Embed representative evidence images so the HTML can be downloaded and opened as a single standalone file |
+
+Example:
+
+```bash
+python tools/render_ablation_html_report.py \
+    --paired-metrics-root inference_output/paired_ablation/ablation_results \
+    --paired-dataset-root inference_output/paired_ablation \
+    --paired-reference-root data/orion-crc33 \
+    --unpaired-metrics-root inference_output/unpaired_ablation/ablation_results \
+    --unpaired-dataset-root inference_output/unpaired_ablation \
+    --unpaired-reference-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+    --output docs/ablation_scientific_report.html \
+    --title "Paired vs Unpaired Channel Ablation Report"
+
+python tools/render_ablation_html_report.py \
+    --output docs/ablation_scientific_report_self_contained.html \
+    --self-contained
+```
+
+Notes:
+
+- Representative evidence is referenced from the cached figure files under each dataset root, so both paired and unpaired ablation runs should already have `ablation_grid.png` and `leave_one_out_diff.png` rendered.
+- Use `--self-contained` if you want one portable HTML file that can be downloaded and opened locally without copying the paired/unpaired evidence PNGs alongside it.
+- The unpaired channel-effect heatmaps intentionally omit `Cosine` and `LPIPS` to keep the matrix focused on `AJI/PQ/FID/HED`.
+- The paired comparison table will include `HED` even when the paired cache only stores `Cosine/LPIPS/AJI/PQ/FID`, as long as the paired reference H&E root is available.
 
 ### Ablation tests
 
