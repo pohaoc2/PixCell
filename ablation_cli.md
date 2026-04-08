@@ -251,6 +251,7 @@ Comment:
 - `--min-gt-cells` filters tiles when aggregating the plotted metrics.
 - This is especially helpful for `PQ/AJI`.
 - It does not truly recompute FID on the filtered subset; it only filters the plotting inputs.
+- `--metric-set unpaired` swaps `Cosine/LPIPS` out for `HED` so the figure matches the unpaired main metrics.
 
 ### Paired
 
@@ -268,6 +269,7 @@ python tools/render_dataset_metrics.py \
 python tools/render_dataset_metrics.py \
   --metric-dir inference_output/unpaired_ablation/ablation_results \
   --output inference_output/unpaired_ablation/dataset_metrics_filtered.png \
+  --metric-set unpaired \
   --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
   --min-gt-cells 20
 ```

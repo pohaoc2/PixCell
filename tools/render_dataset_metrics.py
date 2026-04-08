@@ -58,7 +58,14 @@ METRICS = [
     Metric("lpips", "LPIPS", False, (0.38, 0.52)),
     Metric("aji", "AJI", True, (0.0, 0.38)),
     Metric("pq", "PQ", True, (0.0, 0.32)),
+    Metric("style_hed", "HED", False, (0.04, 0.10)),
 ]
+METRIC_BY_KEY = {metric.key: metric for metric in METRICS}
+METRIC_SETS: dict[str, tuple[str, ...]] = {
+    "paired": ("fid", "cosine", "lpips", "aji", "pq"),
+    "unpaired": ("fid", "aji", "pq", "style_hed"),
+    "all": tuple(metric.key for metric in METRICS),
+}
 
 def _ordered_condition_tuples() -> list[tuple[str, ...]]:
     return [
@@ -146,6 +153,14 @@ def load_combinations(
     return combinations, tile_count
 
 
+def resolve_metric_set(metric_set: str) -> list[Metric]:
+    try:
+        metric_keys = METRIC_SETS[metric_set]
+    except KeyError as exc:
+        raise ValueError(f"unsupported metric set: {metric_set}") from exc
+    return [METRIC_BY_KEY[key] for key in metric_keys]
+
+
 def cardinality_spans(combinations: list[Combination]) -> list[tuple[int, int, int]]:
     spans: list[tuple[int, int, int]] = []
     start = 0
@@ -186,7 +201,15 @@ def _metric_range(metric: Metric, combos: list[Combination]) -> tuple[float, flo
     return lo - pad, hi + pad
 
 
-def render(metric_dir: Path, output_path: Path, dpi: int, min_gt_cells: int = 0, orion_root: Path | None = None) -> None:
+def render(
+    metric_dir: Path,
+    output_path: Path,
+    dpi: int,
+    min_gt_cells: int = 0,
+    orion_root: Path | None = None,
+    metric_set: str = "paired",
+) -> None:
+    metrics = resolve_metric_set(metric_set)
     combos, tile_count = load_combinations(metric_dir, min_gt_cells=min_gt_cells, orion_root=orion_root)
     spans = cardinality_spans(combos)
 
@@ -205,7 +228,7 @@ def render(metric_dir: Path, output_path: Path, dpi: int, min_gt_cells: int = 0,
 
     grid = fig.add_gridspec(
         2,
-        len(METRICS),
+        len(metrics),
         left=0.05,
         right=0.995,
         top=0.96,
@@ -217,7 +240,7 @@ def render(metric_dir: Path, output_path: Path, dpi: int, min_gt_cells: int = 0,
 
     x_positions = list(range(len(combos)))
 
-    for column, metric in enumerate(METRICS):
+    for column, metric in enumerate(metrics):
         ax = fig.add_subplot(grid[0, column])
         dot_ax = fig.add_subplot(grid[1, column])
 
@@ -377,6 +400,12 @@ def parse_args() -> argparse.Namespace:
         help="PNG output path.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="PNG DPI.")
+    parser.add_argument(
+        "--metric-set",
+        choices=sorted(METRIC_SETS),
+        default="paired",
+        help="Metrics to show: paired=FID/Cosine/LPIPS/AJI/PQ, unpaired=FID/AJI/PQ/HED, all=all metrics.",
+    )
     parser.add_argument("--min-gt-cells", type=int, default=0,
         help="Skip tiles with fewer than this many GT cell instances (default: 0 = no filter).")
     parser.add_argument("--orion-root", type=Path,
@@ -391,7 +420,8 @@ def main() -> None:
     if not metric_dir.exists():
         raise SystemExit(f"metric dir not found: {metric_dir}")
     render(metric_dir, args.output.resolve(), dpi=args.dpi,
-           min_gt_cells=args.min_gt_cells, orion_root=args.orion_root.resolve())
+           min_gt_cells=args.min_gt_cells, orion_root=args.orion_root.resolve(),
+           metric_set=args.metric_set)
 
 
 if __name__ == "__main__":
