@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import warnings
+from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -27,7 +29,12 @@ from tools.stage3.ablation_vis_utils import (
 
 _RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR
 _FID_EPS = 1e-6
-_FEATURE_BACKENDS = ("uni", "inception")
+_FEATURE_BACKENDS = ("uni", "virchow2", "inception")
+_CACHED_FEATURE_SUFFIXES = {
+    "uni": "uni",
+    "virchow2": "virchow2",
+}
+_VIRCHOW2_MODEL_ID = "hf-hub:paige-ai/Virchow2"
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Feature space used for Fréchet distance. "
             "'uni' (default) uses histopathology UNI-2h embeddings; "
+            "'virchow2' computes Fréchet Virchow Distance (FVD) using Virchow-2 features; "
             "'inception' uses ImageNet Inception v3 features."
         ),
     )
@@ -84,10 +92,23 @@ def parse_args() -> argparse.Namespace:
         help="UNI-2h model directory used when --feature-backend=uni.",
     )
     parser.add_argument(
+        "--virchow2-model",
+        type=str,
+        default=_VIRCHOW2_MODEL_ID,
+        help=(
+            "Virchow-2 model source used when --feature-backend=virchow2. "
+            "Defaults to the official Hugging Face timm identifier."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="JSON output path. Defaults to <cache-dir>/fud_scores.json for UNI or <cache-dir>/fid_scores.json for Inception.",
+        help=(
+            "JSON output path. Defaults to <cache-dir>/fud_scores.json for UNI, "
+            "<cache-dir>/fvd_scores.json for Virchow-2, or <cache-dir>/fid_scores.json "
+            "for Inception."
+        ),
     )
     return parser.parse_args()
 
@@ -101,11 +122,43 @@ def ordered_condition_keys() -> list[str]:
 
 
 def _generated_uni_feature_cache_path(tile_dir: Path, image_rel: Path) -> Path:
-    return tile_dir / "features" / image_rel.parent / f"{image_rel.stem}_uni.npy"
+    return _generated_feature_cache_path(tile_dir, image_rel, feature_backend="uni")
+
+
+def _generated_feature_cache_path(
+    tile_dir: Path,
+    image_rel: Path,
+    *,
+    feature_backend: str,
+) -> Path:
+    suffix = _CACHED_FEATURE_SUFFIXES.get(feature_backend)
+    if suffix is None:
+        raise ValueError(
+            f"feature backend {feature_backend!r} does not support cached .npy features"
+        )
+    return tile_dir / "features" / image_rel.parent / f"{image_rel.stem}_{suffix}.npy"
+
+
+def _default_orion_feature_cache_path(
+    orion_root: Path,
+    tile_id: str,
+    *,
+    feature_backend: str,
+) -> Path | None:
+    if feature_backend == "uni":
+        return default_orion_uni_npy_path(orion_root, tile_id)
+    suffix = _CACHED_FEATURE_SUFFIXES.get(feature_backend)
+    if suffix is None:
+        return None
+    return orion_root / "features" / f"{tile_id}_{suffix}.npy"
 
 
 def metric_key_for_backend(feature_backend: str) -> str:
-    return "fud" if feature_backend == "uni" else "fid"
+    if feature_backend == "uni":
+        return "fud"
+    if feature_backend == "virchow2":
+        return "fvd"
+    return "fid"
 
 
 def metric_label_for_backend(feature_backend: str) -> str:
@@ -151,7 +204,7 @@ def collect_condition_paths(
                 f"directory name is {tile_id!r}"
             )
 
-        per_tile_paths: dict[str, Path] = {}
+        per_tile_paths: dict[str, ImageFeatureRecord] = {}
         for section in manifest.get("sections", []):
             for entry in section.get("entries", []):
                 cond_key = condition_metric_key(tuple(entry["active_groups"]))
@@ -159,10 +212,11 @@ def collect_condition_paths(
                 if not image_path.is_file():
                     raise FileNotFoundError(f"missing generated image: {image_path}")
                 feature_path = None
-                if feature_backend == "uni":
-                    feature_path = _generated_uni_feature_cache_path(
+                if feature_backend in _CACHED_FEATURE_SUFFIXES:
+                    feature_path = _generated_feature_cache_path(
                         tile_dir,
                         Path(entry["image_path"]),
+                        feature_backend=feature_backend,
                     )
                 per_tile_paths[cond_key] = ImageFeatureRecord(
                     image_path=image_path,
@@ -174,8 +228,12 @@ def collect_condition_paths(
             per_tile_paths[all_key] = ImageFeatureRecord(
                 image_path=all_path,
                 feature_path=(
-                    _generated_uni_feature_cache_path(tile_dir, Path("all/generated_he.png"))
-                    if feature_backend == "uni"
+                    _generated_feature_cache_path(
+                        tile_dir,
+                        Path("all/generated_he.png"),
+                        feature_backend=feature_backend,
+                    )
+                    if feature_backend in _CACHED_FEATURE_SUFFIXES
                     else None
                 ),
             )
@@ -191,11 +249,17 @@ def collect_condition_paths(
             raise FileNotFoundError(f"missing real H&E image: {real_path}")
 
         real_feature_path = None
-        if feature_backend == "uni":
-            candidate = default_orion_uni_npy_path(orion_root, tile_id)
+        if feature_backend in _CACHED_FEATURE_SUFFIXES:
+            candidate = _default_orion_feature_cache_path(
+                orion_root,
+                tile_id,
+                feature_backend=feature_backend,
+            )
             if candidate.is_file():
                 real_feature_path = candidate
-        real_paths.append(ImageFeatureRecord(image_path=real_path, feature_path=real_feature_path))
+        real_paths.append(
+            ImageFeatureRecord(image_path=real_path, feature_path=real_feature_path)
+        )
         for cond_key in condition_keys:
             condition_to_paths[cond_key].append(per_tile_paths[cond_key])
 
@@ -280,6 +344,99 @@ def load_uni_extractor(*, uni_model: Path, device: str):
     return _load_uni_extractor(uni_model=uni_model, device=device)
 
 
+def _virchow2_timm_version_is_supported(version: str) -> bool:
+    parts: list[int] = []
+    for chunk in version.split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3]) >= (0, 9, 11)
+
+
+class Virchow2Extractor:
+    """Virchow-2 tile feature extractor returning 2560D embeddings."""
+
+    def __init__(self, *, model_name: str, device: str):
+        import torch
+
+        try:
+            import timm
+            from timm.data import resolve_data_config
+            from timm.data.transforms_factory import create_transform
+        except ImportError as exc:
+            raise ImportError(
+                "Virchow-2 extraction requires timm, torchvision, and torch. "
+                "Install the feature extraction dependencies before using "
+                "--feature-backend=virchow2."
+            ) from exc
+
+        timm_version = getattr(timm, "__version__", "0.0.0")
+        if not _virchow2_timm_version_is_supported(timm_version):
+            raise RuntimeError(
+                "Virchow-2 requires timm>=0.9.11, but "
+                f"timm {timm_version} is installed."
+            )
+
+        hf_token = os.getenv("HF_TOKEN")
+        if hf_token:
+            try:
+                from huggingface_hub import login
+
+                login(token=hf_token)
+            except Exception:
+                pass
+
+        self.device = (
+            device if not device.startswith("cuda") or torch.cuda.is_available() else "cpu"
+        )
+        self._torch = torch
+        self.model = timm.create_model(
+            model_name,
+            pretrained=True,
+            mlp_layer=timm.layers.SwiGLUPacked,
+            act_layer=torch.nn.SiLU,
+        )
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        self.transform = create_transform(
+            **resolve_data_config(self.model.pretrained_cfg, model=self.model)
+        )
+
+    def _autocast_context(self):
+        if self.device.startswith("cuda"):
+            return self._torch.autocast(device_type="cuda", dtype=self._torch.float16)
+        return nullcontext()
+
+    def extract_batch(self, images: list[Image.Image]) -> np.ndarray:
+        torch = self._torch
+        batch = torch.stack([self.transform(image) for image in images]).to(self.device)
+        with torch.inference_mode(), self._autocast_context():
+            output = self.model(batch)
+        if output.ndim != 3 or output.shape[1] < 6:
+            raise ValueError(
+                "unexpected Virchow-2 output shape: "
+                f"expected [N, tokens, dim] with at least 6 tokens, got {tuple(output.shape)}"
+            )
+        class_token = output[:, 0]
+        patch_tokens = output[:, 5:]
+        embedding = torch.cat([class_token, patch_tokens.mean(dim=1)], dim=-1)
+        return embedding.detach().cpu().numpy().astype(np.float64, copy=False)
+
+
+def load_virchow2_extractor(*, virchow2_model: str, device: str) -> Virchow2Extractor:
+    try:
+        return Virchow2Extractor(model_name=virchow2_model, device=device)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to load Virchow-2. Make sure you accepted access for "
+            "paige-ai/Virchow2 on Hugging Face, logged in in this environment, "
+            f"and can access {virchow2_model!r}."
+        ) from exc
+
+
 def all_features_cached(image_records: list[ImageFeatureRecord]) -> bool:
     return bool(image_records) and all(
         record.feature_path is not None and record.feature_path.is_file()
@@ -288,6 +445,19 @@ def all_features_cached(image_records: list[ImageFeatureRecord]) -> bool:
 
 
 def extract_uni_features(
+    image_records: list[ImageFeatureRecord],
+    *,
+    extractor: Any | None,
+    batch_size: int,
+) -> np.ndarray:
+    return extract_cached_features(
+        image_records,
+        extractor=extractor,
+        batch_size=batch_size,
+    )
+
+
+def extract_cached_features(
     image_records: list[ImageFeatureRecord],
     *,
     extractor: Any | None,
@@ -303,14 +473,16 @@ def extract_uni_features(
         if not pending_records:
             return
         if extractor is None:
-            raise ValueError("UNI extractor is required when cached UNI features are missing")
+            raise ValueError(
+                "feature extractor is required when cached feature vectors are missing"
+            )
         images = [_load_rgb_pil(record.image_path) for record in pending_records]
         features = np.asarray(extractor.extract_batch(images), dtype=np.float64)
         if features.ndim == 1:
             features = features[np.newaxis, :]
         if len(features) != len(pending_records):
             raise ValueError(
-                "UNI extractor returned a different number of features than input images"
+                "feature extractor returned a different number of features than input images"
             )
         for record, feature in zip(pending_records, features):
             if record.feature_path is not None:
@@ -329,6 +501,19 @@ def extract_uni_features(
 
     flush_pending()
     return np.stack(outputs, axis=0)
+
+
+def extract_virchow2_features(
+    image_records: list[ImageFeatureRecord],
+    *,
+    extractor: Any | None,
+    batch_size: int,
+) -> np.ndarray:
+    return extract_cached_features(
+        image_records,
+        extractor=extractor,
+        batch_size=batch_size,
+    )
 
 
 def compute_statistics(features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -407,10 +592,6 @@ def backfill_metrics(
                 record = {}
                 per_condition[cond_key] = record
             record[metric_key] = float(metric_scores[cond_key])
-            if metric_key == "fud":
-                record.pop("fid", None)
-            elif metric_key == "fid":
-                record.pop("fud", None)
 
         metrics_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -422,9 +603,14 @@ def main() -> None:
     device = resolve_device(args.device)
     feature_backend = str(args.feature_backend)
     uni_model = args.uni_model.resolve()
+    virchow2_model = str(args.virchow2_model)
     metric_key = metric_key_for_backend(feature_backend)
     metric_label = metric_label_for_backend(feature_backend)
-    output_path = args.output.resolve() if args.output is not None else default_output_path(cache_dir, feature_backend)
+    output_path = (
+        args.output.resolve()
+        if args.output is not None
+        else default_output_path(cache_dir, feature_backend)
+    )
 
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
@@ -441,12 +627,27 @@ def main() -> None:
     )
     if feature_backend == "uni":
         extractor: Any | None = None
-        all_uni_records = list(real_paths)
+        all_cached_records = list(real_paths)
         for cond_key in ordered_condition_keys():
-            all_uni_records.extend(condition_to_paths[cond_key])
-        if not all_features_cached(all_uni_records):
+            all_cached_records.extend(condition_to_paths[cond_key])
+        if not all_features_cached(all_cached_records):
             extractor = load_uni_extractor(uni_model=uni_model, device=device)
         real_features = extract_uni_features(
+            real_paths,
+            extractor=extractor,
+            batch_size=args.batch_size,
+        )
+    elif feature_backend == "virchow2":
+        extractor = None
+        all_cached_records = list(real_paths)
+        for cond_key in ordered_condition_keys():
+            all_cached_records.extend(condition_to_paths[cond_key])
+        if not all_features_cached(all_cached_records):
+            extractor = load_virchow2_extractor(
+                virchow2_model=virchow2_model,
+                device=device,
+            )
+        real_features = extract_virchow2_features(
             real_paths,
             extractor=extractor,
             batch_size=args.batch_size,
@@ -467,9 +668,18 @@ def main() -> None:
     condition_keys = ordered_condition_keys()
     for index, cond_key in enumerate(condition_keys, start=1):
         gen_records = condition_to_paths[cond_key]
-        print(f"[{index}/{len(condition_keys)}] Processing {cond_key}: {len(gen_records)} images")
+        print(
+            f"[{index}/{len(condition_keys)}] Processing {cond_key}: "
+            f"{len(gen_records)} images"
+        )
         if feature_backend == "uni":
             gen_features = extract_uni_features(
+                gen_records,
+                extractor=extractor,
+                batch_size=args.batch_size,
+            )
+        elif feature_backend == "virchow2":
+            gen_features = extract_virchow2_features(
                 gen_records,
                 extractor=extractor,
                 batch_size=args.batch_size,

@@ -8,7 +8,7 @@ dependencies:
   - torchvision
   - pytorch-cuda=11.7
   - pip:
-    - timm==0.6.12
+    - timm>=0.9.11
     - diffusers
     - accelerate
     - mmcv==1.7.0

@@ -215,6 +215,38 @@ python tools/compute_fid.py \
   --output inference_output/unpaired_ablation/ablation_results/fud_scores.json
 ```
 
+## Step 7b. Compute FVD
+
+Comment:
+- FVD uses Virchow-2 tile embeddings and is written to `fvd_scores.json`.
+- Access to `paige-ai/Virchow2` must be approved on Hugging Face before first use.
+
+### Paired
+
+```bash
+python tools/compute_fid.py \
+  --cache-dir inference_output/paired_ablation/ablation_results \
+  --orion-root data/orion-crc33 \
+  --feature-backend virchow2 \
+  --virchow2-model hf-hub:paige-ai/Virchow2 \
+  --device cuda \
+  --batch-size 64 \
+  --output inference_output/paired_ablation/ablation_results/fvd_scores.json
+```
+
+### Unpaired
+
+```bash
+python tools/compute_fid.py \
+  --cache-dir inference_output/unpaired_ablation/ablation_results \
+  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --feature-backend virchow2 \
+  --virchow2-model hf-hub:paige-ai/Virchow2 \
+  --device cuda \
+  --batch-size 64 \
+  --output inference_output/unpaired_ablation/ablation_results/fvd_scores.json
+```
+
 ## Step 8. Render per-tile ablation grid figures
 
 Comment:
