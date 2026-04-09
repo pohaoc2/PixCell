@@ -12,9 +12,39 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+if "torch" not in sys.modules:
+    import types
+
+    torch_stub = types.ModuleType("torch")
+
+    class _DummyTensor:
+        pass
+
+    torch_stub.float16 = "float16"
+    torch_stub.float32 = "float32"
+    torch_stub.dtype = object
+    torch_stub.Tensor = _DummyTensor
+    sys.modules["torch"] = torch_stub
+
+if "diffusers" not in sys.modules:
+    import types
+
+    diffusers_stub = types.ModuleType("diffusers")
+
+    class _DummyScheduler:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def set_timesteps(self, *args, **kwargs) -> None:
+            pass
+
+    diffusers_stub.DDPMScheduler = _DummyScheduler
+    sys.modules["diffusers"] = diffusers_stub
+
 import tools.compute_ablation_metrics as compute_ablation_metrics_module
 from tools.compute_ablation_metrics import (
     _compute_aji,
+    _compute_binary_segmentation_metrics,
     _compute_pq,
     _cellvit_json_to_instance_mask,
     _empty_metrics_record,
@@ -26,7 +56,16 @@ from tools.compute_ablation_metrics import (
 
 def test_empty_record_has_all_keys():
     record = _empty_metrics_record()
-    assert set(record.keys()) == {"cosine", "lpips", "aji", "pq", "style_hed"}
+    assert set(record.keys()) == {
+        "cosine",
+        "lpips",
+        "aji",
+        "pq",
+        "dice",
+        "iou",
+        "accuracy",
+        "style_hed",
+    }
     assert all(value is None for value in record.values())
 
 
@@ -37,6 +76,9 @@ def test_merge_cosine_preserves_existing():
             "lpips": 0.3,
             "aji": None,
             "pq": None,
+            "dice": None,
+            "iou": None,
+            "accuracy": None,
             "style_hed": None,
         }
     }
@@ -47,7 +89,16 @@ def test_merge_cosine_preserves_existing():
 
 
 def test_resolve_metric_selection_all_includes_style_hed():
-    assert _resolve_metric_selection(["all"]) == ["cosine", "lpips", "aji", "pq", "style_hed"]
+    assert _resolve_metric_selection(["all"]) == [
+        "cosine",
+        "lpips",
+        "aji",
+        "pq",
+        "dice",
+        "iou",
+        "accuracy",
+        "style_hed",
+    ]
 
 
 def test_aji_perfect_match():
@@ -73,6 +124,31 @@ def test_aji_no_overlap():
     pred = np.zeros((64, 64), dtype=np.int32)
     pred[40:50, 40:50] = 1
     assert _compute_aji(gt, pred) == pytest.approx(0.0)
+
+
+def test_binary_segmentation_metrics_perfect_match():
+    gt = np.zeros((16, 16), dtype=np.int32)
+    gt[2:8, 3:9] = 1
+    pred = gt.copy()
+
+    dice, iou, accuracy = _compute_binary_segmentation_metrics(gt, pred)
+
+    assert dice == pytest.approx(1.0)
+    assert iou == pytest.approx(1.0)
+    assert accuracy == pytest.approx(1.0)
+
+
+def test_binary_segmentation_metrics_partial_overlap():
+    gt = np.zeros((10, 10), dtype=np.int32)
+    pred = np.zeros((10, 10), dtype=np.int32)
+    gt[0:4, 0:4] = 1
+    pred[2:6, 2:6] = 1
+
+    dice, iou, accuracy = _compute_binary_segmentation_metrics(gt, pred)
+
+    assert dice == pytest.approx(0.25)
+    assert iou == pytest.approx(1.0 / 7.0)
+    assert accuracy == pytest.approx(76.0 / 100.0)
 
 
 def test_cellvit_json_to_instance_mask(tmp_path: Path):

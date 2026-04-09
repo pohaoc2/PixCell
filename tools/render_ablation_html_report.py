@@ -99,12 +99,21 @@ METRIC_LABELS = {
     "lpips": "LPIPS",
     "aji": "AJI",
     "pq": "PQ",
-    "fud": "FUD",
+    "dice": "DICE",
+    "iou": "IoU",
+    "accuracy": "Accuracy",
+    "fud": "FVD",
     "style_hed": "HED",
 }
-TRADEOFF_METRIC_ORDER = ("fud", "cosine", "lpips", "aji", "pq", "style_hed")
-CELLVIT_PROPOSED_PQ_MEAN = 0.6696
-CELLVIT_PROPOSED_PQ_STD = 0.034
+TRADEOFF_METRIC_ORDER = ("fud", "cosine", "lpips", "aji", "pq", "dice", "iou", "accuracy", "style_hed")
+TRADEOFF_HIGHER_IS_BETTER = {"dice": True, "iou": True, "accuracy": True}
+TRADEOFF_REFERENCE_BANDS = {
+    "fud": {"label": "PixCell Cond FVD", "mean": 275.0},
+    "pq": {"label": "CellViT proposed PQ", "mean": 0.6696, "std": 0.034},
+    "accuracy": {"label": "PixCell ControlNet accuracy", "mean": 0.89},
+    "dice": {"label": "PixCell ControlNet DICE", "mean": 0.653},
+    "iou": {"label": "PixCell ControlNet IoU", "mean": 0.802},
+}
 CHANNEL_EFFECT_CMAP = plt.get_cmap("RdBu")
 
 
@@ -140,10 +149,13 @@ def _mean_std(values: list[float]) -> tuple[float, float] | None:
 
 def load_fud_scores(metrics_root: Path) -> dict[str, float]:
     root = Path(metrics_root)
-    path = root / "fud_scores.json"
-    if not path.is_file():
-        path = root / "fid_scores.json"
-    if not path.is_file():
+    path = None
+    for candidate_name in ("fvd_scores.json", "fud_scores.json", "fid_scores.json"):
+        candidate = root / candidate_name
+        if candidate.is_file():
+            path = candidate
+            break
+    if path is None:
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -278,7 +290,7 @@ def load_tile_condition_metrics(
             if not isinstance(record, dict):
                 continue
             normalized: dict[str, float] = {}
-            for metric in DEFAULT_METRIC_ORDER:
+            for metric in TRADEOFF_METRIC_ORDER:
                 value = record.get(metric)
                 if value is None and metric == "fud":
                     value = record.get("fid")
@@ -310,7 +322,7 @@ def load_tile_condition_metrics(
                 tile_record.setdefault(cond_key, {})["style_hed"] = float(value)
                 metric_keys.add("style_hed")
 
-    return [tile_record for _, tile_record in tile_records], [metric for metric in DEFAULT_METRIC_ORDER if metric in metric_keys]
+    return [tile_record for _, tile_record in tile_records], [metric for metric in TRADEOFF_METRIC_ORDER if metric in metric_keys]
 
 
 def summarize_by_cardinality_tile_stats(
@@ -794,10 +806,12 @@ def load_dataset_summary(
         metrics_paths=filtered_metrics_paths,
         reference_root=resolved_reference_root,
     )
+    condition_stat_metric_keys = list(metric_keys)
     if tile_metric_keys:
         present_metrics = set(metric_keys) | set(tile_metric_keys)
         metric_keys = [metric for metric in DEFAULT_METRIC_ORDER if metric in present_metrics]
-    condition_stats = summarize_condition_stats(tile_records, metric_keys)
+        condition_stat_metric_keys = [metric for metric in TRADEOFF_METRIC_ORDER if metric in present_metrics]
+    condition_stats = summarize_condition_stats(tile_records, condition_stat_metric_keys)
     by_cardinality, by_cardinality_stats = summarize_by_cardinality_tile_stats(tile_records, metric_keys)
     if not by_cardinality:
         by_cardinality = summarize_by_cardinality(condition_means, metric_keys)
@@ -930,14 +944,32 @@ def comparison_metric_keys(summary: DatasetSummary) -> list[str]:
 
 
 def metric_tradeoff_keys(summaries: list[DatasetSummary]) -> list[str]:
-    present = {metric for summary in summaries for metric in summary.metric_keys}
+    present = {
+        metric
+        for summary in summaries
+        for condition_stats in summary.condition_stats.values()
+        for metric in condition_stats
+    }
     return [metric for metric in TRADEOFF_METRIC_ORDER if metric in present]
+
+
+def _reference_band_limits(metric_key: str) -> tuple[float, float] | None:
+    reference = TRADEOFF_REFERENCE_BANDS.get(metric_key)
+    if reference is None:
+        return None
+    mean = float(reference["mean"])
+    std = reference.get("std")
+    if std is not None:
+        return mean - float(std), mean + float(std)
+    return None
 
 
 def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     metrics = metric_tradeoff_keys(summaries)
-    fig = plt.figure(figsize=(15.6, 7.7))
-    outer = fig.add_gridspec(2, 3, wspace=0.22, hspace=0.28)
+    n_cols = 3
+    n_rows = max(1, int(np.ceil(len(metrics) / n_cols)))
+    fig = plt.figure(figsize=(15.6, 10.9 if n_rows > 2 else 7.7))
+    outer = fig.add_gridspec(n_rows, n_cols, wspace=0.22, hspace=0.28)
     condition_tuples = ordered_subset_condition_tuples()
     condition_keys = [condition_metric_key(cond) for cond in condition_tuples]
     x_positions = list(range(len(condition_keys)))
@@ -995,10 +1027,13 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             for barlinecol in barlinecols:
                 barlinecol.set_linestyle(error_linestyle)
 
-        if metric_key == "pq":
-            pq_band_lo = CELLVIT_PROPOSED_PQ_MEAN - CELLVIT_PROPOSED_PQ_STD
-            pq_band_hi = CELLVIT_PROPOSED_PQ_MEAN + CELLVIT_PROPOSED_PQ_STD
-            all_values.extend([pq_band_lo, pq_band_hi])
+        reference = TRADEOFF_REFERENCE_BANDS.get(metric_key)
+        if reference is not None:
+            mean = float(reference["mean"])
+            std = reference.get("std")
+            all_values.append(mean)
+            if std is not None:
+                all_values.extend([mean - float(std), mean + float(std)])
 
         if not all_values:
             ax.axis("off")
@@ -1006,38 +1041,59 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             continue
 
         lo, hi = _tight_range(all_values)
-        spec = METRIC_SPEC_BY_KEY[metric_key]
-        arrow = "↑" if spec.higher_is_better else "↓"
+        spec = METRIC_SPEC_BY_KEY.get(metric_key)
+        higher_is_better = spec.higher_is_better if spec is not None else TRADEOFF_HIGHER_IS_BETTER.get(metric_key, True)
+        arrow = "↑" if higher_is_better else "↓"
         ax.set_title(
             f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}",
             color=INK,
             fontweight="bold",
             pad=16,
         )
-        if metric_key == "pq":
-            pq_band_lo = CELLVIT_PROPOSED_PQ_MEAN - CELLVIT_PROPOSED_PQ_STD
-            pq_band_hi = CELLVIT_PROPOSED_PQ_MEAN + CELLVIT_PROPOSED_PQ_STD
-            pq_band = ax.axhspan(pq_band_lo, pq_band_hi, color="#A8A8A8", alpha=0.22, zorder=0)
-            pq_band.set_hatch("////")
-            pq_band.set_edgecolor("#8A8A8A")
-            pq_band.set_linewidth(0.0)
         for _, start_idx, end_idx in spans[:-1]:
             ax.axvline(end_idx + 0.5, color="#BEBEBE", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
             dot_ax.axvline(end_idx + 0.5, color="#D0D0D0", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
         ax.set_xlim(-0.55, len(condition_keys) - 0.45)
         ax.set_xticks([])
         ax.set_ylim(lo, hi)
-        if metric_key == "pq":
+        reference = TRADEOFF_REFERENCE_BANDS.get(metric_key)
+        band_limits = _reference_band_limits(metric_key)
+        if band_limits is not None:
+            band_lo, band_hi = band_limits
+            band = ax.axhspan(band_lo, band_hi, color="#A8A8A8", alpha=0.22, zorder=0)
+            band.set_hatch("////")
+            band.set_edgecolor("#8A8A8A")
+            band.set_linewidth(0.0)
             y_span = hi - lo
-            label_y = min(hi - 0.02 * y_span, pq_band_hi + 0.05 * y_span)
+            label_y = min(hi - 0.03 * y_span, band_hi + 0.04 * y_span)
+            band_label = str(reference["label"])
             ax.text(
-                len(condition_keys) - 0.55,
+                0.02,
                 label_y,
-                "CellViT proposed PQ",
-                ha="right",
+                band_label,
+                transform=ax.get_yaxis_transform(),
+                ha="left",
                 va="bottom",
                 fontsize=8.0,
                 color="#666666",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
+                zorder=5,
+            )
+        elif reference is not None:
+            mean = float(reference["mean"])
+            ax.axhline(mean, color="#8A8A8A", linewidth=1.1, linestyle=(0, (5, 2.5)), zorder=1)
+            y_span = hi - lo
+            label_y = min(hi - 0.03 * y_span, mean + 0.035 * y_span)
+            ax.text(
+                0.02,
+                label_y,
+                str(reference["label"]),
+                transform=ax.get_yaxis_transform(),
+                ha="left",
+                va="bottom",
+                fontsize=8.0,
+                color="#666666",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
                 zorder=5,
             )
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
@@ -1082,7 +1138,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                     color=INK,
                 )
 
-    for index in range(len(metrics), 6):
+    for index in range(len(metrics), n_rows * n_cols):
         row, col = divmod(index, 3)
         subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
         fig.add_subplot(subgrid[0, 0]).axis("off")
@@ -1102,11 +1158,12 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             linewidth=1.6,
             label="Unpaired",
         ),
-        Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="CellViT PQ ± SD"),
+        Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="Benchmark band (mean ± SD)"),
+        Line2D([0], [0], color="#8A8A8A", linestyle=(0, (5, 2.5)), linewidth=1.1, label="Benchmark line"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.972), fontsize=9.6)
+    fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 0.972), fontsize=9.6)
     fig.suptitle("Metric tradeoffs across all 15 channel-group combinations", y=0.992, fontsize=14.0, fontweight="bold")
-    fig.subplots_adjust(left=0.055, right=0.99, bottom=0.075, top=0.885)
+    fig.subplots_adjust(left=0.055, right=0.99, bottom=0.06, top=0.90 if n_rows > 2 else 0.885)
     return fig
 
 
@@ -1133,7 +1190,7 @@ def _heatmap_matrix(
     return matrix, stds
 
 
-def _heatmap_metric_ranges(summaries: list[DatasetSummary]) -> dict[str, tuple[float, float]]:
+def _heatmap_metric_scales(summaries: list[DatasetSummary]) -> dict[str, float]:
     per_metric_values: dict[str, list[float]] = {}
     for summary in summaries:
         metric_keys = heatmap_metric_keys(summary)
@@ -1145,45 +1202,45 @@ def _heatmap_metric_ranges(summaries: list[DatasetSummary]) -> dict[str, tuple[f
                 if finite_values:
                     per_metric_values.setdefault(metric_key, []).extend(finite_values)
 
-    ranges: dict[str, tuple[float, float]] = {}
+    scales: dict[str, float] = {}
     for metric_key, values in per_metric_values.items():
-        ranges[metric_key] = (min(values), max(values))
-    return ranges
+        scales[metric_key] = max(abs(min(values)), abs(max(values)))
+    return scales
 
 
 def _normalize_heatmap_matrix(
     matrix: np.ndarray,
     metric_keys: list[str],
-    metric_ranges: dict[str, tuple[float, float]],
+    metric_scales: dict[str, float],
 ) -> np.ndarray:
     normalized = np.full(matrix.shape, np.nan, dtype=float)
     for col, metric_key in enumerate(metric_keys):
-        lo, hi = metric_ranges.get(metric_key, (0.0, 1.0))
+        scale = metric_scales.get(metric_key, 0.0)
         column = matrix[:, col]
         finite_mask = np.isfinite(column)
         if not np.any(finite_mask):
             continue
-        if hi > lo:
-            normalized[finite_mask, col] = (column[finite_mask] - lo) / (hi - lo)
+        if scale > 0:
+            normalized[finite_mask, col] = np.clip(column[finite_mask] / scale, -1.0, 1.0)
         else:
-            normalized[finite_mask, col] = 0.5
+            normalized[finite_mask, col] = 0.0
     return normalized
 
 
 def _normalize_heatmap_stds(
     stds: np.ndarray,
     metric_keys: list[str],
-    metric_ranges: dict[str, tuple[float, float]],
+    metric_scales: dict[str, float],
 ) -> np.ndarray:
     normalized = np.full(stds.shape, np.nan, dtype=float)
     for col, metric_key in enumerate(metric_keys):
-        lo, hi = metric_ranges.get(metric_key, (0.0, 1.0))
+        scale = metric_scales.get(metric_key, 0.0)
         column = stds[:, col]
         finite_mask = np.isfinite(column)
         if not np.any(finite_mask):
             continue
-        if hi > lo:
-            normalized[finite_mask, col] = column[finite_mask] / (hi - lo)
+        if scale > 0:
+            normalized[finite_mask, col] = column[finite_mask] / scale
         else:
             normalized[finite_mask, col] = 0.0
     return normalized
@@ -1192,7 +1249,7 @@ def _normalize_heatmap_stds(
 def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     fig = plt.figure(figsize=(12.2, 3.9 * len(summaries)))
     grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.045], wspace=0.20, hspace=0.34)
-    metric_ranges = _heatmap_metric_ranges(summaries)
+    metric_scales = _heatmap_metric_scales(summaries)
     im = None
 
     for row, summary in enumerate(summaries):
@@ -1204,10 +1261,10 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
             ax = fig.add_subplot(grid[row, col])
             metric_keys = heatmap_metric_keys(summary)
             raw_matrix, stds = _heatmap_matrix(summary, source, metric_keys)
-            normalized_matrix = _normalize_heatmap_matrix(raw_matrix, metric_keys, metric_ranges)
-            normalized_stds = _normalize_heatmap_stds(stds, metric_keys, metric_ranges)
+            normalized_matrix = _normalize_heatmap_matrix(raw_matrix, metric_keys, metric_scales)
+            normalized_stds = _normalize_heatmap_stds(stds, metric_keys, metric_scales)
             masked = np.ma.masked_invalid(normalized_matrix)
-            im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=0.0, vmax=1.0, aspect="auto")
+            im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
             ax.set_title(f"{summary.title}: {panel_title}", fontsize=11.0, fontweight="bold", color=INK)
             ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
             if col == 0:
@@ -1237,7 +1294,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
                         va="center",
                         fontsize=8.6,
                         fontweight="semibold",
-                        color="white" if norm_value <= 0.20 or norm_value >= 0.70 else "#111111",
+                        color="white" if abs(norm_value) >= 0.55 else "#111111",
                     )
             ax.set_xticks(np.arange(-0.5, len(metric_keys), 1), minor=True)
             ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
@@ -1250,7 +1307,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
 
     cax = fig.add_subplot(grid[:, 2])
     cbar = fig.colorbar(im, cax=cax)
-    cbar.set_label("Per-metric min-max normalized improvement (0 = worst, 1 = best)", color=INK)
+    cbar.set_label("Per-metric zero-centered normalized effect (-1 = worst, 0 = none, 1 = best)", color=INK)
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     fig.suptitle("Channel effect matrices", y=0.98, fontsize=15, fontweight="bold")
     fig.subplots_adjust(left=0.08, right=0.94, top=0.89, bottom=0.11)
@@ -1807,7 +1864,7 @@ def render_report_html(
       </section>
       <section class="figure-card">
         <h2>Channel Effect Sizes</h2>
-        <p>Each cell shows per-metric min-max normalized improvement ± normalized SD, so both the numbers and colors run from 0 for worst to 1 for best across the combined plot.</p>
+        <p>Each cell shows a zero-centered normalized effect size ± normalized SD, where -1 means the strongest worsening, 0 means no effect, and 1 means the strongest improvement for that metric across the combined plot.</p>
         <img src="{heatmap_uri}" alt="Channel effect heatmaps" />
       </section>
       <section class="figure-card">
