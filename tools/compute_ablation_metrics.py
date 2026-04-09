@@ -34,7 +34,15 @@ from tools.stage3.ablation_cache import (
 )
 from tools.stage3.common import print_progress
 
-DEFAULT_METRIC_NAMES: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
+DEFAULT_METRIC_NAMES: tuple[str, ...] = (
+    "cosine",
+    "lpips",
+    "aji",
+    "pq",
+    "dice",
+    "iou",
+    "accuracy",
+)
 OPTIONAL_METRIC_NAMES: tuple[str, ...] = ("style_hed",)
 METRIC_NAMES: tuple[str, ...] = DEFAULT_METRIC_NAMES + OPTIONAL_METRIC_NAMES
 _SPATIAL_EXTS: tuple[str, ...] = (".png", ".npy", ".jpg", ".jpeg", ".tif", ".tiff")
@@ -700,6 +708,30 @@ def _compute_pq(gt_inst: np.ndarray, pred_inst: np.ndarray) -> tuple[float, floa
     return sq, rq, pq
 
 
+def _compute_binary_segmentation_metrics(
+    gt_inst: np.ndarray,
+    pred_inst: np.ndarray,
+) -> tuple[float, float, float]:
+    """Return pixel-level ``(dice, iou, accuracy)`` on foreground-vs-background masks."""
+    gt_fg = np.asarray(gt_inst) > 0
+    pred_fg = np.asarray(pred_inst) > 0
+
+    tp = int(np.count_nonzero(gt_fg & pred_fg))
+    tn = int(np.count_nonzero(~gt_fg & ~pred_fg))
+    fp = int(np.count_nonzero(~gt_fg & pred_fg))
+    fn = int(np.count_nonzero(gt_fg & ~pred_fg))
+
+    dice_denom = 2 * tp + fp + fn
+    dice = float((2 * tp) / dice_denom) if dice_denom > 0 else 1.0
+
+    iou_denom = tp + fp + fn
+    iou = float(tp / iou_denom) if iou_denom > 0 else 1.0
+
+    total = tp + tn + fp + fn
+    accuracy = float((tp + tn) / total) if total > 0 else 1.0
+    return dice, iou, accuracy
+
+
 def _load_gt_instance_mask(orion_root: Path, tile_id: str, *, shape: tuple[int, int] | None = None) -> np.ndarray:
     exp_dir = Path(orion_root) / "exp_channels"
     for folder_name in ("cell_masks", "cell_mask"):
@@ -720,7 +752,7 @@ def compute_cell_metrics(
     cache_dir: Path,
     orion_root: Path,
 ) -> dict[str, dict[str, float]]:
-    """Compute AJI/PQ from imported CellViT JSON sidecars vs input ``cell_masks``."""
+    """Compute cell-mask metrics from CellViT sidecars vs input ``cell_masks``."""
     cache_dir = Path(cache_dir)
     tile_id = _tile_id_from_manifest(cache_dir)
     condition_images = _iter_condition_images(cache_dir)
@@ -736,9 +768,13 @@ def compute_cell_metrics(
                 f"GT cell mask shape {gt_inst.shape} does not match prediction {pred_inst.shape} for {image_path}"
             )
         _, _, pq = _compute_pq(gt_inst, pred_inst)
+        dice, iou, accuracy = _compute_binary_segmentation_metrics(gt_inst, pred_inst)
         per_condition[cond_key] = {
             "aji": _compute_aji(gt_inst, pred_inst),
             "pq": pq,
+            "dice": dice,
+            "iou": iou,
+            "accuracy": accuracy,
         }
     return per_condition
 
@@ -778,7 +814,7 @@ def compute_metrics_for_cache_dir(
             rec = per_condition.setdefault(cond_key, _empty_metrics_record())
             rec["lpips"] = score
 
-    if "aji" in metrics_to_compute or "pq" in metrics_to_compute:
+    if any(metric in metrics_to_compute for metric in ("aji", "pq", "dice", "iou", "accuracy")):
         cell_scores = compute_cell_metrics(cache_dir, orion_root)
         for cond_key, values in cell_scores.items():
             rec = per_condition.setdefault(cond_key, _empty_metrics_record())
@@ -786,6 +822,12 @@ def compute_metrics_for_cache_dir(
                 rec["aji"] = values["aji"]
             if "pq" in metrics_to_compute:
                 rec["pq"] = values["pq"]
+            if "dice" in metrics_to_compute:
+                rec["dice"] = values["dice"]
+            if "iou" in metrics_to_compute:
+                rec["iou"] = values["iou"]
+            if "accuracy" in metrics_to_compute:
+                rec["accuracy"] = values["accuracy"]
 
     if "style_hed" in metrics_to_compute:
         for cond_key, score in compute_style_hed_scores(cache_dir, orion_root).items():
@@ -810,7 +852,10 @@ def main() -> None:
         "--metrics",
         nargs="+",
         default=["all"],
-        help="Metrics to compute: cosine lpips aji pq style_hed all (default: all; includes style_hed)",
+        help=(
+            "Metrics to compute: cosine lpips aji pq dice iou accuracy style_hed all "
+            "(default: all; includes style_hed)"
+        ),
     )
     parser.add_argument("--device", type=str, default="cuda", help="cuda or cpu")
     parser.add_argument(
