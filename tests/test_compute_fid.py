@@ -38,12 +38,16 @@ if "diffusers" not in sys.modules:
 from tools.compute_fid import (
     FOUR_GROUP_ORDER,
     ImageFeatureRecord,
+    _generated_feature_cache_path,
     _generated_uni_feature_cache_path,
     all_features_cached,
     collect_condition_paths,
     compute_fid_from_stats,
     condition_metric_key,
+    default_output_path,
     extract_uni_features,
+    extract_virchow2_features,
+    metric_key_for_backend,
 )
 
 
@@ -124,6 +128,37 @@ def test_collect_condition_paths_uses_uni_feature_records(tmp_path: Path) -> Non
     )
 
 
+def test_collect_condition_paths_uses_virchow2_feature_records(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    orion_root = tmp_path / "orion"
+    tile_id = "tile_001"
+    _write_complete_ablation_cache(cache_dir, tile_id, orion_root)
+    np.save(
+        orion_root / "features" / f"{tile_id}_virchow2.npy",
+        np.array([0.4, 0.5, 0.6], dtype=np.float32),
+    )
+
+    tile_ids, real_records, condition_to_records = collect_condition_paths(
+        cache_dir,
+        orion_root,
+        feature_backend="virchow2",
+    )
+
+    assert tile_ids == [tile_id]
+    assert len(real_records) == 1
+    assert real_records[0].feature_path == orion_root / "features" / f"{tile_id}_virchow2.npy"
+
+    key = condition_metric_key(("cell_types",))
+    record = condition_to_records[key][0]
+    tile_dir = cache_dir / tile_id
+    assert record.image_path == tile_dir / "subset_0" / "generated_he.png"
+    assert record.feature_path == _generated_feature_cache_path(
+        tile_dir,
+        Path("subset_0/generated_he.png"),
+        feature_backend="virchow2",
+    )
+
+
 def test_extract_uni_features_reuses_cached_features_and_saves_missing(tmp_path: Path) -> None:
     cached_feature_path = tmp_path / "cached.npy"
     missing_feature_path = tmp_path / "generated" / "sample_uni.npy"
@@ -175,3 +210,48 @@ def test_extract_uni_features_uses_all_cached_without_extractor(tmp_path: Path) 
     features = extract_uni_features(records, extractor=None, batch_size=8)
 
     np.testing.assert_allclose(features, np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64))
+
+
+def test_extract_virchow2_features_reuses_cached_features_and_saves_missing(tmp_path: Path) -> None:
+    cached_feature_path = tmp_path / "cached.npy"
+    missing_feature_path = tmp_path / "generated" / "sample_virchow2.npy"
+    image_path = tmp_path / "generated" / "sample.png"
+
+    np.save(cached_feature_path, np.array([5.0, 6.0], dtype=np.float32))
+    _write_rgb(image_path, value=123)
+
+    class FakeExtractor:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def extract_batch(self, images):
+            self.batch_sizes.append(len(images))
+            return np.array([[7.0, 8.0]], dtype=np.float32)
+
+    extractor = FakeExtractor()
+    records = [
+        ImageFeatureRecord(
+            image_path=tmp_path / "unused.png",
+            feature_path=cached_feature_path,
+        ),
+        ImageFeatureRecord(
+            image_path=image_path,
+            feature_path=missing_feature_path,
+        ),
+    ]
+
+    features = extract_virchow2_features(records, extractor=extractor, batch_size=4)
+
+    assert extractor.batch_sizes == [1]
+    np.testing.assert_allclose(features, np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float64))
+    assert missing_feature_path.is_file()
+    np.testing.assert_allclose(np.load(missing_feature_path), np.array([7.0, 8.0], dtype=np.float32))
+
+
+def test_metric_key_and_output_path_support_virchow2() -> None:
+    cache_dir = Path("/tmp/example-cache")
+
+    assert metric_key_for_backend("uni") == "fud"
+    assert metric_key_for_backend("virchow2") == "fvd"
+    assert metric_key_for_backend("inception") == "fid"
+    assert default_output_path(cache_dir, "virchow2") == cache_dir / "fvd_scores.json"

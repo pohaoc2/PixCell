@@ -102,6 +102,9 @@ METRIC_LABELS = {
     "fud": "FUD",
     "style_hed": "HED",
 }
+TRADEOFF_METRIC_ORDER = ("fud", "cosine", "lpips", "aji", "pq", "style_hed")
+CELLVIT_PROPOSED_PQ_MEAN = 0.6696
+CELLVIT_PROPOSED_PQ_STD = 0.034
 CHANNEL_EFFECT_CMAP = plt.get_cmap("RdBu")
 
 
@@ -928,7 +931,7 @@ def comparison_metric_keys(summary: DatasetSummary) -> list[str]:
 
 def metric_tradeoff_keys(summaries: list[DatasetSummary]) -> list[str]:
     present = {metric for summary in summaries for metric in summary.metric_keys}
-    return [metric for metric in DEFAULT_METRIC_ORDER if metric in present]
+    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in present]
 
 
 def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
@@ -946,9 +949,10 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             start = index
     spans.append((len(condition_tuples[-1]), start, len(condition_tuples) - 1))
     dataset_styles = {
-        "paired": {"linestyle": "-", "markerfacecolor": INK, "markeredgecolor": INK, "error_linestyle": "solid"},
-        "unpaired": {"linestyle": ":", "markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": (0, (4, 2))},
+        "paired": {"markerfacecolor": INK, "markeredgecolor": INK, "error_linestyle": "solid"},
+        "unpaired": {"markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": (0, (4, 2))},
     }
+    x_offsets = {"paired": -0.12, "unpaired": 0.12}
 
     for index, metric_key in enumerate(metrics):
         row, col = divmod(index, 3)
@@ -969,12 +973,13 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             for value, std_value in zip(ys, stds, strict=True):
                 all_values.extend([value - std_value, value + std_value])
             style = dataset_styles[summary.slug]
+            shifted_xs = [x + x_offsets[summary.slug] for x in xs]
             container = ax.errorbar(
-                xs,
+                shifted_xs,
                 ys,
                 yerr=stds,
                 color=INK,
-                linestyle=style["linestyle"],
+                linestyle="none",
                 marker="o",
                 markerfacecolor=style["markerfacecolor"],
                 markeredgecolor=style["markeredgecolor"],
@@ -990,6 +995,11 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             for barlinecol in barlinecols:
                 barlinecol.set_linestyle(error_linestyle)
 
+        if metric_key == "pq":
+            pq_band_lo = CELLVIT_PROPOSED_PQ_MEAN - CELLVIT_PROPOSED_PQ_STD
+            pq_band_hi = CELLVIT_PROPOSED_PQ_MEAN + CELLVIT_PROPOSED_PQ_STD
+            all_values.extend([pq_band_lo, pq_band_hi])
+
         if not all_values:
             ax.axis("off")
             dot_ax.axis("off")
@@ -1004,24 +1014,32 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             fontweight="bold",
             pad=16,
         )
+        if metric_key == "pq":
+            pq_band_lo = CELLVIT_PROPOSED_PQ_MEAN - CELLVIT_PROPOSED_PQ_STD
+            pq_band_hi = CELLVIT_PROPOSED_PQ_MEAN + CELLVIT_PROPOSED_PQ_STD
+            pq_band = ax.axhspan(pq_band_lo, pq_band_hi, color="#A8A8A8", alpha=0.22, zorder=0)
+            pq_band.set_hatch("////")
+            pq_band.set_edgecolor("#8A8A8A")
+            pq_band.set_linewidth(0.0)
         for _, start_idx, end_idx in spans[:-1]:
             ax.axvline(end_idx + 0.5, color="#BEBEBE", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
             dot_ax.axvline(end_idx + 0.5, color="#D0D0D0", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
-        for cardinality, start_idx, end_idx in spans:
-            center = (start_idx + end_idx) / 2
-            ax.text(
-                center,
-                1.01,
-                f"{cardinality}g",
-                transform=ax.get_xaxis_transform(),
-                ha="center",
-                va="bottom",
-                fontsize=7.2,
-                color="#666666",
-            )
         ax.set_xlim(-0.55, len(condition_keys) - 0.45)
         ax.set_xticks([])
         ax.set_ylim(lo, hi)
+        if metric_key == "pq":
+            y_span = hi - lo
+            label_y = min(hi - 0.02 * y_span, pq_band_hi + 0.05 * y_span)
+            ax.text(
+                len(condition_keys) - 0.55,
+                label_y,
+                "CellViT proposed PQ",
+                ha="right",
+                va="bottom",
+                fontsize=8.0,
+                color="#666666",
+                zorder=5,
+            )
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -1071,12 +1089,12 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         fig.add_subplot(subgrid[1, 0]).axis("off")
 
     handles = [
-        Line2D([0], [0], color="#444444", linestyle="-", marker="o", markerfacecolor=INK, markeredgecolor=INK, markersize=5.0, linewidth=1.6, label="Paired"),
+        Line2D([0], [0], color="#444444", linestyle="None", marker="o", markerfacecolor=INK, markeredgecolor=INK, markersize=5.0, linewidth=1.6, label="Paired"),
         Line2D(
             [0],
             [0],
             color="#444444",
-            linestyle=":",
+            linestyle="None",
             marker="o",
             markerfacecolor="white",
             markeredgecolor="#444444",
@@ -1084,8 +1102,9 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             linewidth=1.6,
             label="Unpaired",
         ),
+        Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="CellViT PQ ± SD"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.962), fontsize=9.6)
+    fig.legend(handles=handles, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.972), fontsize=9.6)
     fig.suptitle("Metric tradeoffs across all 15 channel-group combinations", y=0.992, fontsize=14.0, fontweight="bold")
     fig.subplots_adjust(left=0.055, right=0.99, bottom=0.075, top=0.885)
     return fig
