@@ -38,6 +38,7 @@ from tools.stage3.common import (
     resolve_uni_embedding,
     to_uint8_rgb,
 )
+from tools.stage3.style_mapping import load_style_mapping, resolve_style_tile_id
 
 
 def _is_cuda_device(device: str) -> bool:
@@ -186,6 +187,7 @@ def generate_subset_cache_for_tile(
     seed: int,
     null_uni: bool,
     uni_npy: Path | None,
+    style_mapping: dict[str, str] | None = None,
 ) -> Path:
     from tools.stage3.ablation import (
         build_subset_ablation_sections,
@@ -194,11 +196,16 @@ def generate_subset_cache_for_tile(
     from tools.stage3.ablation_cache import save_subset_condition_cache
     from tools.stage3.tile_pipeline import generate_group_combination_ablation_images, load_exp_channels
 
+    resolved_uni_npy = uni_npy
+    if resolved_uni_npy is None and style_mapping:
+        style_tile_id = resolve_style_tile_id(tile_id, style_mapping=style_mapping)
+        resolved_uni_npy = Path(feat_dir) / f"{style_tile_id}_uni.npy"
+
     uni_embeds = resolve_uni_embedding(
         tile_id,
         feat_dir=feat_dir,
         null_uni=null_uni,
-        uni_npy=uni_npy,
+        uni_npy=resolved_uni_npy,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -459,6 +466,7 @@ def _build_worker_common_args(args: argparse.Namespace, *, data_root: Path) -> d
         "force_uni_features": args.force_uni_features,
         "uni_model": args.uni_model,
         "feature_device": args.feature_device or args.device,
+        "style_mapping_json": args.style_mapping_json,
     }
 
 
@@ -468,6 +476,7 @@ def _generate_tile_job(job: dict) -> tuple[str, int]:
         sys.path.insert(0, str(ROOT))
 
     runtime = _get_worker_runtime(job)
+    style_mapping = load_style_mapping(job.get("style_mapping_json"))
 
     tile_id = str(job["tile_id"])
     cache_dir = Path(job["cache_dir"])
@@ -484,6 +493,7 @@ def _generate_tile_job(job: dict) -> tuple[str, int]:
         seed=job["seed"],
         null_uni=job["null_uni"],
         uni_npy=None,
+        style_mapping=style_mapping,
     )
 
     written = 0
@@ -562,6 +572,77 @@ def _print_progress(completed: int, total: int, *, prefix: str) -> None:
     print_progress(completed, total, prefix=prefix)
 
 
+def _select_generation_tile_ids(
+    *,
+    all_ids: list[str],
+    existing_ids: list[str],
+    tile_sample_seed: int,
+    requested_n: int | None = None,
+    target_total_tiles: int | None = None,
+    skip_existing: bool = False,
+) -> tuple[list[str], str]:
+    existing_set = set(existing_ids)
+    rng = random.Random(tile_sample_seed)
+
+    if requested_n is not None and target_total_tiles is not None:
+        raise ValueError("requested_n and target_total_tiles are mutually exclusive")
+
+    if target_total_tiles is not None:
+        if target_total_tiles < 1:
+            raise ValueError("--target-total-tiles must be >= 1")
+        if len(existing_ids) > target_total_tiles:
+            raise ValueError(
+                f"cache already has {len(existing_ids)} tiles, which exceeds target_total_tiles="
+                f"{target_total_tiles}"
+            )
+
+        needed = target_total_tiles - len(existing_ids)
+        if needed == 0:
+            return [], (
+                f"Cache already has {len(existing_ids)} tiles; target_total_tiles="
+                f"{target_total_tiles}, nothing to do."
+            )
+
+        candidates = [tile_id for tile_id in all_ids if tile_id not in existing_set]
+        if len(candidates) < needed:
+            raise ValueError(
+                f"need {needed} uncached tiles to reach target_total_tiles={target_total_tiles}, "
+                f"but found only {len(candidates)} under --data-root"
+            )
+
+        selected = rng.sample(candidates, needed)
+        return selected, (
+            f"Selected {len(selected)} new tiles to grow cache from {len(existing_ids)} "
+            f"to {target_total_tiles} total tiles (tile_sample_seed={tile_sample_seed})"
+        )
+
+    if requested_n is None:
+        raise ValueError("requested_n is required when target_total_tiles is not set")
+    if requested_n < 1:
+        raise ValueError("--n-tiles must be >= 1")
+
+    candidates = all_ids
+    if skip_existing:
+        candidates = [tile_id for tile_id in all_ids if tile_id not in existing_set]
+        if len(candidates) < requested_n:
+            raise ValueError(
+                f"need {requested_n} uncached tiles, but found only {len(candidates)} "
+                f"after skipping {len(existing_ids)} existing cache dirs"
+            )
+    elif len(all_ids) < requested_n:
+        raise ValueError(f"need at least {requested_n} tiles under --data-root, found {len(all_ids)}")
+
+    selected = rng.sample(candidates, requested_n)
+    if skip_existing:
+        message = (
+            f"Selected {len(selected)} uncached tiles (skipping {len(existing_ids)} existing cache dirs; "
+            f"tile_sample_seed={tile_sample_seed})"
+        )
+    else:
+        message = f"Sampled {len(selected)} tiles (tile_sample_seed={tile_sample_seed}): {selected}"
+    return selected, message
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -604,6 +685,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Randomly sample N tiles from --data-root and write each under --output-dir/{tile_id}",
     )
     mode.add_argument(
+        "--target-total-tiles",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Grow --output-dir to exactly N per-tile caches by sampling only uncached tiles. "
+            "Safe for extending an existing cache without regenerating overlap."
+        ),
+    )
+    mode.add_argument(
         "--existing-cache-parent",
         type=str,
         default=None,
@@ -634,7 +725,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tile-sample-seed",
         type=int,
         default=42,
-        help="RNG seed when choosing tiles with --n-tiles (default: 42)",
+        help="RNG seed when choosing tiles with --n-tiles or --target-total-tiles (default: 42)",
+    )
+    parser.add_argument(
+        "--style-mapping-json",
+        type=str,
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired UNI feature lookup.",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help=(
+            "With --n-tiles, sample only tiles that do not already have manifest.json under "
+            "--output-dir/{tile_id}."
+        ),
     )
     parser.add_argument(
         "--null-uni",
@@ -690,8 +795,12 @@ def main() -> None:
         parser.error("--jobs must be >= 1")
     if args.n_tiles is not None and args.uni_npy is not None:
         parser.error("--uni-npy is only supported with --tile-id (single tile)")
+    if args.target_total_tiles is not None and args.uni_npy is not None:
+        parser.error("--uni-npy is only supported with --tile-id (single tile)")
     if args.existing_cache_parent is not None and args.uni_npy is not None:
         parser.error("--uni-npy is only supported with --tile-id (single tile)")
+    if args.skip_existing and args.n_tiles is None:
+        parser.error("--skip-existing is only supported with --n-tiles")
 
     os.chdir(ROOT)
     if str(ROOT) not in sys.path:
@@ -710,6 +819,7 @@ def main() -> None:
     feature_device = args.feature_device or device
     uni_model = Path(args.uni_model)
     worker_common = _build_worker_common_args(args, data_root=data_root)
+    style_mapping = load_style_mapping(args.style_mapping_json)
 
     if args.tile_id is not None:
         runtime = _load_runtime(
@@ -739,6 +849,7 @@ def main() -> None:
             seed=args.seed,
             null_uni=args.null_uni,
             uni_npy=uni_override,
+            style_mapping=style_mapping,
         )
         if args.cache_uni_features:
             written = _cache_features_for_cache_dir(
@@ -750,22 +861,24 @@ def main() -> None:
             print(f"[{args.tile_id}] Cached {written} UNI feature files")
         return
 
-    if args.n_tiles is not None:
-        if args.n_tiles < 1:
-            parser.error("--n-tiles must be >= 1")
-
+    if args.n_tiles is not None or args.target_total_tiles is not None:
         all_ids = list_tile_ids_from_exp_channels(exp_channels_dir)
-        if len(all_ids) < args.n_tiles:
-            parser.error(
-                f"need at least {args.n_tiles} tiles under {exp_channels_dir}, found {len(all_ids)}"
-            )
-
-        random.seed(args.tile_sample_seed)
-        selected = random.sample(all_ids, args.n_tiles)
         cache_parent = Path(args.output_dir) if args.output_dir is not None else cache_parent_default
-        print(
-            f"Sampled {args.n_tiles} tiles (tile_sample_seed={args.tile_sample_seed}): {selected}"
-        )
+        existing_ids = list_cached_tile_ids(cache_parent) if cache_parent.is_dir() else []
+        try:
+            selected, selection_msg = _select_generation_tile_ids(
+                all_ids=all_ids,
+                existing_ids=existing_ids,
+                tile_sample_seed=args.tile_sample_seed,
+                requested_n=args.n_tiles,
+                target_total_tiles=args.target_total_tiles,
+                skip_existing=args.skip_existing,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(selection_msg)
+        if not selected:
+            return
 
         if args.jobs > 1 and _is_cuda_device(device):
             print(
@@ -819,6 +932,7 @@ def main() -> None:
                 seed=args.seed,
                 null_uni=args.null_uni,
                 uni_npy=None,
+                style_mapping=style_mapping,
             )
             if args.cache_uni_features:
                 written = _cache_features_for_cache_dir(

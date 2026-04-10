@@ -2,6 +2,8 @@
 
 This guide covers Stage 3 of the PixCell pipeline: running inference from simulation channels, validating checkpoints, and producing ablation and reporting artifacts.
 
+[![Open Paired Ablation Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pohaoc2/PixCell/blob/main/notebook/stage3_paired_ablation_a100_colab.ipynb)
+
 Prerequisites:
 
 1. Dependencies installed from [`README.md`](README.md).
@@ -109,6 +111,8 @@ Outputs under `{output_dir}/`:
 
 The exhaustive suite is built from the four Stage 3 groups: `cell_types`, `cell_state`, `vasculature`, and `microenv`.
 
+For unpaired analysis, keep using the original ORION root for layout and pass a mapping JSON when you need style references to come from a different tile. The mapping-only workflow avoids creating `inference_output/unpaired_ablation/data/...`, which keeps S3 uploads smaller.
+
 ---
 
 ## Channel Impact Analysis
@@ -139,6 +143,26 @@ conda run -n pixcell python tools/stage3/channel_sweep.py \
     --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
     --out inference_output/channel_sweep \
     --cache-dir inference_output/channel_sweep/cache \
+    --experiments 1 2 3 \
+    --seed 42
+```
+
+Unpaired variants can use the same `data/orion-crc33` layout root plus a mapping JSON:
+
+```bash
+conda run -n pixcell python tools/vis/leave_one_out_diff.py \
+    --cache-root inference_output/unpaired_ablation/ablation_results \
+    --orion-root data/orion-crc33 \
+    --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --out-root inference_output/unpaired_ablation/leave_one_out
+
+conda run -n pixcell python tools/stage3/channel_sweep.py \
+    --class-json inference_output/unpaired_ablation/channel_sweep/tile_classes.json \
+    --data-root data/orion-crc33 \
+    --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --out inference_output/unpaired_ablation/channel_sweep \
+    --cache-dir inference_output/unpaired_ablation/channel_sweep/cache \
     --experiments 1 2 3 \
     --seed 42
 ```
@@ -179,6 +203,19 @@ Stage 3 ablation workflow, end to end:
 
 For the consolidated paired + unpaired workflow reference, see [`ablation_cli.md`](ablation_cli.md).
 
+When running unpaired ablations, prefer the mapping-only flow:
+
+```bash
+python tools/stage3/prepare_unpaired_ablation_dataset.py \
+    --paired-cache-root inference_output/paired_ablation/ablation_results \
+    --data-root data/orion-crc33 \
+    --metadata-only \
+    --mapping-output inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --seed 42
+```
+
+That JSON lets the unpaired tools keep layout inputs from `data/orion-crc33` while pulling style references from mapped tiles, so you do not need `inference_output/unpaired_ablation/data/...`.
+
 | Script | Purpose | Typical command |
 |--------|---------|-----------------|
 | `tools/stage3/generate_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` | `python tools/stage3/generate_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --n-tiles 8 --jobs 4` |
@@ -199,6 +236,14 @@ python tools/stage3/generate_ablation_subset_cache.py \
     --data-root      data/orion-crc33 \
     --tile-id        YOUR_TILE_ID
 
+python tools/stage3/generate_ablation_subset_cache.py \
+    --config             configs/config_controlnet_exp.py \
+    --checkpoint-dir     checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post \
+    --data-root          data/orion-crc33 \
+    --output-dir         inference_output/full_ablation \
+    --target-total-tiles 5000 \
+    --jobs               4
+
 python tools/vis/stage3_ablation_grid_figure.py \
     --cache-dir inference_output/full_ablation/YOUR_TILE_ID \
     --orion-root data/orion-crc33 \
@@ -216,7 +261,8 @@ python tools/render_ablation_html_report.py \
     --paired-reference-root data/orion-crc33 \
     --unpaired-metrics-root inference_output/unpaired_ablation/ablation_results \
     --unpaired-dataset-root inference_output/unpaired_ablation \
-    --unpaired-reference-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+    --unpaired-reference-root data/orion-crc33 \
+    --unpaired-style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
     --output docs/ablation_scientific_report.html
 ```
 
@@ -229,6 +275,25 @@ conda run --no-capture-output -n pixcell \
     --orion-root data/orion-crc33 \
     --metrics lpips aji pq \
     --lpips-batch-size 8
+```
+
+For unpaired metric computation without a remapped dataset tree:
+
+```bash
+conda run --no-capture-output -n pixcell \
+    python -u tools/compute_ablation_metrics.py \
+    --cache-dir inference_output/unpaired_ablation/ablation_results \
+    --orion-root data/orion-crc33 \
+    --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --metrics aji pq style_hed \
+    --lpips-batch-size 8
+
+python tools/compute_fid.py \
+    --cache-dir inference_output/unpaired_ablation/ablation_results \
+    --orion-root data/orion-crc33 \
+    --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --device cuda \
+    --output inference_output/unpaired_ablation/ablation_results/fud_scores.json
 ```
 
 ---
@@ -402,9 +467,11 @@ Optional flags:
 | `--paired-metrics-root PATH` | `inference_output/paired_ablation/ablation_results` | Parent directory with paired `metrics.json` files |
 | `--paired-dataset-root PATH` | `inference_output/paired_ablation` | Paired dataset root for figure lookup |
 | `--paired-reference-root PATH` | `data/orion-crc33` | Reference H&E root for paired HED backfill |
+| `--paired-style-mapping-json PATH` | `None` | Optional paired style mapping JSON for remapped-reference workflows |
 | `--unpaired-metrics-root PATH` | `inference_output/unpaired_ablation/ablation_results` | Parent directory with unpaired `metrics.json` files |
 | `--unpaired-dataset-root PATH` | `inference_output/unpaired_ablation` | Unpaired dataset root for figure lookup |
-| `--unpaired-reference-root PATH` | `inference_output/unpaired_ablation/data/orion-crc33-unpaired` | Reference H&E root for unpaired HED backfill |
+| `--unpaired-reference-root PATH` | `data/orion-crc33` | Layout dataset root used for unpaired reference lookup |
+| `--unpaired-style-mapping-json PATH` | `None` | Mapping JSON that resolves unpaired style-reference tiles |
 | `--output PATH` | `docs/ablation_scientific_report.html` | Output HTML path |
 | `--title TEXT` | `Channel Ablation Scientific Report` | HTML page title |
 | `--self-contained` | `False` | Embed representative evidence images |

@@ -79,6 +79,30 @@ def _derangement(items: list[str], seed: int) -> list[str]:
     return shuffled[offset:] + shuffled[:offset]
 
 
+def _build_mapping_payload(
+    *,
+    paired_cache_root: Path,
+    data_root: Path,
+    output_root: Path | None,
+    seed: int,
+    mode: str,
+) -> dict:
+    tile_ids = _paired_tile_ids(paired_cache_root)
+    style_tile_ids = _derangement(tile_ids, seed)
+    mapping = dict(zip(tile_ids, style_tile_ids, strict=True))
+    return {
+        "version": 1,
+        "seed": seed,
+        "paired_cache_root": str(paired_cache_root.resolve()),
+        "source_data_root": str(data_root.resolve()),
+        "output_root": None if output_root is None else str(output_root.resolve()),
+        "link_mode": mode,
+        "tile_count": len(tile_ids),
+        "tile_ids": tile_ids,
+        "style_mapping": mapping,
+    }
+
+
 def build_unpaired_dataset(
     *,
     paired_cache_root: Path,
@@ -88,9 +112,15 @@ def build_unpaired_dataset(
     mode: str,
     overwrite: bool,
 ) -> Path:
-    tile_ids = _paired_tile_ids(paired_cache_root)
-    style_tile_ids = _derangement(tile_ids, seed)
-    mapping = dict(zip(tile_ids, style_tile_ids, strict=True))
+    payload = _build_mapping_payload(
+        paired_cache_root=paired_cache_root,
+        data_root=data_root,
+        output_root=output_root,
+        seed=seed,
+        mode=mode,
+    )
+    tile_ids = list(payload["tile_ids"])
+    mapping = {str(k): str(v) for k, v in dict(payload["style_mapping"]).items()}
 
     exp_src = data_root / "exp_channels"
     feat_src = data_root / "features"
@@ -145,17 +175,6 @@ def build_unpaired_dataset(
         feat_dst = feat_out / f"{layout_tile_id}_uni.npy"
         _link_or_copy(feat_src_path, feat_dst, mode=mode)
 
-    payload = {
-        "version": 1,
-        "seed": seed,
-        "paired_cache_root": str(paired_cache_root.resolve()),
-        "source_data_root": str(data_root.resolve()),
-        "output_root": str(output_root.resolve()),
-        "link_mode": mode,
-        "tile_count": len(tile_ids),
-        "tile_ids": tile_ids,
-        "style_mapping": mapping,
-    }
     mapping_path = meta_out / "unpaired_mapping.json"
     mapping_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return mapping_path
@@ -186,6 +205,17 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "inference_output" / "unpaired_ablation" / "data" / "orion-crc33-unpaired",
         help="Destination ORION-style dataset root.",
     )
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Write only a small mapping JSON and do not materialize a remapped dataset tree.",
+    )
+    parser.add_argument(
+        "--mapping-output",
+        type=Path,
+        default=ROOT / "inference_output" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
+        help="Mapping JSON path used with --metadata-only.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for the style permutation.")
     parser.add_argument(
         "--mode",
@@ -203,6 +233,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.metadata_only:
+        payload = _build_mapping_payload(
+            paired_cache_root=args.paired_cache_root.resolve(),
+            data_root=args.data_root.resolve(),
+            output_root=None,
+            seed=int(args.seed),
+            mode="metadata_only",
+        )
+        mapping_path = args.mapping_output.resolve()
+        mapping_path.parent.mkdir(parents=True, exist_ok=True)
+        mapping_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote mapping -> {mapping_path}")
+        return
     mapping_path = build_unpaired_dataset(
         paired_cache_root=args.paired_cache_root.resolve(),
         data_root=args.data_root.resolve(),

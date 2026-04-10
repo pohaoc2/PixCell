@@ -473,8 +473,12 @@ def render_markdown(
         f"`{tile_count}` tile-level `metrics.json` files under `{metrics_root}`."
     )
 
-    mapping_path = dataset_root / "data" / "orion-crc33-unpaired" / "metadata" / "unpaired_mapping.json"
-    if mapping_path.is_file():
+    mapping_candidates = [
+        dataset_root / "metadata" / "unpaired_mapping.json",
+        dataset_root / "data" / "orion-crc33-unpaired" / "metadata" / "unpaired_mapping.json",
+    ]
+    mapping_path = next((path for path in mapping_candidates if path.is_file()), None)
+    if mapping_path is not None:
         lines.append("")
         lines.append(
             "For this unpaired setup, `exp_channels/` stay attached to the layout tile while "

@@ -32,9 +32,11 @@ if str(ROOT) not in sys.path:
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
     condition_metric_key,
+    default_orion_he_png_path,
     normalize_group_name,
     ordered_subset_condition_tuples,
 )
+from tools.stage3.style_mapping import load_style_mapping
 from tools.summarize_ablation_report import (
     DEFAULT_METRIC_ORDER,
     METRIC_SPEC_BY_KEY,
@@ -272,6 +274,7 @@ def load_tile_condition_metrics(
     *,
     metrics_paths: list[Path] | None = None,
     reference_root: Path | None = None,
+    style_mapping: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, dict[str, float]]], list[str]]:
     metrics_paths = sorted(metrics_paths) if metrics_paths is not None else sorted(Path(metrics_root).glob("*/metrics.json"))
     if not metrics_paths:
@@ -315,7 +318,7 @@ def load_tile_condition_metrics(
             if not needs_style_hed:
                 continue
             try:
-                scores = compute_style_hed_scores_local(cache_dir, reference_root)
+                scores = compute_style_hed_scores_local(cache_dir, reference_root, style_mapping=style_mapping)
             except (FileNotFoundError, ValueError):
                 continue
             for cond_key, value in scores.items():
@@ -628,11 +631,14 @@ def masked_mean_std_local(values: np.ndarray, mask: np.ndarray) -> tuple[float, 
     return float(np.mean(data)), float(np.std(data))
 
 
-def compute_style_hed_scores_local(cache_dir: Path, reference_root: Path) -> dict[str, float]:
+def compute_style_hed_scores_local(
+    cache_dir: Path,
+    reference_root: Path,
+    *,
+    style_mapping: dict[str, str] | None = None,
+) -> dict[str, float]:
     tile_id = tile_id_from_manifest_local(cache_dir)
-    ref_path = resolve_first_existing(
-        [reference_root / "he" / f"{tile_id}{ext}" for ext in (".png", ".jpg", ".jpeg", ".tif")]
-    )
+    ref_path = default_orion_he_png_path(reference_root, tile_id, style_mapping=style_mapping)
     if ref_path is None:
         raise FileNotFoundError(f"reference H&E not found for tile {tile_id!r}")
 
@@ -692,6 +698,7 @@ def add_missing_style_hed_means(
     metric_keys: list[str],
     *,
     reference_root: Path | None,
+    style_mapping: dict[str, str] | None = None,
 ) -> tuple[dict[str, dict[str, float]], list[str]]:
     if "style_hed" in metric_keys or reference_root is None:
         return condition_means, metric_keys
@@ -700,7 +707,7 @@ def add_missing_style_hed_means(
     for metrics_path in sorted(metrics_root.glob("*/metrics.json")):
         cache_dir = metrics_path.parent
         try:
-            scores = compute_style_hed_scores_local(cache_dir, reference_root)
+            scores = compute_style_hed_scores_local(cache_dir, reference_root, style_mapping=style_mapping)
         except (FileNotFoundError, ValueError):
             continue
         for cond_key, value in scores.items():
@@ -756,6 +763,7 @@ def load_dataset_summary(
     metrics_root: Path,
     dataset_root: Path,
     reference_root: Path | None = None,
+    style_mapping: dict[str, str] | None = None,
     enable_style_hed_backfill: bool = True,
     min_gt_cells: int = 0,
 ) -> DatasetSummary:
@@ -800,11 +808,13 @@ def load_dataset_summary(
         metrics_root,
         metric_keys,
         reference_root=resolved_reference_root,
+        style_mapping=style_mapping,
     )
     tile_records, tile_metric_keys = load_tile_condition_metrics(
         metrics_root,
         metrics_paths=filtered_metrics_paths,
         reference_root=resolved_reference_root,
+        style_mapping=style_mapping,
     )
     condition_stat_metric_keys = list(metric_keys)
     if tile_metric_keys:
@@ -2041,6 +2051,12 @@ def parse_args() -> argparse.Namespace:
         help="Reference H&E root used to compute missing paired HED metrics.",
     )
     parser.add_argument(
+        "--paired-style-mapping-json",
+        type=Path,
+        default=None,
+        help="Optional layout->style mapping JSON for paired reference lookup.",
+    )
+    parser.add_argument(
         "--unpaired-metrics-root",
         type=Path,
         default=ROOT / "inference_output" / "unpaired_ablation" / "ablation_results",
@@ -2055,8 +2071,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--unpaired-reference-root",
         type=Path,
-        default=ROOT / "inference_output" / "unpaired_ablation" / "data" / "orion-crc33-unpaired",
+        default=ROOT / "data" / "orion-crc33",
         help="Reference H&E root used to compute missing unpaired HED metrics when absent.",
+    )
+    parser.add_argument(
+        "--unpaired-style-mapping-json",
+        type=Path,
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired reference lookup.",
     )
     parser.add_argument(
         "--output",
@@ -2099,6 +2121,7 @@ def main() -> None:
             metrics_root=args.paired_metrics_root.resolve(),
             dataset_root=args.paired_dataset_root.resolve(),
             reference_root=args.paired_reference_root.resolve(),
+            style_mapping=load_style_mapping(args.paired_style_mapping_json),
             min_gt_cells=args.min_gt_cells,
         ),
         load_dataset_summary(
@@ -2107,6 +2130,7 @@ def main() -> None:
             metrics_root=args.unpaired_metrics_root.resolve(),
             dataset_root=args.unpaired_dataset_root.resolve(),
             reference_root=args.unpaired_reference_root.resolve(),
+            style_mapping=load_style_mapping(args.unpaired_style_mapping_json),
             min_gt_cells=args.min_gt_cells,
         ),
     ]

@@ -34,6 +34,7 @@ from tools.stage3.ablation_vis_utils import (
     default_orion_he_png_path,
     draw_image_border,
 )
+from tools.stage3.style_mapping import load_style_mapping
 
 COLOR_REF = "#999999"
 COLOR_BASELINE = "#9B59B6"
@@ -124,6 +125,7 @@ def render_loo_diff_figure(
     cache_dir: Path,
     *,
     orion_root: Path | None = None,
+    style_mapping: dict[str, str] | None = None,
     out_path: Path,
 ) -> None:
     """Save the leave-one-out diff figure."""
@@ -138,7 +140,7 @@ def render_loo_diff_figure(
 
     ref_he = None
     if orion_root is not None:
-        he_path = default_orion_he_png_path(Path(orion_root), tile_id)
+        he_path = default_orion_he_png_path(Path(orion_root), tile_id, style_mapping=style_mapping)
         if he_path is not None:
             ref_he = np.asarray(Image.open(he_path).convert("RGB"), dtype=np.uint8)
 
@@ -146,7 +148,7 @@ def render_loo_diff_figure(
     if orion_root is not None:
         try:
             group_thumbs = build_exp_channel_header_rgb(Path(orion_root) / "exp_channels", tile_id)
-        except (FileNotFoundError, OSError, ValueError, KeyError):
+        except (FileNotFoundError, OSError, ValueError, KeyError, ImportError, ModuleNotFoundError):
             group_thumbs = None
 
     hot_cmap = mcolors.LinearSegmentedColormap.from_list(
@@ -255,6 +257,7 @@ def render_loo_cache(
     cache_dir: Path,
     *,
     orion_root: Path | None = None,
+    style_mapping: dict[str, str] | None = None,
     out_path: Path | None = None,
     stats_path: Path | None = None,
 ) -> tuple[Path, Path]:
@@ -265,7 +268,13 @@ def render_loo_cache(
 
     diffs = compute_loo_diffs(cache_dir)
     save_loo_stats(diffs, stats_path)
-    render_loo_diff_figure(diffs, cache_dir, orion_root=orion_root, out_path=out_path)
+    render_loo_diff_figure(
+        diffs,
+        cache_dir,
+        orion_root=orion_root,
+        style_mapping=style_mapping,
+        out_path=out_path,
+    )
     return out_path, stats_path
 
 
@@ -291,6 +300,7 @@ def render_loo_cache_root(
     cache_root: Path,
     *,
     orion_root: Path | None = None,
+    style_mapping: dict[str, str] | None = None,
     out_root: Path | None = None,
     workers: int = 1,
     show_progress: bool = True,
@@ -327,6 +337,7 @@ def render_loo_cache_root(
                 render_loo_cache(
                     cache_dir,
                     orion_root=orion_root,
+                    style_mapping=style_mapping,
                     out_path=out_path,
                     stats_path=stats_path,
                 )
@@ -342,6 +353,7 @@ def render_loo_cache_root(
                 render_loo_cache,
                 cache_dir,
                 orion_root=orion_root,
+                style_mapping=style_mapping,
                 out_path=out_path,
                 stats_path=stats_path,
             )
@@ -370,6 +382,11 @@ def main() -> None:
     input_group.add_argument("--cache-root", help="Root directory containing many tile cache dirs")
     parser.add_argument("--orion-root", default=None, help="Optional ORION dataset root for channel thumbnails")
     parser.add_argument(
+        "--style-mapping-json",
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired reference H&E lookup.",
+    )
+    parser.add_argument(
         "--out",
         default=None,
         help="Output PNG path (default: <cache-dir>/leave_one_out_diff.png)",
@@ -393,6 +410,7 @@ def main() -> None:
     args = parser.parse_args()
 
     orion_root = Path(args.orion_root) if args.orion_root else None
+    style_mapping = load_style_mapping(args.style_mapping_json)
     out_root = Path(args.out_root) if args.out_root else None
 
     if args.cache_dir:
@@ -401,6 +419,7 @@ def main() -> None:
         fig_path, stats_path = render_loo_cache(
             cache_dir,
             orion_root=orion_root,
+            style_mapping=style_mapping,
             out_path=out_path,
         )
         print(f"Saved stats -> {stats_path}")
@@ -413,6 +432,7 @@ def main() -> None:
     rendered = render_loo_cache_root(
         Path(args.cache_root),
         orion_root=orion_root,
+        style_mapping=style_mapping,
         out_root=out_root,
         workers=args.workers,
         show_progress=not args.no_progress,

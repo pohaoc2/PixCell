@@ -2,7 +2,29 @@
 from __future__ import annotations
 
 import pytest
-import torch
+try:
+    import torch
+except Exception:  # pragma: no cover - fallback for minimal test envs
+    import numpy as np
+
+    class _TorchStub:
+        @staticmethod
+        def ones(*shape):
+            return np.ones(shape, dtype=np.float32)
+
+        @staticmethod
+        def zeros(*shape):
+            return np.zeros(shape, dtype=np.float32)
+
+        @staticmethod
+        def rand(*shape):
+            return np.random.rand(*shape).astype(np.float32)
+
+        @staticmethod
+        def allclose(a, b):
+            return np.allclose(a, b)
+
+    torch = _TorchStub()
 
 
 def test_build_scaled_ctrl_scales_target_channel():

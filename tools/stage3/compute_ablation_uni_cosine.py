@@ -30,6 +30,7 @@ from tools.stage3.ablation_vis_utils import (
     condition_metric_key,
     default_orion_uni_npy_path,
 )
+from tools.stage3.style_mapping import load_style_mapping
 from tools.stage3.uni_cosine_similarity import cosine_similarity_uni, flatten_uni_npy
 
 
@@ -37,6 +38,7 @@ def resolve_reference_embedding(
     *,
     cache_dir: Path,
     orion_root: Path,
+    style_mapping: dict[str, str] | None,
     reference_uni: Path | None,
     reference_he: Path | None,
     extractor_for_he: UNI2hExtractor | None,
@@ -53,7 +55,7 @@ def resolve_reference_embedding(
         path = reference_uni.resolve()
         return flatten_uni_npy(np.load(path)), {"type": "uni_npy", "path": str(path)}
 
-    auto_npy = default_orion_uni_npy_path(orion_root, tile_id)
+    auto_npy = default_orion_uni_npy_path(orion_root, tile_id, style_mapping=style_mapping)
     if auto_npy.is_file():
         return flatten_uni_npy(np.load(auto_npy)), {
             "type": "orion_features_uni_npy",
@@ -147,6 +149,7 @@ def compute_and_write_uni_cosine_scores(
     cache_dir: Path,
     *,
     orion_root: Path,
+    style_mapping: dict[str, str] | None = None,
     reference_uni: Path | None = None,
     reference_he: Path | None = None,
     uni_model: Path | None = None,
@@ -170,6 +173,7 @@ def compute_and_write_uni_cosine_scores(
     ref_emb, ref_meta = resolve_reference_embedding(
         cache_dir=cache_dir,
         orion_root=orion_root,
+        style_mapping=style_mapping,
         reference_uni=reference_uni,
         reference_he=reference_he,
         extractor_for_he=extractor,
@@ -182,6 +186,7 @@ def compute_and_write_uni_cosine_scores(
         "metric": "uni_cosine",
         "tile_id": tile_id,
         "orion_root": str(orion_root),
+        "style_mapping_tile_count": 0 if style_mapping is None else len(style_mapping),
         "reference": ref_meta,
         "uni_model": str(uni_model.resolve()),
         "per_condition": per_condition,
@@ -206,6 +211,12 @@ def main() -> None:
         type=Path,
         default=ROOT / "data/orion-crc33",
         help="Paired dataset root containing features/<tile_id>_uni.npy (default: data/orion-crc33)",
+    )
+    parser.add_argument(
+        "--style-mapping-json",
+        type=Path,
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired reference lookup.",
     )
     parser.add_argument(
         "--reference-uni",
@@ -252,6 +263,7 @@ def main() -> None:
     out_path, ref_meta, per_condition = compute_and_write_uni_cosine_scores(
         cache_dir,
         orion_root=orion_root,
+        style_mapping=load_style_mapping(args.style_mapping_json),
         reference_uni=args.reference_uni,
         reference_he=args.reference_he,
         uni_model=args.uni_model,
