@@ -7,6 +7,7 @@ their PNGs to rebuild alternative combined figures without rerunning diffusion.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import comb
 from pathlib import Path
 from typing import Protocol
 import json
@@ -221,6 +222,62 @@ def list_cached_tile_ids(cache_parent: Path) -> list[str]:
         p.name
         for p in cache_parent.iterdir()
         if p.is_dir() and (p / "manifest.json").is_file()
+    )
+
+
+def is_complete_tile_cache_dir(cache_dir: Path) -> bool:
+    """True when a per-tile cache manifest exists and every expected image file is present."""
+    cache_dir = Path(cache_dir)
+    manifest_path = cache_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = load_manifest(cache_dir)
+    except Exception:
+        return False
+
+    group_names = tuple(manifest.get("group_names") or ())
+    if not group_names:
+        return False
+
+    sections = manifest.get("sections") or []
+    by_subset_size: dict[int, dict] = {}
+    for section in sections:
+        try:
+            subset_size = int(section.get("subset_size", 0))
+        except (TypeError, ValueError):
+            return False
+        if subset_size < 1 or subset_size > len(group_names):
+            return False
+        by_subset_size[subset_size] = section
+
+    for subset_size in range(1, len(group_names) + 1):
+        section = by_subset_size.get(subset_size)
+        if section is None:
+            return False
+        entries = section.get("entries") or []
+        if len(entries) != comb(len(group_names), subset_size):
+            return False
+        for entry in entries:
+            image_path = entry.get("image_path")
+            if not image_path or not (cache_dir / image_path).is_file():
+                return False
+
+    cell_mask_path = manifest.get("cell_mask_path")
+    if cell_mask_path and not (cache_dir / cell_mask_path).is_file():
+        return False
+    return True
+
+
+def list_complete_cached_tile_ids(cache_parent: Path) -> list[str]:
+    """Tile IDs whose cache dirs contain a complete manifest + image set."""
+    cache_parent = Path(cache_parent)
+    if not cache_parent.is_dir():
+        raise FileNotFoundError(f"cache directory not found: {cache_parent}")
+    return sorted(
+        p.name
+        for p in cache_parent.iterdir()
+        if p.is_dir() and is_complete_tile_cache_dir(p)
     )
 
 

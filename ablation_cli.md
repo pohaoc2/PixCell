@@ -39,6 +39,58 @@ This file summarizes the paired and unpaired ablation workflows.
   - `inference_output/unpaired_ablation/leave_one_out`
   - `inference_output/unpaired_ablation/channel_sweep`
 
+## Rerun from scratch
+
+Comment:
+- Use this when you want a clean paired or unpaired regeneration instead of extending an existing cache.
+- If you keep old outputs around, rename them first so they do not mix with the new mapping or cache contents.
+- The Stage 3 cache generator now batches ablation conditions internally, so you do not need an extra CLI flag to enable batching.
+- On a single A100, start with `--jobs 1`. Multiple jobs on one GPU can still compete for VRAM.
+
+### Paired: clean rerun to 5000 tiles
+
+```bash
+mv inference_output/paired_ablation inference_output/paired_ablation_old
+
+python tools/stage3/generate_ablation_subset_cache.py \
+  --data-root data/orion-crc33 \
+  --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+  --output-dir inference_output/paired_ablation/ablation_results \
+  --target-total-tiles 5000 \
+  --seed 42 \
+  --tile-sample-seed 42 \
+  --device cuda \
+  --guidance-scale 2.5 \
+  --num-steps 20 \
+  --jobs 1
+```
+
+### Unpaired: clean rerun to 5000 tiles
+
+```bash
+mv inference_output/unpaired_ablation inference_output/unpaired_ablation_old
+
+python tools/stage3/prepare_unpaired_ablation_dataset.py \
+  --paired-cache-root inference_output/paired_ablation/ablation_results \
+  --data-root data/orion-crc33 \
+  --metadata-only \
+  --mapping-output inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+  --seed 42
+
+python tools/stage3/generate_ablation_subset_cache.py \
+  --data-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+  --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
+  --output-dir inference_output/unpaired_ablation/ablation_results \
+  --target-total-tiles 5000 \
+  --seed 42 \
+  --tile-sample-seed 42 \
+  --device cuda \
+  --guidance-scale 2.5 \
+  --num-steps 20 \
+  --jobs 1
+```
+
 ## Step 1-2. Build the unpaired style mapping
 
 Comment:
@@ -66,7 +118,8 @@ cat inference_output/unpaired_ablation/metadata/unpaired_mapping.json
 Comment:
 - Paired uses the original ORION root.
 - Unpaired can now use the original ORION root plus `--style-mapping-json`.
-- `--jobs 2` is reasonable on a single T4 after the worker reuse fix; start lower if VRAM is tight.
+- The generator now batches ablation conditions internally.
+- On a single GPU, start with `--jobs 1`; only raise it if you have verified the extra worker helps on your hardware.
 
 ### Paired
 
@@ -74,14 +127,14 @@ Comment:
 python tools/stage3/generate_ablation_subset_cache.py \
   --data-root data/orion-crc33 \
   --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
-  --n-tiles 1000 \
+  --target-total-tiles 5000 \
   --output-dir inference_output/paired_ablation/ablation_results \
   --seed 42 \
   --tile-sample-seed 42 \
   --device cuda \
   --guidance-scale 2.5 \
   --num-steps 20 \
-  --jobs 2
+  --jobs 1
 ```
 
 ### Unpaired
@@ -98,7 +151,7 @@ python tools/stage3/generate_ablation_subset_cache.py \
   --device cuda \
   --guidance-scale 2.5 \
   --num-steps 20 \
-  --jobs 2
+  --jobs 1
 ```
 
 ## Step 4. Export CellViT batch

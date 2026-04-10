@@ -190,11 +190,12 @@ def generate_subset_cache_for_tile(
     style_mapping: dict[str, str] | None = None,
 ) -> Path:
     from tools.stage3.ablation import (
+        build_subset_conditions,
         build_subset_ablation_sections,
         group_names_from_channel_groups,
     )
     from tools.stage3.ablation_cache import save_subset_condition_cache
-    from tools.stage3.tile_pipeline import generate_group_combination_ablation_images, load_exp_channels
+    from tools.stage3.tile_pipeline import generate_ablation_images_with_context, prepare_tile_context
 
     resolved_uni_npy = uni_npy
     if resolved_uni_npy is None and style_mapping:
@@ -208,64 +209,42 @@ def generate_subset_cache_for_tile(
         uni_npy=resolved_uni_npy,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"[{tile_id}] Generating single-group cache images...")
-    single_group_imgs = generate_group_combination_ablation_images(
+    tile_context = prepare_tile_context(
         tile_id=tile_id,
         models=models,
         config=config,
-        scheduler=scheduler,
         uni_embeds=uni_embeds,
         device=device,
         exp_channels_dir=exp_channels_dir,
-        guidance_scale=guidance_scale,
-        seed=seed,
-        subset_size=1,
     )
-
-    print(f"[{tile_id}] Generating pair-group cache images...")
-    pair_group_imgs = generate_group_combination_ablation_images(
-        tile_id=tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=guidance_scale,
-        seed=seed,
-        subset_size=2,
-    )
-
-    print(f"[{tile_id}] Generating triple-group cache images...")
-    triple_group_imgs = generate_group_combination_ablation_images(
-        tile_id=tile_id,
-        models=models,
-        config=config,
-        scheduler=scheduler,
-        uni_embeds=uni_embeds,
-        device=device,
-        exp_channels_dir=exp_channels_dir,
-        guidance_scale=guidance_scale,
-        seed=seed,
-        subset_size=3,
-    )
-
+    ctrl_full = tile_context["ctrl_full"]
     group_names = group_names_from_channel_groups(config.channel_groups)
-    if len(group_names) >= 4:
-        print(f"[{tile_id}] Generating all-groups cache image...")
-        all_group_imgs = generate_group_combination_ablation_images(
-            tile_id=tile_id,
-            models=models,
-            config=config,
-            scheduler=scheduler,
-            uni_embeds=uni_embeds,
-            device=device,
-            exp_channels_dir=exp_channels_dir,
-            guidance_scale=guidance_scale,
-            seed=seed,
-            subset_size=len(group_names),
-        )
+
+    single_conditions = build_subset_conditions(group_names, subset_size=1)
+    pair_conditions = build_subset_conditions(group_names, subset_size=2)
+    triple_conditions = build_subset_conditions(group_names, subset_size=3)
+    all_conditions = build_subset_conditions(group_names, subset_size=len(group_names))
+    batched_conditions = [*single_conditions, *pair_conditions, *triple_conditions, *all_conditions]
+
+    print(f"[{tile_id}] Generating batched subset cache images...")
+    batched_images = generate_ablation_images_with_context(
+        context=tile_context,
+        config=config,
+        scheduler=scheduler,
+        guidance_scale=guidance_scale,
+        device=device,
+        seed=seed,
+        conditions=batched_conditions,
+    )
+    single_end = len(single_conditions)
+    pair_end = single_end + len(pair_conditions)
+    triple_end = pair_end + len(triple_conditions)
+    single_group_imgs = batched_images[:single_end]
+    pair_group_imgs = batched_images[single_end:pair_end]
+    triple_group_imgs = batched_images[pair_end:triple_end]
+
+    if all_conditions:
+        all_group_imgs = batched_images[triple_end:]
         subset_sections = build_subset_ablation_sections(
             group_names,
             single_images=single_group_imgs,
@@ -281,12 +260,6 @@ def generate_subset_cache_for_tile(
             triple_images=triple_group_imgs,
         )
 
-    ctrl_full = load_exp_channels(
-        tile_id,
-        config.data.active_channels,
-        config.image_size,
-        exp_channels_dir,
-    )
     cell_mask = None
     if "cell_masks" in config.data.active_channels:
         cell_mask = ctrl_full[config.data.active_channels.index("cell_masks")].numpy()
@@ -806,7 +779,7 @@ def main() -> None:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-    from tools.stage3.ablation_cache import list_cached_tile_ids
+    from tools.stage3.ablation_cache import list_cached_tile_ids, list_complete_cached_tile_ids
     from tools.stage3.tile_pipeline import (
         list_tile_ids_from_exp_channels,
         resolve_data_layout,
@@ -864,7 +837,17 @@ def main() -> None:
     if args.n_tiles is not None or args.target_total_tiles is not None:
         all_ids = list_tile_ids_from_exp_channels(exp_channels_dir)
         cache_parent = Path(args.output_dir) if args.output_dir is not None else cache_parent_default
-        existing_ids = list_cached_tile_ids(cache_parent) if cache_parent.is_dir() else []
+        existing_ids = list_complete_cached_tile_ids(cache_parent) if cache_parent.is_dir() else []
+        incomplete_ids: list[str] = []
+        if cache_parent.is_dir():
+            all_cached_ids = list_cached_tile_ids(cache_parent)
+            existing_set = set(existing_ids)
+            incomplete_ids = [tile_id for tile_id in all_cached_ids if tile_id not in existing_set]
+            if incomplete_ids:
+                print(
+                    f"Found {len(incomplete_ids)} incomplete cache dirs under {cache_parent}; "
+                    "they will be regenerated and will not count toward existing totals."
+                )
         try:
             selected, selection_msg = _select_generation_tile_ids(
                 all_ids=all_ids,

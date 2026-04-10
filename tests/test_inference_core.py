@@ -217,3 +217,84 @@ def test_generate_zero_mask_latent_off(tmp_path):
         )
 
     assert torch.allclose(captured["cil"].float(), tme_out.float())
+
+
+def test_denoise_batched_matches_sequential():
+    from train_scripts.inference_controlnet import denoise, denoise_batched
+
+    class FakeScheduler:
+        def set_timesteps(self, num_inference_steps, device=None):
+            self.timesteps = [
+                torch.tensor(float(t), device=device if device is not None else "cpu")
+                for t in range(num_inference_steps, 0, -1)
+            ]
+
+        def scale_model_input(self, latents, t):
+            return latents + float(t) * 0.01
+
+        def step(self, noise_pred, t, latents, return_dict=False):
+            return (latents - noise_pred * 0.1,)
+
+    class FakeControlNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+
+        def forward(self, hidden_states, conditioning, encoder_hidden_states, timestep, return_dict=False, conditioning_scale=1.0):
+            y_scale = encoder_hidden_states.reshape(encoder_hidden_states.shape[0], -1).mean(dim=1).view(-1, 1, 1, 1)
+            t_scale = timestep.to(hidden_states.dtype).view(-1, 1, 1, 1)
+            residual = hidden_states * 0.1 + conditioning * conditioning_scale + y_scale + t_scale * 0.01
+            return ([residual],)
+
+    class FakeBaseModel(torch.nn.Module):
+        in_channels = 16
+        out_channels = 16
+
+        def forward(self, x, y, controlnet_outputs, timestep, return_dict=False):
+            residual = controlnet_outputs[0]
+            y_scale = y.reshape(y.shape[0], -1).mean(dim=1).view(-1, 1, 1, 1)
+            t_scale = timestep.to(x.dtype).view(-1, 1, 1, 1)
+            return x * 0.5 + residual * 0.25 + y_scale + t_scale * 0.02
+
+    scheduler_seq = FakeScheduler()
+    scheduler_batch = FakeScheduler()
+    controlnet = FakeControlNet()
+    base_model = FakeBaseModel()
+
+    latents = torch.arange(2 * 16 * 2 * 2, dtype=torch.float32).reshape(2, 16, 2, 2) / 100.0
+    uni_embeds = torch.zeros(2, 1, 1, 1536, dtype=torch.float32)
+    uni_embeds[0] += 0.1
+    uni_embeds[1] += 0.2
+    ctrl_latents = torch.arange(2 * 16 * 2 * 2, dtype=torch.float32).reshape(2, 16, 2, 2) / 50.0
+
+    sequential = torch.cat(
+        [
+            denoise(
+                latents=latents[idx:idx + 1].clone(),
+                uni_embeds=uni_embeds[idx:idx + 1].clone(),
+                controlnet_input_latent=ctrl_latents[idx:idx + 1].clone(),
+                scheduler=scheduler_seq,
+                controlnet_model=controlnet,
+                pixcell_controlnet_model=base_model,
+                guidance_scale=1.5,
+                num_inference_steps=3,
+                device="cpu",
+            )
+            for idx in range(2)
+        ],
+        dim=0,
+    )
+
+    batched = denoise_batched(
+        latents_batch=latents.clone(),
+        uni_embeds_batch=uni_embeds.clone(),
+        controlnet_input_latent_batch=ctrl_latents.clone(),
+        scheduler=scheduler_batch,
+        controlnet_model=controlnet,
+        pixcell_controlnet_model=base_model,
+        guidance_scale=1.5,
+        num_inference_steps=3,
+        device="cpu",
+    )
+
+    assert torch.allclose(batched, sequential, atol=1e-6, rtol=1e-6)

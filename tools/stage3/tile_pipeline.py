@@ -111,6 +111,28 @@ def _prepare_ablation_context(
     )
 
 
+def prepare_tile_context(
+    tile_id: str,
+    *,
+    models: dict,
+    config,
+    uni_embeds: torch.Tensor,
+    device: str,
+    exp_channels_dir: Path,
+) -> dict:
+    """Public wrapper returning reusable per-tile Stage 3 generation context."""
+    context = _prepare_ablation_context(
+        tile_id=tile_id,
+        models=models,
+        config=config,
+        uni_embeds=uni_embeds,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+    )
+    context["tile_id"] = tile_id
+    return context
+
+
 def _make_fixed_noise(
     *,
     config,
@@ -135,11 +157,30 @@ def _decode_latents_to_image(
     dtype: torch.dtype,
 ) -> np.ndarray:
     """Decode denoised latents into a uint8 RGB tile."""
+    return _decode_latents_to_images(
+        denoised,
+        vae=vae,
+        vae_scale=vae_scale,
+        vae_shift=vae_shift,
+        dtype=dtype,
+    )[0]
+
+
+def _decode_latents_to_images(
+    denoised: torch.Tensor,
+    *,
+    vae,
+    vae_scale: float,
+    vae_shift: float,
+    dtype: torch.dtype,
+) -> list[np.ndarray]:
+    """Decode a latent batch into uint8 RGB tiles."""
     with torch.no_grad():
         scaled = (denoised.to(dtype) / vae_scale) + vae_shift
         gen = vae.decode(scaled, return_dict=False)[0]
     gen = (gen / 2 + 0.5).clamp(0, 1)
-    return (gen.cpu().permute(0, 2, 3, 1).numpy()[0] * 255).astype(np.uint8)
+    gen_np = (gen.cpu().permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+    return [gen_np[idx] for idx in range(gen_np.shape[0])]
 
 
 def _render_fused_ablation_image(
@@ -580,9 +621,10 @@ def generate_ablation_images(
     guidance_scale: float,
     seed: int,
     conditions: Sequence[AblationCondition] | None = None,
+    batch_size: int = 8,
 ) -> list[tuple[str, np.ndarray]]:
     """Return list of (label, gen_np) for any requested group-ablation conditions."""
-    context = _prepare_ablation_context(
+    context = prepare_tile_context(
         tile_id=tile_id,
         models=models,
         config=config,
@@ -590,11 +632,41 @@ def generate_ablation_images(
         device=device,
         exp_channels_dir=exp_channels_dir,
     )
+    return generate_ablation_images_with_context(
+        context=context,
+        config=config,
+        scheduler=scheduler,
+        guidance_scale=guidance_scale,
+        device=device,
+        seed=seed,
+        conditions=conditions,
+        batch_size=batch_size,
+    )
+
+
+def generate_ablation_images_with_context(
+    *,
+    context: dict,
+    config,
+    scheduler,
+    guidance_scale: float,
+    device: str,
+    seed: int,
+    conditions: Sequence[AblationCondition] | None = None,
+    batch_size: int = 8,
+) -> list[tuple[str, np.ndarray]]:
+    """Return ablation renders using a pre-built tile context."""
+    from train_scripts.inference_controlnet import denoise_batched
+
     if conditions is None:
         conditions = build_progressive_conditions(
             group_names_from_channel_groups(config.channel_groups),
             zero_mask_latent=context["zero_mask_latent"],
         )
+    if not conditions:
+        return []
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
 
     fixed_noise = _make_fixed_noise(
         config=config,
@@ -604,22 +676,45 @@ def generate_ablation_images(
         seed=seed,
     )
 
-    ablation_images: list[tuple[str, np.ndarray]] = []
-    for condition in conditions:
-        fused = _fuse_active_groups(
+    fused_batches = [
+        _fuse_active_groups(
             context=context,
             active_groups=condition.active_groups,
         )
-        gen_np = _render_fused_ablation_image(
-            fused,
-            context=context,
+        for condition in conditions
+    ]
+
+    ablation_images: list[tuple[str, np.ndarray]] = []
+    for start in range(0, len(conditions), batch_size):
+        chunk_conditions = conditions[start:start + batch_size]
+        chunk_fused = fused_batches[start:start + batch_size]
+        fused_batch = torch.cat(chunk_fused, dim=0)
+        fixed_noise_batch = fixed_noise.repeat(len(chunk_conditions), 1, 1, 1)
+        uni_batch = context["uni_embeds"]
+        if int(uni_batch.shape[0]) == 1 and len(chunk_conditions) > 1:
+            repeat_shape = [len(chunk_conditions)] + [1] * (uni_batch.ndim - 1)
+            uni_batch = uni_batch.repeat(*repeat_shape)
+        denoised_batch = denoise_batched(
+            latents_batch=fixed_noise_batch,
+            uni_embeds_batch=uni_batch,
+            controlnet_input_latent_batch=fused_batch,
             scheduler=scheduler,
+            controlnet_model=context["controlnet"],
+            pixcell_controlnet_model=context["base_model"],
             guidance_scale=guidance_scale,
             device=device,
-            seed=seed,
-            fixed_noise=fixed_noise,
         )
-        ablation_images.append((condition.label, gen_np))
+        decoded_images = _decode_latents_to_images(
+            denoised_batch,
+            vae=context["vae"],
+            vae_scale=context["vae_scale"],
+            vae_shift=context["vae_shift"],
+            dtype=context["dtype"],
+        )
+        ablation_images.extend(
+            (condition.label, image)
+            for condition, image in zip(chunk_conditions, decoded_images, strict=True)
+        )
 
     return ablation_images
 
@@ -635,6 +730,7 @@ def generate_group_combination_ablation_images(
     guidance_scale: float,
     seed: int,
     subset_size: int,
+    batch_size: int = 8,
 ) -> list[tuple[str, np.ndarray]]:
     """Render every size-k group combination as a standalone ablation condition."""
     conditions = build_subset_conditions(
@@ -652,6 +748,35 @@ def generate_group_combination_ablation_images(
         guidance_scale=guidance_scale,
         seed=seed,
         conditions=conditions,
+        batch_size=batch_size,
+    )
+
+
+def generate_group_combination_ablation_images_with_context(
+    *,
+    context: dict,
+    config,
+    scheduler,
+    guidance_scale: float,
+    device: str,
+    seed: int,
+    subset_size: int,
+    batch_size: int = 8,
+) -> list[tuple[str, np.ndarray]]:
+    """Render every size-k group combination from a prepared context."""
+    conditions = build_subset_conditions(
+        group_names_from_channel_groups(config.channel_groups),
+        subset_size=subset_size,
+    )
+    return generate_ablation_images_with_context(
+        context=context,
+        config=config,
+        scheduler=scheduler,
+        guidance_scale=guidance_scale,
+        device=device,
+        seed=seed,
+        conditions=conditions,
+        batch_size=batch_size,
     )
 
 
@@ -666,6 +791,7 @@ def generate_progressive_order_ablation_images(
     guidance_scale: float,
     seed: int,
     group_order: Sequence[str],
+    batch_size: int = 8,
 ) -> list[tuple[str, np.ndarray]]:
     """Render one progressive cumulative sweep for a specific group order."""
     conditions = build_progressive_conditions(
@@ -683,6 +809,7 @@ def generate_progressive_order_ablation_images(
         guidance_scale=guidance_scale,
         seed=seed,
         conditions=conditions,
+        batch_size=batch_size,
     )
 
 
@@ -696,6 +823,7 @@ def generate_all_progressive_order_ablation_images(
     exp_channels_dir: Path,
     guidance_scale: float,
     seed: int,
+    batch_size: int = 8,
 ) -> list[tuple[tuple[str, ...], list[tuple[str, np.ndarray]]]]:
     """Render all 24 progressive cumulative sweeps across every group order."""
     order_conditions = build_progressive_order_conditions(
@@ -716,6 +844,7 @@ def generate_all_progressive_order_ablation_images(
                 guidance_scale=guidance_scale,
                 seed=seed,
                 conditions=conditions,
+                batch_size=batch_size,
             ),
         )
         for group_order, conditions in order_conditions
