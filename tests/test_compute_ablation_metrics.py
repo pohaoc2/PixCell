@@ -52,6 +52,7 @@ from tools.compute_ablation_metrics import (
     _resolve_metric_selection,
     run_cellvit,
 )
+from tools.stage3.ablation_vis_utils import default_orion_he_png_path, default_orion_uni_npy_path
 
 
 def test_empty_record_has_all_keys():
@@ -178,6 +179,24 @@ def test_run_cellvit_reads_json_sidecar(tmp_path: Path):
     assert int(inst.max()) == 1
 
 
+def test_default_orion_paths_honor_style_mapping(tmp_path: Path):
+    orion_root = tmp_path / "orion"
+    (orion_root / "he").mkdir(parents=True)
+    (orion_root / "features").mkdir(parents=True)
+    mapped_tile = "tile_style"
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(orion_root / "he" / f"{mapped_tile}.png")
+    np.save(orion_root / "features" / f"{mapped_tile}_uni.npy", np.array([1.0], dtype=np.float32))
+
+    style_mapping = {"tile_layout": mapped_tile}
+
+    assert default_orion_he_png_path(orion_root, "tile_layout", style_mapping=style_mapping) == (
+        orion_root / "he" / f"{mapped_tile}.png"
+    )
+    assert default_orion_uni_npy_path(orion_root, "tile_layout", style_mapping=style_mapping) == (
+        orion_root / "features" / f"{mapped_tile}_uni.npy"
+    )
+
+
 def _write_cache_manifest(cache_parent: Path, tile_id: str) -> Path:
     cache_dir = cache_parent / tile_id
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -207,6 +226,7 @@ def test_main_parent_cache_reuses_uni_extractor_once(monkeypatch, tmp_path: Path
         cache_dir: Path,
         *,
         orion_root: Path,
+        style_mapping=None,
         metrics_to_compute: list[str],
         device: str,
         uni_model: Path,
@@ -215,6 +235,7 @@ def test_main_parent_cache_reuses_uni_extractor_once(monkeypatch, tmp_path: Path
         uni_extractor=None,
     ) -> Path:
         assert orion_root == compute_ablation_metrics_module.ROOT / "data/orion-crc33"
+        assert style_mapping == {}
         assert metrics_to_compute == ["cosine"]
         assert device == "cuda"
         assert lpips_loss_fn is None

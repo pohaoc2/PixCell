@@ -3,6 +3,7 @@
 A multi-channel ControlNet for mapping tumor microenvironment (TME) simulation outputs to experimental H&E histology, using paired ORION-CRC multiplexed imaging data.
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pohaoc2/PixCell/blob/main/notebook/multichannel_controlnet.ipynb)
+[![Open Stage 3 Paired Ablation Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pohaoc2/PixCell/blob/main/notebook/stage3_paired_ablation_a100_colab.ipynb)
 [![CI](https://github.com/pohaoc2/PixCell/actions/workflows/ci.yml/badge.svg)](https://github.com/pohaoc2/PixCell/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/pohaoc2/PixCell/branch/main/graph/badge.svg)](https://codecov.io/gh/pohaoc2/PixCell)
 

@@ -38,6 +38,7 @@ from tools.stage3.generate_ablation_subset_cache import (
     _build_worker_common_args,
     _is_cuda_device,
     _print_progress,
+    _select_generation_tile_ids,
 )
 
 
@@ -60,6 +61,7 @@ def test_build_worker_common_args_uses_feature_device_override(tmp_path):
         force_uni_features=False,
         uni_model="pretrained_models/uni-2h",
         feature_device="cpu",
+        style_mapping_json=None,
     )
 
     worker_args = _build_worker_common_args(args, data_root=tmp_path)
@@ -85,6 +87,23 @@ def test_parser_accepts_jobs_with_n_tiles():
     assert args.jobs == 4
 
 
+def test_parser_accepts_target_total_tiles():
+    parser = _build_parser()
+
+    args = parser.parse_args(["--target-total-tiles", "5000"])
+
+    assert args.target_total_tiles == 5000
+
+
+def test_parser_accepts_skip_existing_with_n_tiles():
+    parser = _build_parser()
+
+    args = parser.parse_args(["--n-tiles", "3", "--skip-existing"])
+
+    assert args.n_tiles == 3
+    assert args.skip_existing is True
+
+
 def test_parser_accepts_output_dir_alias():
     parser = _build_parser()
 
@@ -100,3 +119,51 @@ def test_print_progress_finishes_with_newline(capsys):
     captured = capsys.readouterr()
     assert "Generation [" in captured.err
     assert captured.err.endswith("\n")
+
+
+def test_select_generation_tile_ids_skip_existing_only_samples_uncached():
+    selected, message = _select_generation_tile_ids(
+        all_ids=["tile_1", "tile_2", "tile_3", "tile_4"],
+        existing_ids=["tile_1", "tile_3"],
+        tile_sample_seed=7,
+        requested_n=2,
+        skip_existing=True,
+    )
+
+    assert sorted(selected) == ["tile_2", "tile_4"]
+    assert "skipping 2 existing cache dirs" in message
+
+
+def test_select_generation_tile_ids_target_total_grows_from_existing_count():
+    selected, message = _select_generation_tile_ids(
+        all_ids=["tile_1", "tile_2", "tile_3", "tile_4", "tile_5"],
+        existing_ids=["tile_1", "tile_2"],
+        tile_sample_seed=11,
+        target_total_tiles=4,
+    )
+
+    assert len(selected) == 2
+    assert set(selected).isdisjoint({"tile_1", "tile_2"})
+    assert "grow cache from 2 to 4 total tiles" in message
+
+
+def test_select_generation_tile_ids_target_total_noop_when_already_satisfied():
+    selected, message = _select_generation_tile_ids(
+        all_ids=["tile_1", "tile_2", "tile_3"],
+        existing_ids=["tile_1", "tile_2", "tile_3"],
+        tile_sample_seed=3,
+        target_total_tiles=3,
+    )
+
+    assert selected == []
+    assert "nothing to do" in message
+
+
+def test_select_generation_tile_ids_target_total_errors_when_existing_exceeds_target():
+    with pytest.raises(ValueError, match="exceeds target_total_tiles=2"):
+        _select_generation_tile_ids(
+            all_ids=["tile_1", "tile_2", "tile_3"],
+            existing_ids=["tile_1", "tile_2", "tile_3"],
+            tile_sample_seed=5,
+            target_total_tiles=2,
+        )

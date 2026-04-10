@@ -5,9 +5,9 @@ This file summarizes the paired and unpaired ablation workflows.
 ## Conventions
 
 - `paired_ablation/` uses the original paired ORION-style root: `data/orion-crc33`
-- `unpaired_ablation/` uses a remapped ORION-style root where:
-  - `exp_channels/` stay attached to the layout tile
-  - `he/` and `features/` are remapped to a different style tile
+- `unpaired_ablation/` can use either:
+  - a remapped ORION-style root, or
+  - the original `data/orion-crc33` plus a small `unpaired_mapping.json`
 - Latest checkpoint directory used here:
   - `checkpoints/pixcell_controlnet_exp/npy_inputs`
 
@@ -26,10 +26,10 @@ This file summarizes the paired and unpaired ablation workflows.
 
 ### Unpaired
 
-- remapped dataset root:
-  - `inference_output/unpaired_ablation/data/orion-crc33-unpaired`
 - style mapping JSON:
-  - `inference_output/unpaired_ablation/data/orion-crc33-unpaired/metadata/unpaired_mapping.json`
+  - `inference_output/unpaired_ablation/metadata/unpaired_mapping.json`
+- optional remapped dataset root:
+  - `inference_output/unpaired_ablation/data/orion-crc33-unpaired`
 - cache / per-tile ablations:
   - `inference_output/unpaired_ablation/ablation_results`
 - CellViT export/import:
@@ -39,33 +39,33 @@ This file summarizes the paired and unpaired ablation workflows.
   - `inference_output/unpaired_ablation/leave_one_out`
   - `inference_output/unpaired_ablation/channel_sweep`
 
-## Step 1-2. Build the unpaired dataset root
+## Step 1-2. Build the unpaired style mapping
 
 Comment:
 - Use this only for the unpaired workflow.
-- This reuses the same 1000 tile IDs already present in paired ablation results.
-- It writes a deranged style mapping JSON and creates a remapped ORION-style root.
+- This reuses the same tile IDs already present in paired ablation results.
+- `--metadata-only` is the lean option when you do not want `inference_output/` to contain a copied or linked `data/` tree.
 
 ```bash
 python tools/stage3/prepare_unpaired_ablation_dataset.py \
   --paired-cache-root inference_output/paired_ablation/ablation_results \
   --data-root data/orion-crc33 \
-  --output-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --metadata-only \
+  --mapping-output inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --seed 42
 ```
 
 Inspect the saved mapping:
 
 ```bash
-cat inference_output/unpaired_ablation/data/orion-crc33-unpaired/metadata/unpaired_mapping.json
+cat inference_output/unpaired_ablation/metadata/unpaired_mapping.json
 ```
 
 ## Step 3. Generate Stage 3 ablation caches
 
 Comment:
 - Paired uses the original ORION root.
-- Unpaired uses the remapped ORION root.
-- For unpaired generation, the remapped `features/<tile>_uni.npy` files already exist, so `--cache-uni-features` is not needed.
+- Unpaired can now use the original ORION root plus `--style-mapping-json`.
 - `--jobs 2` is reasonable on a single T4 after the worker reuse fix; start lower if VRAM is tight.
 
 ### Paired
@@ -88,9 +88,10 @@ python tools/stage3/generate_ablation_subset_cache.py \
 
 ```bash
 python tools/stage3/generate_ablation_subset_cache.py \
-  --data-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --data-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
-  --n-tiles 1000 \
+  --target-total-tiles 5000 \
   --output-dir inference_output/unpaired_ablation/ablation_results \
   --seed 42 \
   --tile-sample-seed 42 \
@@ -170,7 +171,8 @@ python tools/compute_ablation_metrics.py \
 ```bash
 python tools/compute_ablation_metrics.py \
   --cache-dir inference_output/unpaired_ablation/ablation_results \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --metrics aji pq style_hed \
   --device cuda \
   --jobs 2
@@ -181,7 +183,8 @@ If you want all metrics explicitly for unpaired:
 ```bash
 python tools/compute_ablation_metrics.py \
   --cache-dir inference_output/unpaired_ablation/ablation_results \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --metrics all style_hed \
   --device cuda \
   --jobs 2
@@ -209,7 +212,8 @@ python tools/compute_fid.py \
 ```bash
 python tools/compute_fid.py \
   --cache-dir inference_output/unpaired_ablation/ablation_results \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --device cuda \
   --batch-size 64 \
   --output inference_output/unpaired_ablation/ablation_results/fud_scores.json
@@ -239,7 +243,8 @@ python tools/compute_fid.py \
 ```bash
 python tools/compute_fid.py \
   --cache-dir inference_output/unpaired_ablation/ablation_results \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --feature-backend virchow2 \
   --virchow2-model hf-hub:paige-ai/Virchow2 \
   --device cuda \
@@ -268,7 +273,8 @@ python tools/vis/stage3_ablation_grid_figure.py \
 ```bash
 python tools/vis/stage3_ablation_grid_figure.py \
   --cache-dir inference_output/unpaired_ablation/ablation_results \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --output-name ablation_grid \
   --metric-set unpaired \
   --sort-by style_hed \
@@ -302,7 +308,7 @@ python tools/render_dataset_metrics.py \
   --metric-dir inference_output/unpaired_ablation/ablation_results \
   --output inference_output/unpaired_ablation/dataset_metrics_filtered.png \
   --metric-set unpaired \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
   --min-gt-cells 20
 ```
 
@@ -325,7 +331,8 @@ python tools/vis/leave_one_out_diff.py \
 ```bash
 python tools/vis/leave_one_out_diff.py \
   --cache-root inference_output/unpaired_ablation/ablation_results \
-  --orion-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --orion-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --out-root inference_output/unpaired_ablation/leave_one_out
 ```
 
@@ -360,7 +367,7 @@ python tools/stage3/channel_sweep.py \
 
 ```bash
 python tools/stage3/classify_tiles.py \
-  --exp-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --exp-root data/orion-crc33 \
   --out inference_output/unpaired_ablation/channel_sweep/tile_classes.json
 ```
 
@@ -369,7 +376,8 @@ python tools/stage3/classify_tiles.py \
 ```bash
 python tools/stage3/channel_sweep.py \
   --class-json inference_output/unpaired_ablation/channel_sweep/tile_classes.json \
-  --data-root inference_output/unpaired_ablation/data/orion-crc33-unpaired \
+  --data-root data/orion-crc33 \
+  --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
   --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs \
   --out inference_output/unpaired_ablation/channel_sweep \
   --cache-dir inference_output/unpaired_ablation/channel_sweep/cache \

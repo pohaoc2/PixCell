@@ -135,3 +135,25 @@ def test_render_loo_cache_root_renders_multiple_tile_dirs(tmp_path):
     for fig_path, stats_path in rendered:
         assert fig_path.is_file()
         assert stats_path.is_file()
+
+
+def test_render_loo_figure_uses_style_mapping_for_reference(tmp_path):
+    from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure
+
+    cache = _make_cache(tmp_path / "cache")
+    orion_root = tmp_path / "orion"
+    (orion_root / "he").mkdir(parents=True, exist_ok=True)
+    style_tile = "style_tile"
+    Image.fromarray(np.full((4, 4, 3), 123, dtype=np.uint8)).save(orion_root / "he" / f"{style_tile}.png")
+    diffs = compute_loo_diffs(cache)
+
+    fig_path = tmp_path / "mapped_loo.png"
+    render_loo_diff_figure(
+        diffs,
+        cache,
+        orion_root=orion_root,
+        style_mapping={"test_tile": style_tile},
+        out_path=fig_path,
+    )
+
+    assert fig_path.is_file()

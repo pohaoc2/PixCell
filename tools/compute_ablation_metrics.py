@@ -33,6 +33,7 @@ from tools.stage3.ablation_cache import (
     load_manifest,
 )
 from tools.stage3.common import print_progress
+from tools.stage3.style_mapping import load_style_mapping
 
 DEFAULT_METRIC_NAMES: tuple[str, ...] = (
     "cosine",
@@ -165,6 +166,7 @@ def _ensure_cosine_scores(
     cache_dir: Path,
     orion_root: Path,
     *,
+    style_mapping: dict[str, str] | None,
     uni_model: Path,
     device: str,
     uni_extractor: Any | None = None,
@@ -178,6 +180,7 @@ def _ensure_cosine_scores(
     _, _, scores = compute_and_write_uni_cosine_scores(
         cache_dir,
         orion_root=orion_root,
+        style_mapping=style_mapping,
         uni_model=uni_model,
         device=device,
         extractor=uni_extractor,
@@ -285,6 +288,7 @@ def _compute_metrics_for_cache_dir_job(cache_dir: str) -> tuple[str, str]:
     out_path = compute_metrics_for_cache_dir(
         cache_path,
         orion_root=Path(_METRIC_WORKER_CONFIG["orion_root"]),
+        style_mapping=load_style_mapping(_METRIC_WORKER_CONFIG.get("style_mapping_json")),
         metrics_to_compute=metrics_to_compute,
         device=str(_METRIC_WORKER_CONFIG["device"]),
         uni_model=Path(_METRIC_WORKER_CONFIG["uni_model"]),
@@ -304,6 +308,7 @@ def _run_parallel_cache_metrics(
     cache_parent: Path,
     tile_ids: list[str],
     orion_root: Path,
+    style_mapping_json: Path | None,
     metrics_to_compute: list[str],
     device: str,
     uni_model: Path,
@@ -319,6 +324,7 @@ def _run_parallel_cache_metrics(
 
     worker_config = {
         "orion_root": str(orion_root),
+        "style_mapping_json": None if style_mapping_json is None else str(style_mapping_json),
         "metrics_to_compute": list(metrics_to_compute),
         "device": device,
         "uni_model": str(uni_model),
@@ -361,6 +367,7 @@ def compute_lpips_scores(
     cache_dir: Path,
     orion_root: Path,
     *,
+    style_mapping: dict[str, str] | None = None,
     device: str = "cuda",
     loss_fn=None,
     batch_size: int = 8,
@@ -379,7 +386,7 @@ def compute_lpips_scores(
     cache_dir = Path(cache_dir)
     orion_root = Path(orion_root)
     tile_id = _tile_id_from_manifest(cache_dir)
-    ref_path = default_orion_he_png_path(orion_root, tile_id)
+    ref_path = default_orion_he_png_path(orion_root, tile_id, style_mapping=style_mapping)
     if ref_path is None:
         raise FileNotFoundError(f"reference H&E not found for tile {tile_id!r}")
 
@@ -418,6 +425,8 @@ def compute_lpips_scores(
 def compute_style_hed_scores(
     cache_dir: Path,
     orion_root: Path,
+    *,
+    style_mapping: dict[str, str] | None = None,
 ) -> dict[str, float]:
     """Compare generated H&E stain/style moments against the reference H&E in HED space.
 
@@ -427,7 +436,7 @@ def compute_style_hed_scores(
     cache_dir = Path(cache_dir)
     orion_root = Path(orion_root)
     tile_id = _tile_id_from_manifest(cache_dir)
-    ref_path = default_orion_he_png_path(orion_root, tile_id)
+    ref_path = default_orion_he_png_path(orion_root, tile_id, style_mapping=style_mapping)
     if ref_path is None:
         raise FileNotFoundError(f"reference H&E not found for tile {tile_id!r}")
 
@@ -783,6 +792,7 @@ def compute_metrics_for_cache_dir(
     cache_dir: Path,
     *,
     orion_root: Path,
+    style_mapping: dict[str, str] | None = None,
     metrics_to_compute: list[str],
     device: str,
     uni_model: Path,
@@ -797,6 +807,7 @@ def compute_metrics_for_cache_dir(
         cosine_scores = _ensure_cosine_scores(
             cache_dir,
             orion_root,
+            style_mapping=style_mapping,
             uni_model=uni_model,
             device=device,
             uni_extractor=uni_extractor,
@@ -807,6 +818,7 @@ def compute_metrics_for_cache_dir(
         for cond_key, score in compute_lpips_scores(
             cache_dir,
             orion_root,
+            style_mapping=style_mapping,
             device=device,
             loss_fn=lpips_loss_fn,
             batch_size=lpips_batch_size,
@@ -830,7 +842,11 @@ def compute_metrics_for_cache_dir(
                 rec["accuracy"] = values["accuracy"]
 
     if "style_hed" in metrics_to_compute:
-        for cond_key, score in compute_style_hed_scores(cache_dir, orion_root).items():
+        for cond_key, score in compute_style_hed_scores(
+            cache_dir,
+            orion_root,
+            style_mapping=style_mapping,
+        ).items():
             rec = per_condition.setdefault(cond_key, _empty_metrics_record())
             rec["style_hed"] = score
 
@@ -847,6 +863,12 @@ def main() -> None:
         type=Path,
         default=ROOT / "data/orion-crc33",
         help="Paired dataset root (default: data/orion-crc33)",
+    )
+    parser.add_argument(
+        "--style-mapping-json",
+        type=Path,
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired style reference lookup.",
     )
     parser.add_argument(
         "--metrics",
@@ -883,6 +905,7 @@ def main() -> None:
 
     cache_dir = args.cache_dir.resolve()
     orion_root = args.orion_root.resolve()
+    style_mapping = load_style_mapping(args.style_mapping_json)
     metrics_to_compute = _resolve_metric_selection(args.metrics)
 
     if is_per_tile_cache_manifest_dir(cache_dir):
@@ -892,6 +915,7 @@ def main() -> None:
         out_path = compute_metrics_for_cache_dir(
             cache_dir,
             orion_root=orion_root,
+            style_mapping=style_mapping,
             metrics_to_compute=metrics_to_compute,
             device=args.device,
             uni_model=args.uni_model,
@@ -920,6 +944,7 @@ def main() -> None:
             cache_parent=cache_dir,
             tile_ids=tile_ids,
             orion_root=orion_root,
+            style_mapping_json=args.style_mapping_json,
             metrics_to_compute=metrics_to_compute,
             device=args.device,
             uni_model=args.uni_model,
@@ -940,6 +965,7 @@ def main() -> None:
         out_path = compute_metrics_for_cache_dir(
             tile_cache_dir,
             orion_root=orion_root,
+            style_mapping=style_mapping,
             metrics_to_compute=metrics_to_compute,
             device=args.device,
             uni_model=args.uni_model,

@@ -26,6 +26,7 @@ from tools.stage3.ablation_vis_utils import (
     condition_metric_key,
     default_orion_uni_npy_path,
 )
+from tools.stage3.style_mapping import load_style_mapping
 
 _RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR
 _FID_EPS = 1e-6
@@ -61,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("data/orion-crc33"),
         help="Paired dataset root with real H&E PNGs under he/<tile_id>.png.",
+    )
+    parser.add_argument(
+        "--style-mapping-json",
+        type=Path,
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired reference lookup.",
     )
     parser.add_argument(
         "--device",
@@ -144,13 +151,15 @@ def _default_orion_feature_cache_path(
     tile_id: str,
     *,
     feature_backend: str,
+    style_mapping: dict[str, str] | None = None,
 ) -> Path | None:
     if feature_backend == "uni":
-        return default_orion_uni_npy_path(orion_root, tile_id)
+        return default_orion_uni_npy_path(orion_root, tile_id, style_mapping=style_mapping)
+    mapped_tile_id = str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
     suffix = _CACHED_FEATURE_SUFFIXES.get(feature_backend)
     if suffix is None:
         return None
-    return orion_root / "features" / f"{tile_id}_{suffix}.npy"
+    return orion_root / "features" / f"{mapped_tile_id}_{suffix}.npy"
 
 
 def metric_key_for_backend(feature_backend: str) -> str:
@@ -183,6 +192,7 @@ def collect_condition_paths(
     orion_root: Path,
     *,
     feature_backend: str,
+    style_mapping: dict[str, str] | None = None,
 ) -> tuple[list[str], list[ImageFeatureRecord], dict[str, list[ImageFeatureRecord]]]:
     condition_keys = ordered_condition_keys()
     condition_to_paths: dict[str, list[ImageFeatureRecord]] = {key: [] for key in condition_keys}
@@ -244,7 +254,8 @@ def collect_condition_paths(
                 f"tile {tile_id} is missing condition images for: {', '.join(missing)}"
             )
 
-        real_path = orion_root / "he" / f"{tile_id}.png"
+        mapped_tile_id = str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
+        real_path = orion_root / "he" / f"{mapped_tile_id}.png"
         if not real_path.is_file():
             raise FileNotFoundError(f"missing real H&E image: {real_path}")
 
@@ -254,6 +265,7 @@ def collect_condition_paths(
                 orion_root,
                 tile_id,
                 feature_backend=feature_backend,
+                style_mapping=style_mapping,
             )
             if candidate.is_file():
                 real_feature_path = candidate
@@ -600,6 +612,7 @@ def main() -> None:
     args = parse_args()
     cache_dir = args.cache_dir.resolve()
     orion_root = args.orion_root.resolve()
+    style_mapping = load_style_mapping(args.style_mapping_json)
     device = resolve_device(args.device)
     feature_backend = str(args.feature_backend)
     uni_model = args.uni_model.resolve()
@@ -619,6 +632,7 @@ def main() -> None:
         cache_dir,
         orion_root,
         feature_backend=feature_backend,
+        style_mapping=style_mapping,
     )
 
     print(

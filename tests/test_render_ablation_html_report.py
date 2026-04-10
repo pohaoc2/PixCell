@@ -37,6 +37,7 @@ from tools.render_ablation_html_report import (
     build_channel_effect_heatmaps_figure,
     build_leave_one_out_figure,
     build_metric_trends_figure,
+    compute_style_hed_scores_local,
     export_report_png_pages,
     load_dataset_summary,
     render_comparison_table,
@@ -684,3 +685,69 @@ def test_load_dataset_summary_filters_by_min_gt_cells(tmp_path: Path) -> None:
     assert summary.tile_count == 1
     assert summary.condition_stats["cell_types"]["aji"] == (0.10, 0.0)
     assert summary.by_cardinality[4]["pq"] == 0.30
+
+
+def test_compute_style_hed_scores_local_uses_style_mapping(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache" / "tile_layout"
+    reference_root = tmp_path / "data"
+    style_tile = "tile_style"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _write_manifest(cache_dir, "tile_layout")
+    _write_png(reference_root / "he" / f"{style_tile}.png")
+
+    scores = compute_style_hed_scores_local(
+        cache_dir,
+        reference_root,
+        style_mapping={"tile_layout": style_tile},
+    )
+
+    assert "cell_types" in scores
+
+
+def test_load_dataset_summary_backfills_style_hed_from_style_mapping(tmp_path: Path) -> None:
+    metrics_root = tmp_path / "unpaired" / "ablation_results"
+    dataset_root = tmp_path / "unpaired"
+    reference_root = tmp_path / "data"
+    tile_id = "tile_layout"
+    style_tile = "tile_style"
+
+    _write_metrics(
+        metrics_root / tile_id,
+        {
+            "version": 2,
+            "tile_id": tile_id,
+            "per_condition": {
+                "cell_types": {"aji": 0.04, "pq": 0.01, "fud": 69.0},
+                "cell_types+cell_state+microenv+vasculature": {"aji": 0.39, "pq": 0.32, "fud": 65.4},
+            },
+        },
+    )
+    _write_manifest(metrics_root / tile_id, tile_id)
+    _write_png(dataset_root / "ablation_results" / tile_id / "ablation_grid.png")
+    _write_png(dataset_root / "leave_one_out" / tile_id / "leave_one_out_diff.png")
+    stats_path = dataset_root / "leave_one_out" / tile_id / "leave_one_out_diff_stats.json"
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    stats_path.write_text(
+        json.dumps(
+            {
+                "cell_types": {"mean_diff": 3.0, "max_diff": 10.0, "pct_pixels_above_10": 8.0},
+                "cell_state": {"mean_diff": 12.0, "max_diff": 30.0, "pct_pixels_above_10": 25.0},
+                "vasculature": {"mean_diff": 4.0, "max_diff": 12.0, "pct_pixels_above_10": 9.0},
+                "microenv": {"mean_diff": 11.0, "max_diff": 28.0, "pct_pixels_above_10": 23.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_png(reference_root / "he" / f"{style_tile}.png")
+    _write_cell_mask(reference_root / "exp_channels" / "cell_masks" / f"{tile_id}.png", [[0, 1], [0, 0]])
+
+    summary = load_dataset_summary(
+        slug="unpaired",
+        title="Unpaired",
+        metrics_root=metrics_root,
+        dataset_root=dataset_root,
+        reference_root=reference_root,
+        style_mapping={tile_id: style_tile},
+    )
+
+    assert "style_hed" in summary.metric_keys

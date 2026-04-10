@@ -51,6 +51,7 @@ from tools.stage3.common import (
     make_inference_scheduler,
     resolve_uni_embedding,
 )
+from tools.stage3.style_mapping import load_style_mapping, resolve_style_tile_id
 
 _CELL_TYPE_CHANNELS = {
     "cancer": "cell_type_cancer",
@@ -172,6 +173,7 @@ def run_exp1_microenv_grid(
     *,
     exp_channels_dir: Path,
     feat_dir: Path,
+    style_mapping: dict[str, str] | None,
     null_uni: bool,
     models: dict[str, Any],
     config: Any,
@@ -197,7 +199,13 @@ def run_exp1_microenv_grid(
         dtype=dtype,
         seed=seed,
     )
-    uni_embeds = resolve_uni_embedding(tile_id, feat_dir=feat_dir, null_uni=null_uni)
+    mapped_tile_id = resolve_style_tile_id(tile_id, style_mapping=style_mapping)
+    uni_embeds = resolve_uni_embedding(
+        tile_id,
+        feat_dir=feat_dir,
+        null_uni=null_uni,
+        uni_npy=feat_dir / f"{mapped_tile_id}_uni.npy" if style_mapping else None,
+    )
 
     results: dict[tuple[float, float], np.ndarray] = {}
     total = len(SWEEP_SCALES) ** 2
@@ -235,6 +243,7 @@ def _run_relabeling_experiment(
     *,
     exp_channels_dir: Path,
     feat_dir: Path,
+    style_mapping: dict[str, str] | None,
     null_uni: bool,
     models: dict[str, Any],
     config: Any,
@@ -270,7 +279,13 @@ def _run_relabeling_experiment(
             dtype=dtype,
             seed=seed,
         )
-        uni_embeds = resolve_uni_embedding(tile_id, feat_dir=feat_dir, null_uni=null_uni)
+        mapped_tile_id = resolve_style_tile_id(tile_id, style_mapping=style_mapping)
+        uni_embeds = resolve_uni_embedding(
+            tile_id,
+            feat_dir=feat_dir,
+            null_uni=null_uni,
+            uni_npy=feat_dir / f"{mapped_tile_id}_uni.npy" if style_mapping else None,
+        )
         row: dict[str, np.ndarray] = {}
         for tgt_label in labels:
             if src_label == tgt_label:
@@ -366,6 +381,11 @@ def main() -> None:
         help="Use null UNI embeddings instead of paired features/<tile>_uni.npy",
     )
     parser.add_argument(
+        "--style-mapping-json",
+        default=None,
+        help="Optional layout->style mapping JSON for unpaired UNI feature lookup.",
+    )
+    parser.add_argument(
         "--generate-only",
         action="store_true",
         help="Run inference and write cache, but do not render figures.",
@@ -395,6 +415,7 @@ def main() -> None:
         return
 
     exp_channels_dir, feat_dir, _ = resolve_data_layout(data_root)
+    style_mapping = load_style_mapping(args.style_mapping_json)
     class_data = json.loads(Path(args.class_json).read_text(encoding="utf-8"))
     models, config, scheduler = load_sweep_models(
         args.config,
@@ -406,6 +427,7 @@ def main() -> None:
     shared_kwargs = dict(
         exp_channels_dir=exp_channels_dir,
         feat_dir=feat_dir,
+        style_mapping=style_mapping,
         null_uni=args.null_uni,
         models=models,
         config=config,

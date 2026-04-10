@@ -4,10 +4,36 @@ from pathlib import Path
 import json
 import numpy as np
 import pytest
+import types
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+if "torch" not in sys.modules:
+    torch_stub = types.ModuleType("torch")
+
+    class _DummyTensor:
+        pass
+
+    torch_stub.float16 = "float16"
+    torch_stub.float32 = "float32"
+    torch_stub.dtype = object
+    torch_stub.Tensor = _DummyTensor
+    sys.modules["torch"] = torch_stub
+
+if "diffusers" not in sys.modules:
+    diffusers_stub = types.ModuleType("diffusers")
+
+    class _DummyScheduler:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def set_timesteps(self, *args, **kwargs) -> None:
+            pass
+
+    diffusers_stub.DDPMScheduler = _DummyScheduler
+    sys.modules["diffusers"] = diffusers_stub
 
 from tools.stage3.ablation_grid_figure import (
     _cardinality_color,

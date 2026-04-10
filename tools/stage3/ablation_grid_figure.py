@@ -46,11 +46,13 @@ from tools.stage3.ablation_vis_utils import (
     cache_manifest_uni_features,
     condition_metric_key,
     default_orion_he_png_path,
+    default_orion_uni_npy_path,
     draw_image_border,
     ordered_subset_condition_tuples,
     parse_uni_cosine_scores_json,
 )
 from tools.stage3.common import print_progress
+from tools.stage3.style_mapping import load_style_mapping
 
 # Okabe-Ito palette (colorblind-safe)
 _COLOR_BY_CARD: dict[int, str] = {
@@ -164,6 +166,7 @@ def _load_grid_cosine_scores(
     orion_root: Path,
     *,
     tile_id: str,
+    style_mapping: dict[str, str] | None,
     auto_cosine: bool,
     uni_model: Path,
     device: str,
@@ -186,6 +189,7 @@ def _load_grid_cosine_scores(
             compute_and_write_uni_cosine_scores(
                 cache_dir,
                 orion_root=orion_root,
+                style_mapping=style_mapping,
                 uni_model=uni_model,
                 device=device,
             )
@@ -194,7 +198,7 @@ def _load_grid_cosine_scores(
             print(f"Note: UNI cosine computation failed ({exc})", file=sys.stderr)
 
     if ALL4CH_KEY not in scores and auto_cosine and all4ch_image.is_file():
-        ref_npy = orion_root / "features" / f"{tile_id}_uni.npy"
+        ref_npy = default_orion_uni_npy_path(orion_root, tile_id, style_mapping=style_mapping)
         if ref_npy.is_file():
             try:
                 all4_rel_parent = all4ch_image.resolve().relative_to(cache_dir.resolve()).parent
@@ -442,6 +446,7 @@ def render_ablation_grid_figure(
     debug_cellvit_overlay: bool = False,
     uni_model: Path | None = None,
     device: str = "cuda",
+    style_mapping: dict[str, str] | None = None,
 ) -> Path:
     """Render the 4×4 grid figure for one tile; return path to PNG."""
     cache_dir = Path(cache_dir).resolve()
@@ -458,7 +463,7 @@ def render_ablation_grid_figure(
     if auto_cosine:
         cosine_scores = _load_grid_cosine_scores(
             cache_dir, all4ch_image, orion_root,
-            tile_id=tile_id, auto_cosine=auto_cosine,
+            tile_id=tile_id, style_mapping=style_mapping, auto_cosine=auto_cosine,
             uni_model=uni_model, device=device,
         )
         metrics = _merge_cosine_into_metrics(metrics, cosine_scores)
@@ -471,7 +476,7 @@ def render_ablation_grid_figure(
     sorted_conds = _sort_conditions_by_metric(all15, sort_scores, metric_name=sort_by)
     best_key = condition_metric_key(sorted_conds[0]) if sort_scores else None
 
-    real_he_path = default_orion_he_png_path(orion_root, tile_id)
+    real_he_path = default_orion_he_png_path(orion_root, tile_id, style_mapping=style_mapping)
     if real_he_path is None:
         print(f"Warning: Real H&E not found for tile {tile_id!r} — cell [3,3] will be blank.", file=sys.stderr)
 
@@ -593,6 +598,7 @@ def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> Non
     tile_id = str(manifest["tile_id"])
 
     orion_root = args.orion_root.resolve()
+    style_mapping = load_style_mapping(getattr(args, "style_mapping_json", None))
 
     all4ch_image = resolve_all_image_path(cache_dir, manifest, n_groups=len(manifest.get("group_names") or FOUR_GROUP_ORDER))
     if all4ch_image is None:
@@ -615,6 +621,7 @@ def _render_grid_for_cache_dir(cache_dir: Path, args: argparse.Namespace) -> Non
         debug_cellvit_overlay=args.debug_cellvit_overlay,
         uni_model=args.uni_model,
         device=args.device,
+        style_mapping=style_mapping,
     )
     if not getattr(args, "quiet", False):
         print(f"Wrote {out_png}")
@@ -647,6 +654,10 @@ def main() -> None:
     parser.add_argument(
         "--orion-root", type=Path, default=ROOT / "data/orion-crc33",
         help="Dataset root (default: data/orion-crc33)",
+    )
+    parser.add_argument(
+        "--style-mapping-json", type=Path, default=None,
+        help="Optional layout->style mapping JSON for unpaired reference lookup.",
     )
     parser.add_argument(
         "--output-name", type=str, default="ablation_grid",

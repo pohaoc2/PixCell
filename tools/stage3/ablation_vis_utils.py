@@ -6,6 +6,7 @@ Legacy manifests may still list ``cell_identity``; it is normalized to ``cell_ty
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from collections.abc import Sequence
 from itertools import combinations
 from pathlib import Path
@@ -51,15 +52,27 @@ def ordered_subset_condition_tuples() -> list[tuple[str, ...]]:
     return result
 
 
-def default_orion_uni_npy_path(orion_root: Path, tile_id: str) -> Path:
+def default_orion_uni_npy_path(
+    orion_root: Path,
+    tile_id: str,
+    *,
+    style_mapping: Mapping[str, str] | None = None,
+) -> Path:
     """``data/orion-crc33/features/<tile_id>_uni.npy`` style path."""
-    return orion_root / "features" / f"{tile_id}_uni.npy"
+    mapped_tile_id = str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
+    return orion_root / "features" / f"{mapped_tile_id}_uni.npy"
 
 
-def default_orion_he_png_path(orion_root: Path, tile_id: str) -> Path | None:
+def default_orion_he_png_path(
+    orion_root: Path,
+    tile_id: str,
+    *,
+    style_mapping: Mapping[str, str] | None = None,
+) -> Path | None:
     """Paired real H&E tile under ``he/{tile_id}.png`` (or ``.jpg``)."""
+    mapped_tile_id = str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
     for ext in (".png", ".jpg", ".jpeg", ".tif"):
-        p = orion_root / "he" / f"{tile_id}{ext}"
+        p = orion_root / "he" / f"{mapped_tile_id}{ext}"
         if p.is_file():
             return p
     return None

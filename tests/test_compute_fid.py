@@ -35,6 +35,21 @@ if "diffusers" not in sys.modules:
     diffusers_stub.DDPMScheduler = _DummyScheduler
     sys.modules["diffusers"] = diffusers_stub
 
+if "scipy" not in sys.modules:
+    scipy_stub = types.ModuleType("scipy")
+    scipy_linalg_stub = types.ModuleType("scipy.linalg")
+
+    def _sqrtm(matrix):
+        values, vectors = np.linalg.eigh(np.asarray(matrix, dtype=np.float64))
+        values = np.clip(values, 0.0, None)
+        root = vectors @ np.diag(np.sqrt(values)) @ vectors.T
+        return root.astype(np.complex128)
+
+    scipy_linalg_stub.sqrtm = _sqrtm
+    scipy_stub.linalg = scipy_linalg_stub
+    sys.modules["scipy"] = scipy_stub
+    sys.modules["scipy.linalg"] = scipy_linalg_stub
+
 from tools.compute_fid import (
     FOUR_GROUP_ORDER,
     ImageFeatureRecord,
@@ -157,6 +172,26 @@ def test_collect_condition_paths_uses_virchow2_feature_records(tmp_path: Path) -
         Path("subset_0/generated_he.png"),
         feature_backend="virchow2",
     )
+
+
+def test_collect_condition_paths_uses_style_mapping_for_real_records(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    orion_root = tmp_path / "orion"
+    tile_id = "tile_001"
+    style_tile = "tile_999"
+    _write_complete_ablation_cache(cache_dir, tile_id, orion_root)
+    _write_rgb(orion_root / "he" / f"{style_tile}.png", value=77)
+    np.save(orion_root / "features" / f"{style_tile}_uni.npy", np.array([0.9, 0.8, 0.7], dtype=np.float32))
+
+    _, real_records, _ = collect_condition_paths(
+        cache_dir,
+        orion_root,
+        feature_backend="uni",
+        style_mapping={tile_id: style_tile},
+    )
+
+    assert real_records[0].image_path == orion_root / "he" / f"{style_tile}.png"
+    assert real_records[0].feature_path == orion_root / "features" / f"{style_tile}_uni.npy"
 
 
 def test_extract_uni_features_reuses_cached_features_and_saves_missing(tmp_path: Path) -> None:
