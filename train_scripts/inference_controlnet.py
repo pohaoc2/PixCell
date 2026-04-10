@@ -55,6 +55,20 @@ def encode_ctrl_mask_latent(
     return (lat - vae_shift) * vae_scale
 
 
+def _move_module_if_needed(module, *, device: str, dtype: torch.dtype):
+    """Avoid redundant full-module .to(...) traversals when already placed correctly."""
+    target_device = torch.device(device)
+    try:
+        first_param = next(module.parameters())
+    except (AttributeError, StopIteration, TypeError):
+        first_param = None
+    if first_param is None:
+        return module.to(device=target_device, dtype=dtype)
+    if first_param.device != target_device or first_param.dtype != dtype:
+        return module.to(device=target_device, dtype=dtype)
+    return module
+
+
 
 def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_path):
     from diffusion.utils.misc import read_config
@@ -161,7 +175,7 @@ def denoise(
     latents = latents.to(device, dtype=dtype)
     uni_embeds = uni_embeds.to(device, dtype=dtype)
     controlnet_input_latent = controlnet_input_latent.to(device, dtype=dtype)
-    controlnet_model = controlnet_model.to(device, dtype=dtype)
+    controlnet_model = _move_module_if_needed(controlnet_model, device=device, dtype=dtype)
     # 2. Create Unconditional Embeddings
     # Must be zeros to match CFG dropout training (y[b] = zeros_like when dropped).
     uncond_uni_embeds = torch.zeros(1, 1, 1, 1536, device=device, dtype=dtype)
@@ -234,6 +248,84 @@ def denoise(
                 # print(f"  after step: mean={latents.mean():.3f} std={latents.std():.3f}")
                 # if t == timesteps[2]: break  # just first 3 steps
     return latents
+
+
+def denoise_batched(
+    latents_batch,
+    uni_embeds_batch,
+    controlnet_input_latent_batch,
+    scheduler,
+    controlnet_model,
+    pixcell_controlnet_model,
+    guidance_scale=1.5,
+    num_inference_steps=20,
+    conditioning_scale=1.0,
+    device="cuda",
+):
+    """Batched variant of ``denoise`` across multiple conditioning latents."""
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    latents_batch = latents_batch.to(device, dtype=dtype)
+    uni_embeds_batch = uni_embeds_batch.to(device, dtype=dtype)
+    controlnet_input_latent_batch = controlnet_input_latent_batch.to(device, dtype=dtype)
+    controlnet_model = _move_module_if_needed(controlnet_model, device=device, dtype=dtype)
+
+    batch_size = int(latents_batch.shape[0])
+    if batch_size < 1:
+        raise ValueError("latents_batch must contain at least one sample")
+    if uni_embeds_batch.shape[0] == 1 and batch_size > 1:
+        repeat_shape = [batch_size] + [1] * (uni_embeds_batch.ndim - 1)
+        uni_embeds_batch = uni_embeds_batch.repeat(*repeat_shape)
+    if int(uni_embeds_batch.shape[0]) != batch_size:
+        raise ValueError(
+            f"uni_embeds_batch batch={uni_embeds_batch.shape[0]} does not match latents_batch batch={batch_size}"
+        )
+    if int(controlnet_input_latent_batch.shape[0]) != batch_size:
+        raise ValueError(
+            "controlnet_input_latent_batch batch does not match latents_batch batch"
+        )
+
+    uncond_uni_embeds = torch.zeros_like(uni_embeds_batch)
+
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    timesteps = scheduler.timesteps
+    latent_channels = getattr(pixcell_controlnet_model, "in_channels", 16)
+
+    with torch.no_grad():
+        with torch.amp.autocast(device_type="cuda", enabled=(device == "cuda")):
+            for t in timesteps:
+                latent_model_input = torch.cat([latents_batch, latents_batch], dim=0)
+                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+                latent_single = scheduler.scale_model_input(latents_batch, t)
+                current_timestep = t.expand(latent_model_input.shape[0])
+
+                controlnet_outputs = controlnet_model(
+                    hidden_states=latent_single,
+                    conditioning=controlnet_input_latent_batch,
+                    encoder_hidden_states=uni_embeds_batch,
+                    timestep=t.expand(latents_batch.shape[0]),
+                    return_dict=False,
+                    conditioning_scale=conditioning_scale,
+                )[0]
+                batch_embeds = torch.cat([uncond_uni_embeds, uni_embeds_batch], dim=0)
+                uncond_residuals = [torch.zeros_like(res) for res in controlnet_outputs]
+                batched_residuals = [
+                    torch.cat([u, c], dim=0) for u, c in zip(uncond_residuals, controlnet_outputs)
+                ]
+                noise_pred_batch = pixcell_controlnet_model(
+                    x=latent_model_input,
+                    y=batch_embeds,
+                    controlnet_outputs=batched_residuals,
+                    timestep=current_timestep,
+                    return_dict=False,
+                )
+                noise_pred_uncond, noise_pred_cond = noise_pred_batch.chunk(2, dim=0)
+                noise_pred = noise_pred_uncond + guidance_scale * (
+                    noise_pred_cond - noise_pred_uncond
+                )
+                if pixcell_controlnet_model.out_channels // 2 == latent_channels:
+                    noise_pred = noise_pred.chunk(2, dim=1)[0]
+                latents_batch = scheduler.step(noise_pred, t, latents_batch, return_dict=False)[0]
+    return latents_batch
 
 
 

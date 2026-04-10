@@ -40,6 +40,7 @@ from tools.stage3.generate_ablation_subset_cache import (
     _print_progress,
     _select_generation_tile_ids,
 )
+from tools.stage3.ablation_cache import is_complete_tile_cache_dir, list_complete_cached_tile_ids
 
 
 def test_is_cuda_device_accepts_cuda_prefixes():
@@ -167,3 +168,107 @@ def test_select_generation_tile_ids_target_total_errors_when_existing_exceeds_ta
             tile_sample_seed=5,
             target_total_tiles=2,
         )
+
+
+def _write_cache_manifest(cache_dir, *, include_all_entries: bool = True, include_all_file: bool = True):
+    import json
+    from pathlib import Path
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    files = [
+        "singles/01_cell_types.png",
+        "singles/02_cell_state.png",
+        "singles/03_vasculature.png",
+        "singles/04_microenv.png",
+        "pairs/01_cell_types__cell_state.png",
+        "pairs/02_cell_types__vasculature.png",
+        "pairs/03_cell_types__microenv.png",
+        "pairs/04_cell_state__vasculature.png",
+        "pairs/05_cell_state__microenv.png",
+        "pairs/06_vasculature__microenv.png",
+        "triples/01_cell_types__cell_state__vasculature.png",
+        "triples/02_cell_types__cell_state__microenv.png",
+        "triples/03_cell_types__vasculature__microenv.png",
+        "triples/04_cell_state__vasculature__microenv.png",
+    ]
+    if include_all_entries:
+        files.append("all/generated_he.png")
+    for rel in files:
+        path = cache_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"png")
+    if not include_all_file:
+        (cache_dir / "all" / "generated_he.png").unlink(missing_ok=True)
+    (cache_dir / "cell_mask.png").write_bytes(b"mask")
+    manifest = {
+        "version": 1,
+        "tile_id": cache_dir.name,
+        "group_names": ["cell_types", "cell_state", "vasculature", "microenv"],
+        "cell_mask_path": "cell_mask.png",
+        "sections": [
+            {
+                "title": "1 active group",
+                "subset_size": 1,
+                "entries": [
+                    {"active_groups": ["cell_types"], "condition_label": "a", "image_label": "a", "image_path": "singles/01_cell_types.png"},
+                    {"active_groups": ["cell_state"], "condition_label": "b", "image_label": "b", "image_path": "singles/02_cell_state.png"},
+                    {"active_groups": ["vasculature"], "condition_label": "c", "image_label": "c", "image_path": "singles/03_vasculature.png"},
+                    {"active_groups": ["microenv"], "condition_label": "d", "image_label": "d", "image_path": "singles/04_microenv.png"},
+                ],
+            },
+            {
+                "title": "2 active groups",
+                "subset_size": 2,
+                "entries": [
+                    {"active_groups": ["cell_types", "cell_state"], "condition_label": "1", "image_label": "1", "image_path": "pairs/01_cell_types__cell_state.png"},
+                    {"active_groups": ["cell_types", "vasculature"], "condition_label": "2", "image_label": "2", "image_path": "pairs/02_cell_types__vasculature.png"},
+                    {"active_groups": ["cell_types", "microenv"], "condition_label": "3", "image_label": "3", "image_path": "pairs/03_cell_types__microenv.png"},
+                    {"active_groups": ["cell_state", "vasculature"], "condition_label": "4", "image_label": "4", "image_path": "pairs/04_cell_state__vasculature.png"},
+                    {"active_groups": ["cell_state", "microenv"], "condition_label": "5", "image_label": "5", "image_path": "pairs/05_cell_state__microenv.png"},
+                    {"active_groups": ["vasculature", "microenv"], "condition_label": "6", "image_label": "6", "image_path": "pairs/06_vasculature__microenv.png"},
+                ],
+            },
+            {
+                "title": "3 active groups",
+                "subset_size": 3,
+                "entries": [
+                    {"active_groups": ["cell_types", "cell_state", "vasculature"], "condition_label": "1", "image_label": "1", "image_path": "triples/01_cell_types__cell_state__vasculature.png"},
+                    {"active_groups": ["cell_types", "cell_state", "microenv"], "condition_label": "2", "image_label": "2", "image_path": "triples/02_cell_types__cell_state__microenv.png"},
+                    {"active_groups": ["cell_types", "vasculature", "microenv"], "condition_label": "3", "image_label": "3", "image_path": "triples/03_cell_types__vasculature__microenv.png"},
+                    {"active_groups": ["cell_state", "vasculature", "microenv"], "condition_label": "4", "image_label": "4", "image_path": "triples/04_cell_state__vasculature__microenv.png"},
+                ],
+            },
+            {
+                "title": "4 active groups",
+                "subset_size": 4,
+                "entries": [
+                    {"active_groups": ["cell_types", "cell_state", "vasculature", "microenv"], "condition_label": "all", "image_label": "all", "image_path": "all/generated_he.png"},
+                ],
+            },
+        ],
+    }
+    if not include_all_entries:
+        manifest["sections"][-1]["entries"] = []
+    (cache_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_is_complete_tile_cache_dir_accepts_complete_cache(tmp_path):
+    cache_dir = tmp_path / "tile_ok"
+    _write_cache_manifest(cache_dir)
+
+    assert is_complete_tile_cache_dir(cache_dir) is True
+
+
+def test_is_complete_tile_cache_dir_rejects_missing_all_file(tmp_path):
+    cache_dir = tmp_path / "tile_bad"
+    _write_cache_manifest(cache_dir, include_all_file=False)
+
+    assert is_complete_tile_cache_dir(cache_dir) is False
+
+
+def test_list_complete_cached_tile_ids_filters_incomplete_dirs(tmp_path):
+    _write_cache_manifest(tmp_path / "tile_complete")
+    _write_cache_manifest(tmp_path / "tile_incomplete", include_all_file=False)
+
+    assert list_complete_cached_tile_ids(tmp_path) == ["tile_complete"]

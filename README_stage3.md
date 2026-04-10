@@ -216,6 +216,13 @@ python tools/stage3/prepare_unpaired_ablation_dataset.py \
 
 That JSON lets the unpaired tools keep layout inputs from `data/orion-crc33` while pulling style references from mapped tiles, so you do not need `inference_output/unpaired_ablation/data/...`.
 
+For clean reruns:
+- regenerate paired to `5000` tiles first
+- rebuild the unpaired mapping JSON from that paired cache
+- then regenerate unpaired from scratch
+- the cache generator now batches ablation conditions internally, so there is no extra batching flag to pass
+- on a single A100, start with `--jobs 1`
+
 | Script | Purpose | Typical command |
 |--------|---------|-----------------|
 | `tools/stage3/generate_ablation_subset_cache.py` | Generate cached single/pair/triple/all H&E PNGs plus `manifest.json` | `python tools/stage3/generate_ablation_subset_cache.py --config configs/config_controlnet_exp.py --checkpoint-dir checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post --data-root data/orion-crc33 --n-tiles 8 --jobs 4` |
@@ -242,7 +249,39 @@ python tools/stage3/generate_ablation_subset_cache.py \
     --data-root          data/orion-crc33 \
     --output-dir         inference_output/full_ablation \
     --target-total-tiles 5000 \
-    --jobs               4
+    --jobs               1
+
+python tools/stage3/generate_ablation_subset_cache.py \
+    --checkpoint-dir     checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --data-root          data/orion-crc33 \
+    --output-dir         inference_output/paired_ablation/ablation_results \
+    --target-total-tiles 5000 \
+    --seed               42 \
+    --tile-sample-seed   42 \
+    --device             cuda \
+    --guidance-scale     2.5 \
+    --num-steps          20 \
+    --jobs               1
+
+python tools/stage3/prepare_unpaired_ablation_dataset.py \
+    --paired-cache-root  inference_output/paired_ablation/ablation_results \
+    --data-root          data/orion-crc33 \
+    --metadata-only \
+    --mapping-output     inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --seed               42
+
+python tools/stage3/generate_ablation_subset_cache.py \
+    --data-root          data/orion-crc33 \
+    --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
+    --checkpoint-dir     checkpoints/pixcell_controlnet_exp/npy_inputs \
+    --output-dir         inference_output/unpaired_ablation/ablation_results \
+    --target-total-tiles 5000 \
+    --seed               42 \
+    --tile-sample-seed   42 \
+    --device             cuda \
+    --guidance-scale     2.5 \
+    --num-steps          20 \
+    --jobs               1
 
 python tools/vis/stage3_ablation_grid_figure.py \
     --cache-dir inference_output/full_ablation/YOUR_TILE_ID \
