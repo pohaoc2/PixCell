@@ -97,15 +97,74 @@ def test_summary_helpers_capture_expected_metric_directions() -> None:
     presence = summarize_presence_absence(condition_means, ["aji", "pq", "fud", "style_hed"])
 
     full_key = condition_metric_key(FOUR_GROUP_ORDER)
-    assert best_worst["aji"]["best_condition"] == full_key
-    assert best_worst["pq"]["best_condition"] == full_key
-    assert "microenv" in str(best_worst["fud"]["best_condition"])
-    assert "cell_state" not in str(best_worst["fud"]["best_condition"])
+    assert best_worst["aji"]["best"][0][0] == full_key
+    assert best_worst["pq"]["best"][0][0] == full_key
+    assert "microenv" in best_worst["fud"]["best"][0][0]
+    assert "cell_state" not in best_worst["fud"]["best"][0][0]
 
     assert added["cell_state"]["aji"] > added["cell_types"]["aji"]
     assert added["microenv"]["fud"] > 0
     assert presence["cell_state"]["aji"] > 0
     assert presence["cell_state"]["fud"] < 0
+
+
+def test_summarize_best_worst_top3() -> None:
+    condition_means = {
+        "cell_types+cell_state+microenv": {"aji": 0.654},
+        "cell_types+cell_state+vasculature+microenv": {"aji": 0.650},
+        "cell_types+cell_state+vasculature": {"aji": 0.648},
+        "cell_types+microenv": {"aji": 0.600},
+        "cell_types": {"aji": 0.500},
+    }
+    condition_stats = {
+        "cell_types+cell_state+microenv": {"aji": (0.654, 0.010)},
+        "cell_types+cell_state+vasculature+microenv": {"aji": (0.650, 0.008)},
+        "cell_types+cell_state+vasculature": {"aji": (0.648, 0.009)},
+        "cell_types+microenv": {"aji": (0.600, 0.007)},
+        "cell_types": {"aji": (0.500, 0.020)},
+    }
+
+    result = summarize_best_worst(condition_means, ["aji"], condition_stats, n=3)
+
+    assert result["aji"]["total"] == 5
+    assert len(result["aji"]["best"]) == 3
+    assert result["aji"]["best"] == [
+        ("cell_types+cell_state+microenv", 0.654, 0.010),
+        ("cell_types+cell_state+vasculature+microenv", 0.650, 0.008),
+        ("cell_types+cell_state+vasculature", 0.648, 0.009),
+    ]
+    assert result["aji"]["best"][0][1] == pytest.approx(0.654)
+    assert result["aji"]["best"][0][2] == pytest.approx(0.010)
+
+
+def test_summarize_best_worst_worst3() -> None:
+    condition_means = {
+        "cell_types+cell_state+microenv": {"aji": 0.900},
+        "cell_types+cell_state+vasculature+microenv": {"aji": 0.800},
+        "cell_types+cell_state+vasculature": {"aji": 0.700},
+        "cell_types+microenv": {"aji": 0.600},
+        "cell_types": {"aji": 0.500},
+    }
+    condition_stats = {
+        "cell_types+cell_state+microenv": {"aji": (0.900, 0.010)},
+        "cell_types+cell_state+vasculature+microenv": {"aji": (0.800, 0.008)},
+        "cell_types+cell_state+vasculature": {"aji": (0.700, 0.009)},
+        "cell_types+microenv": {"aji": (0.600, 0.007)},
+        "cell_types": {"aji": (0.500, 0.020)},
+    }
+
+    result = summarize_best_worst(condition_means, ["aji"], condition_stats, n=3)
+
+    assert result["aji"]["total"] == 5
+    assert result["aji"]["best"][0] == ("cell_types+cell_state+microenv", 0.900, 0.010)
+    worst_keys = [item[0] for item in result["aji"]["worst"]]
+    assert "cell_types+cell_state+microenv" not in worst_keys
+    assert "cell_types+cell_state+vasculature+microenv" not in worst_keys
+    assert "cell_types+cell_state+vasculature" not in worst_keys
+    assert result["aji"]["worst"] == [
+        ("cell_types+microenv", 0.600, 0.007),
+        ("cell_types", 0.500, 0.020),
+    ]
 
 
 def test_load_leave_one_out_summary_selects_representative_tile(tmp_path: Path) -> None:
