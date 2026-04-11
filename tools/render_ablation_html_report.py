@@ -130,7 +130,7 @@ class DatasetSummary:
     condition_stats: dict[str, dict[str, tuple[float, float]]]
     by_cardinality: dict[int, dict[str, float]]
     by_cardinality_stats: dict[int, dict[str, tuple[float, float]]]
-    best_worst: dict[str, dict[str, str | float]]
+    best_worst: dict[str, dict[str, list[tuple[str, float, float]] | int]]
     added_effects: dict[str, dict[str, float]]
     presence_absence: dict[str, dict[str, float]]
     added_effect_stats: dict[str, dict[str, tuple[float, float]]]
@@ -381,6 +381,85 @@ def summarize_condition_stats(
             if stats is not None:
                 summary[cond_key][metric_key] = stats
     return summary
+
+
+def _coerce_best_worst_entry(entry: object) -> tuple[str, float, float] | None:
+    if isinstance(entry, dict):
+        condition = entry.get("condition_key") or entry.get("condition") or entry.get("best_condition")
+        mean = entry.get("mean")
+        sd = entry.get("sd", entry.get("std"))
+        if condition is None or mean is None:
+            return None
+        try:
+            return str(condition), float(mean), float(0.0 if sd is None else sd)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+        condition, mean, sd = entry[:3]
+        try:
+            return str(condition), float(mean), float(sd)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _normalize_best_worst_record(
+    record: object,
+) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]], int | None]:
+    if not isinstance(record, dict):
+        return [], [], None
+    best = record.get("best")
+    worst = record.get("worst")
+    if isinstance(best, list) and isinstance(worst, list):
+        best_entries = [entry for entry in (_coerce_best_worst_entry(item) for item in best) if entry is not None]
+        worst_entries = [entry for entry in (_coerce_best_worst_entry(item) for item in worst) if entry is not None]
+        total = record.get("total")
+        try:
+            total_count = int(total) if total is not None else None
+        except (TypeError, ValueError):
+            total_count = None
+        return best_entries, worst_entries, total_count
+    best_condition = record.get("best_condition")
+    best_value = record.get("best_value")
+    worst_condition = record.get("worst_condition")
+    worst_value = record.get("worst_value")
+    if None in {best_condition, best_value, worst_condition, worst_value}:
+        return [], [], None
+    try:
+        return (
+            [(str(best_condition), float(best_value), 0.0)],
+            [(str(worst_condition), float(worst_value), 0.0)],
+            None,
+        )
+    except (TypeError, ValueError):
+        return [], [], None
+
+
+def _best_worst_total(
+    record_total: int | None,
+    best_entries: list[tuple[str, float, float]],
+    worst_entries: list[tuple[str, float, float]],
+) -> int:
+    if record_total is not None and record_total > 0:
+        return record_total
+    return max(len(best_entries), len(worst_entries))
+
+
+def _ranked_best_worst_selection(
+    record: object,
+) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]], int]:
+    best_entries, worst_entries, record_total = _normalize_best_worst_record(record)
+    total = _best_worst_total(record_total, best_entries, worst_entries)
+    if total <= 0:
+        return [], [], 0
+
+    top_count = min(3, total, len(best_entries))
+    top_entries = best_entries[:top_count]
+
+    bottom_start = max(top_count + 1, total - 2)
+    bottom_count = min(3, len(worst_entries), max(0, total - bottom_start + 1))
+    bottom_entries = worst_entries[-bottom_count:] if bottom_count > 0 else []
+    return top_entries, bottom_entries, total
 
 
 def summarize_added_group_effect_stats(
@@ -827,7 +906,7 @@ def load_dataset_summary(
         by_cardinality = summarize_by_cardinality(condition_means, metric_keys)
     if not by_cardinality_stats:
         by_cardinality_stats = summarize_by_cardinality_stats(condition_means, metric_keys)
-    best_worst = summarize_best_worst(condition_means, metric_keys)
+    best_worst = summarize_best_worst(condition_means, metric_keys, condition_stats)
     added_effects = summarize_added_group_effects(condition_means, metric_keys)
     presence_absence = summarize_presence_absence(condition_means, metric_keys)
     added_effect_stats = summarize_added_group_effect_stats(condition_means, metric_keys)
@@ -1184,6 +1263,16 @@ def heatmap_metric_keys(summary: DatasetSummary) -> list[str]:
     return filtered or list(summary.metric_keys)
 
 
+def _shared_heatmap_metric_keys(summaries: list[DatasetSummary]) -> list[str]:
+    """Return the intersection of heatmap metric keys across all summaries, in canonical order."""
+    if not summaries:
+        return []
+    shared = set(heatmap_metric_keys(summaries[0]))
+    for s in summaries[1:]:
+        shared &= set(heatmap_metric_keys(s))
+    return [m for m in DEFAULT_METRIC_ORDER if m in shared]
+
+
 def _heatmap_matrix(
     summary: DatasetSummary,
     source: dict[str, dict[str, tuple[float, float]]],
@@ -1204,7 +1293,7 @@ def _heatmap_metric_scales(summaries: list[DatasetSummary]) -> dict[str, float]:
     per_metric_values: dict[str, list[float]] = {}
     for summary in summaries:
         metric_keys = heatmap_metric_keys(summary)
-        for source in (summary.added_effect_stats, summary.presence_absence_stats):
+        for source in (summary.added_effect_stats,):
             matrix, _ = _heatmap_matrix(summary, source, metric_keys)
             for col, metric_key in enumerate(metric_keys):
                 values = matrix[:, col]
@@ -1237,90 +1326,79 @@ def _normalize_heatmap_matrix(
     return normalized
 
 
-def _normalize_heatmap_stds(
-    stds: np.ndarray,
-    metric_keys: list[str],
-    metric_scales: dict[str, float],
-) -> np.ndarray:
-    normalized = np.full(stds.shape, np.nan, dtype=float)
-    for col, metric_key in enumerate(metric_keys):
-        scale = metric_scales.get(metric_key, 0.0)
-        column = stds[:, col]
-        finite_mask = np.isfinite(column)
-        if not np.any(finite_mask):
-            continue
-        if scale > 0:
-            normalized[finite_mask, col] = column[finite_mask] / scale
-        else:
-            normalized[finite_mask, col] = 0.0
-    return normalized
+def _metric_label_with_arrow(m: str) -> str:
+    label = METRIC_LABELS.get(m, m)
+    spec = METRIC_SPEC_BY_KEY.get(m)
+    if spec is not None:
+        arrow = "\u2191" if spec.higher_is_better else "\u2193"
+        return f"{label} {arrow}"
+    return label
 
 
 def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
-    fig = plt.figure(figsize=(12.2, 3.9 * len(summaries)))
-    grid = fig.add_gridspec(len(summaries), 3, width_ratios=[1, 1, 0.045], wspace=0.20, hspace=0.34)
+    shared_metric_keys = _shared_heatmap_metric_keys(summaries)
+    fig = plt.figure(figsize=(9.5, 4.0 * len(summaries)))
+    grid = fig.add_gridspec(len(summaries), 2, width_ratios=[1, 0.07], wspace=0.10, hspace=0.34)
     metric_scales = _heatmap_metric_scales(summaries)
     im = None
 
     for row, summary in enumerate(summaries):
-        panels = [
-            ("Average improvement from adding a group", summary.added_effect_stats),
-            ("Present vs absent delta", summary.presence_absence_stats),
-        ]
-        for col, (panel_title, source) in enumerate(panels):
-            ax = fig.add_subplot(grid[row, col])
-            metric_keys = heatmap_metric_keys(summary)
-            raw_matrix, stds = _heatmap_matrix(summary, source, metric_keys)
-            normalized_matrix = _normalize_heatmap_matrix(raw_matrix, metric_keys, metric_scales)
-            normalized_stds = _normalize_heatmap_stds(stds, metric_keys, metric_scales)
-            masked = np.ma.masked_invalid(normalized_matrix)
-            im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
-            ax.set_title(f"{summary.title}: {panel_title}", fontsize=11.0, fontweight="bold", color=INK)
-            ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
-            if col == 0:
-                ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
-            else:
-                ax.set_yticklabels([])
-            ax.set_xticks(range(len(metric_keys)))
-            ax.set_xticklabels(
-                [METRIC_LABELS.get(metric, metric) for metric in metric_keys],
-                rotation=0,
-                ha="center",
-                fontsize=10.0,
-                color=INK,
-            )
-            for r in range(raw_matrix.shape[0]):
-                for c in range(raw_matrix.shape[1]):
-                    value = raw_matrix[r, c]
-                    if not np.isfinite(value):
-                        continue
-                    norm_value = normalized_matrix[r, c]
-                    norm_std_value = normalized_stds[r, c]
-                    ax.text(
-                        c,
-                        r,
-                        f"{norm_value:.3f}\n±{norm_std_value:.3f}",
-                        ha="center",
-                        va="center",
-                        fontsize=8.6,
-                        fontweight="semibold",
-                        color="white" if abs(norm_value) >= 0.55 else "#111111",
-                    )
-            ax.set_xticks(np.arange(-0.5, len(metric_keys), 1), minor=True)
-            ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
-            ax.grid(which="minor", color=INK, linewidth=0.8)
-            ax.tick_params(which="minor", bottom=False, left=False)
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-            ax.tick_params(axis="x", length=0, pad=8)
-            ax.tick_params(axis="y", length=0)
+        ax = fig.add_subplot(grid[row, 0])
+        raw_matrix, stds = _heatmap_matrix(summary, summary.added_effect_stats, shared_metric_keys)
+        normalized_matrix = _normalize_heatmap_matrix(raw_matrix, shared_metric_keys, metric_scales)
+        masked = np.ma.masked_invalid(normalized_matrix)
+        im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
+        ax.set_title("Marginal effect of adding group", fontsize=11.5, fontweight="bold", color=INK, pad=10)
+        ax.set_ylabel(summary.title, fontsize=10.5, fontweight="bold", color=INK, labelpad=8)
+        ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
+        ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
+        ax.set_xticks(range(len(shared_metric_keys)))
+        ax.set_xticklabels(
+            [_metric_label_with_arrow(m) for m in shared_metric_keys],
+            rotation=0,
+            ha="center",
+            fontsize=10.0,
+            color=INK,
+        )
+        for r in range(raw_matrix.shape[0]):
+            for c in range(raw_matrix.shape[1]):
+                value = raw_matrix[r, c]
+                if not np.isfinite(value):
+                    continue
+                norm_value = normalized_matrix[r, c]
+                raw_std = stds[r, c]
+                ax.text(
+                    c,
+                    r,
+                    f"{value:+.3f}\n\u00b1{raw_std:.3f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8.0,
+                    fontweight="semibold",
+                    color="white" if abs(norm_value) >= 0.55 else "#111111",
+                )
+        ax.set_xticks(np.arange(-0.5, len(shared_metric_keys), 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
+        ax.grid(which="minor", color="#BBBBBB", linewidth=0.6)
+        ax.tick_params(which="minor", bottom=False, left=False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(axis="x", length=0, pad=8)
+        ax.tick_params(axis="y", length=0)
 
-    cax = fig.add_subplot(grid[:, 2])
+    cax = fig.add_subplot(grid[:, 1])
     cbar = fig.colorbar(im, cax=cax)
-    cbar.set_label("Per-metric zero-centered normalized effect (-1 = worst, 0 = none, 1 = best)", color=INK)
+    cbar.set_ticks([-1, 0, 1])
+    cbar.set_ticklabels(["most\nneg.", "0\n(neutral)", "most\npos."], fontsize=8.5)
+    cbar.set_label(
+        "Within-column rank\n(each metric scaled separately;\nnumerals: raw \u0394 \u00b1 SD)",
+        color=INK,
+        fontsize=8.5,
+        labelpad=10,
+    )
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
-    fig.suptitle("Channel effect matrices", y=0.98, fontsize=15, fontweight="bold")
-    fig.subplots_adjust(left=0.08, right=0.94, top=0.89, bottom=0.11)
+    fig.suptitle("Channel group contributions to image quality metrics", y=0.99, fontsize=13.5, fontweight="bold")
+    fig.subplots_adjust(left=0.11, right=0.90, top=0.88, bottom=0.10)
     return fig
 
 
@@ -1406,71 +1484,92 @@ def metric_plain_text(metric_key: str) -> str:
     return html.escape(humanize_token(metric_key))
 
 
-def render_best_worst_table(summary: DatasetSummary) -> str:
+def _format_mean_sd(mean: float, sd: float) -> str:
+    return f"{float(mean):.3f} ± {float(sd):.3f}"
+
+
+def _metric_caption(metric_key: str) -> str:
+    spec = METRIC_SPEC_BY_KEY[metric_key]
+    arrow = "↑" if spec.higher_is_better else "↓"
+    return f"{html.escape(humanize_token(metric_key))} {arrow}"
+
+
+def _ranked_labels(total: int, count: int, *, tail: bool = False) -> list[str]:
+    if count <= 0:
+        return []
+    if tail:
+        start = max(1, total - count + 1)
+        return [str(rank) for rank in range(start, start + count)]
+    return [str(rank) for rank in range(1, count + 1)]
+
+
+def _render_ranked_metric_table(metric_key: str, record: object) -> str:
+    best_entries, worst_entries, total = _ranked_best_worst_selection(record)
+    if not best_entries and not worst_entries:
+        return ""
+
     rows: list[str] = []
-    for metric_key in comparison_metric_keys(summary):
-        record = summary.best_worst.get(metric_key)
-        if not record:
-            continue
+    for rank_label, entry in zip(_ranked_labels(total, len(best_entries)), best_entries):
         rows.append(
             "<tr>"
-            f"<td>{metric_name_cell(metric_key)}</td>"
-            f"<td class='condition-cell'>{render_condition_glyph(record['best_condition'])}</td>"
-            f"<td>{float(record['best_value']):.3f}</td>"
-            f"<td class='condition-cell'>{render_condition_glyph(record['worst_condition'])}</td>"
-            f"<td>{float(record['worst_value']):.3f}</td>"
+            f"<td class='rank-cell'>{html.escape(rank_label)}</td>"
+            f"<td class='condition-cell'>{render_condition_glyph(entry[0])}</td>"
+            f"<td class='value-cell'>{_format_mean_sd(entry[1], entry[2])}</td>"
             "</tr>"
         )
+    if best_entries and worst_entries:
+        rows.append("<tr class='rank-sep'><td colspan='3'>···</td></tr>")
+    if worst_entries:
+        rows.extend(
+            [
+                "<tr>"
+                f"<td class='rank-cell'>{html.escape(rank_label)}</td>"
+                f"<td class='condition-cell'>{render_condition_glyph(entry[0])}</td>"
+                f"<td class='value-cell'>{_format_mean_sd(entry[1], entry[2])}</td>"
+                "</tr>"
+                for rank_label, entry in zip(_ranked_labels(total, len(worst_entries), tail=True), worst_entries)
+            ]
+        )
     return (
-        "<table class='metric-table'>"
+        "<table class='ranked-table'>"
         "<thead><tr>"
-        "<th>Metric</th>"
-        f"<th>Best condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
-        "<th>Value</th>"
-        f"<th>Worst condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
-        "<th>Value</th>"
+        "<th class='rank-cell'>Rank</th>"
+        f"<th class='condition-cell'>{html.escape(condition_order_label())}</th>"
+        "<th class='value-cell'>Mean ± SD</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def render_best_worst_table(summary: DatasetSummary) -> str:
+    metric_tables: list[str] = []
+    for metric_key in comparison_metric_keys(summary):
+        table_html = _render_ranked_metric_table(metric_key, summary.best_worst.get(metric_key))
+        if not table_html:
+            continue
+        metric_tables.append(
+            "<div class='metric-wrap'>"
+            f"<div class='metric-caption'>{_metric_caption(metric_key)}</div>"
+            f"{table_html}"
+            "</div>"
+        )
+    if not metric_tables:
+        return ""
+    return (
+        "<section class='dataset-section'>"
+        f"<div class='dataset-label'>{html.escape(summary.title)}</div>"
+        f"<div class='metric-group'>{''.join(metric_tables)}</div>"
+        "</section>"
     )
 
 
 def render_comparison_table(summaries: list[DatasetSummary]) -> str:
-    rows: list[str] = []
+    sections: list[str] = []
     for summary in summaries:
-        records: list[str] = []
-        for metric_key in comparison_metric_keys(summary):
-            record = summary.best_worst.get(metric_key)
-            if not record:
-                continue
-            records.append(
-                "<tr>"
-                f"<td class='metric-text'>{metric_plain_text(metric_key)}</td>"
-                f"<td class='condition-cell'>{render_condition_glyph(record['best_condition'])}</td>"
-                f"<td>{float(record['best_value']):.3f}</td>"
-                f"<td class='condition-cell'>{render_condition_glyph(record['worst_condition'])}</td>"
-                f"<td>{float(record['worst_value']):.3f}</td>"
-                "</tr>"
-            )
-        if not records:
-            continue
-        records[0] = records[0].replace(
-            "<tr>",
-            f"<tr><td class='dataset-cell' rowspan='{len(records)}'>{html.escape(summary.title)}</td>",
-            1,
-        )
-        rows.extend(records)
-    return (
-        "<table class='metric-table comparison-table'>"
-        "<thead><tr>"
-        "<th>Dataset</th>"
-        "<th>Metric</th>"
-        f"<th>Best condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
-        "<th>Best</th>"
-        f"<th>Worst condition <span class='condition-order'>{html.escape(condition_order_label())}</span></th>"
-        "<th>Worst</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
-    )
+        section_html = render_best_worst_table(summary)
+        if section_html:
+            sections.append(section_html)
+    return f"<div class='comparison-section'>{''.join(sections)}</div>"
 
 
 def render_notes_list(notes: list[str]) -> str:
@@ -1713,6 +1812,90 @@ def render_report_html(
       padding: 16px;
       margin-top: 14px;
     }}
+    .comparison-section {{
+      margin-bottom: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }}
+    .comparison-section .dataset-section {{
+      margin-bottom: 0;
+    }}
+    .dataset-label {{
+      font-family: "Times New Roman", Times, serif;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 2px solid #000;
+      padding-bottom: 2px;
+      margin-bottom: 6px;
+    }}
+    .metric-group {{
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }}
+    .metric-wrap {{
+      flex: 1 1 160px;
+      min-width: 160px;
+    }}
+    .metric-caption {{
+      font-family: "Times New Roman", Times, serif;
+      font-size: 10px;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }}
+    .ranked-table {{
+      border-collapse: collapse;
+      width: 100%;
+      font-family: "Times New Roman", Times, serif;
+      font-size: 10px;
+    }}
+    .ranked-table thead tr {{
+      border-top: 1.5px solid #000;
+      border-bottom: 1px solid #000;
+    }}
+    .ranked-table tbody tr:last-child td {{
+      border-bottom: 1.5px solid #000;
+    }}
+    .ranked-table th, .ranked-table td {{
+      padding: 2px 4px;
+      line-height: 1.18;
+    }}
+    .ranked-table th.rank-cell {{
+      text-align: center;
+      width: 28px;
+    }}
+    .ranked-table th.condition-cell {{
+      text-align: left;
+    }}
+    .ranked-table th.value-cell {{
+      text-align: right;
+      white-space: nowrap;
+    }}
+    .ranked-table td.rank-cell {{
+      text-align: center;
+      color: #555;
+      font-size: 9px;
+      white-space: nowrap;
+    }}
+    .ranked-table td.condition-cell {{
+      white-space: nowrap;
+    }}
+    .ranked-table td.value-cell {{
+      text-align: right;
+      white-space: nowrap;
+    }}
+    .ranked-table tr.rank-sep td {{
+      text-align: center;
+      color: #000;
+      font-size: 9px;
+      padding: 1px 4px;
+      border-top: 1px dashed #000;
+      border-bottom: 1px dashed #000;
+    }}
     .takeaways {{
       margin: 0;
       padding-left: 18px;
@@ -1722,75 +1905,6 @@ def render_report_html(
     }}
     .takeaways strong {{
       font-weight: 700;
-    }}
-    .metric-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.92rem;
-    }}
-    .metric-table th, .metric-table td {{
-      text-align: left;
-      padding: 8px 10px;
-      border-bottom: 1px solid #ece5d9;
-      vertical-align: top;
-    }}
-    .metric-table thead th {{
-      font-size: 0.82rem;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      color: var(--muted);
-    }}
-    .metric-name {{
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 999px;
-      background: #f5f5f2;
-      border: 1px solid #e2e1db;
-      color: var(--ink);
-      font-weight: 500;
-    }}
-    .comparison-table td:first-child {{
-      font-weight: 600;
-    }}
-    .comparison-table {{
-      font-family: "Times New Roman", Times, serif;
-      font-size: 1rem;
-      border-top: 2px solid #000;
-      border-bottom: 2px solid #000;
-    }}
-    .comparison-table th, .comparison-table td {{
-      border-bottom: 1px solid #c9c3b9;
-      padding: 7px 10px;
-    }}
-    .comparison-table thead th {{
-      color: #000;
-      text-transform: none;
-      letter-spacing: 0;
-      font-size: 0.95rem;
-      border-bottom: 1.5px solid #000;
-    }}
-    .comparison-table tbody tr:last-child td {{
-      border-bottom: none;
-    }}
-    .comparison-table .dataset-cell {{
-      font-weight: 700;
-      vertical-align: middle;
-      white-space: nowrap;
-      padding-right: 14px;
-    }}
-    .comparison-table .metric-text {{
-      font-weight: 700;
-    }}
-    .comparison-table .condition-cell {{
-      white-space: nowrap;
-    }}
-    .condition-order {{
-      display: block;
-      margin-top: 2px;
-      color: var(--muted);
-      font-size: 0.74rem;
-      font-weight: 400;
-      line-height: 1.25;
     }}
     .condition-glyph {{
       display: inline-flex;
@@ -1868,8 +1982,8 @@ def render_report_html(
         <img src="{trend_uri}" alt="Metric trends by active group count" />
       </section>
       <section class="figure-card">
-        <h2>Paired vs Unpaired Best/Worst Conditions</h2>
-        <p>A compact paper-style table compares each metric’s best and worst ablation condition across paired and unpaired settings. Filled circles indicate included groups in {html.escape(condition_order_label())} order.</p>
+        <h2>Paired vs Unpaired Ranked Conditions</h2>
+        <p>Each dataset now gets its own ranked mini-table per metric, with the top three and bottom three conditions isolated so the value scales are not visually comparable across metrics. Filled circles indicate included groups in {html.escape(condition_order_label())} order.</p>
         {comparison_table}
       </section>
       <section class="figure-card">
@@ -1902,42 +2016,60 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
     rows: list[list[str]] = []
     for summary in summaries:
         for metric_key in comparison_metric_keys(summary):
-            record = summary.best_worst.get(metric_key)
-            if not record:
+            best_entries, worst_entries, total = _ranked_best_worst_selection(summary.best_worst.get(metric_key))
+            if not best_entries and not worst_entries:
                 continue
-            rows.append(
-                [
-                    summary.title,
-                    humanize_token(metric_key),
-                    condition_indicator_text(record["best_condition"]),
-                    f"{float(record['best_value']):.3f}",
-                    condition_indicator_text(record["worst_condition"]),
-                    f"{float(record['worst_value']):.3f}",
-                ]
-            )
 
-    fig_height = max(3.8, 1.7 + 0.42 * max(len(rows), 1))
-    fig, ax = plt.subplots(figsize=(15.5, fig_height))
+            top_labels = _ranked_labels(total, len(best_entries))
+            bottom_labels = _ranked_labels(total, len(worst_entries), tail=True)
+            metric_label = humanize_token(metric_key)
+            if metric_key in METRIC_SPEC_BY_KEY:
+                metric_label += f" {'↑' if METRIC_SPEC_BY_KEY[metric_key].higher_is_better else '↓'}"
+
+            for row_index, (rank_label, best_entry) in enumerate(zip(top_labels, best_entries)):
+                rows.append(
+                    [
+                        summary.title if row_index == 0 else "",
+                        metric_label if row_index == 0 else "",
+                        rank_label,
+                        condition_indicator_text(best_entry[0]),
+                        _format_mean_sd(best_entry[1], best_entry[2]),
+                    ]
+                )
+            if best_entries and worst_entries:
+                rows.append(["", "", "···", "", ""])
+            for rank_label, worst_entry in zip(bottom_labels, worst_entries):
+                rows.append(
+                    [
+                        "",
+                        "",
+                        rank_label,
+                        condition_indicator_text(worst_entry[0]),
+                        _format_mean_sd(worst_entry[1], worst_entry[2]),
+                    ]
+                )
+
+    fig_height = max(3.8, 1.7 + 0.38 * max(len(rows), 1))
+    fig, ax = plt.subplots(figsize=(13.0, fig_height))
     ax.axis("off")
     table = ax.table(
         cellText=rows,
         colLabels=[
             "Dataset",
             "Metric",
-            f"Best ({condition_order_label()})",
-            "Best",
-            f"Worst ({condition_order_label()})",
-            "Worst",
+            "Rank",
+            f"Condition ({condition_order_label()})",
+            "Mean ± SD",
         ],
         cellLoc="left",
         colLoc="left",
         loc="center",
         bbox=[0.0, 0.02, 1.0, 0.92],
-        colWidths=[0.12, 0.12, 0.19, 0.08, 0.19, 0.08],
+        colWidths=[0.12, 0.14, 0.07, 0.22, 0.14],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(10.0)
-    table.scale(1.0, 1.35)
+    table.set_fontsize(9.5)
+    table.scale(1.0, 1.3)
     for (row, col), cell in table.get_celld().items():
         cell.set_edgecolor("#C9C3B9")
         cell.set_linewidth(0.8)
@@ -1949,8 +2081,18 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
             cell.set_text_props(color=INK, weight="normal")
             if col in {0, 1}:
                 cell.set_text_props(weight="bold", color=INK)
+    for row in range(1, len(rows) + 1):
+        if rows[row - 1][2] == "···":
+            for col in range(5):
+                cell = table[(row, col)]
+                cell.set_text_props(color=OKABE_GRAY, style="italic")
 
-    ax.set_title("Paired vs Unpaired Best/Worst Conditions", fontsize=15, fontweight="bold", pad=12)
+    ax.set_title(
+        "Paired vs Unpaired — Top 3 / Worst 3 Conditions per Metric",
+        fontsize=14,
+        fontweight="bold",
+        pad=10,
+    )
     return fig
 
 

@@ -63,6 +63,16 @@ def _metric_value_from_record(record: dict[str, object], metric_key: str) -> obj
     return record.get(metric_key)
 
 
+def _condition_sd(
+    condition_stats: dict[str, dict[str, tuple[float, float]]] | None,
+    cond_key: str,
+    metric_key: str,
+) -> float:
+    if condition_stats is None:
+        return 0.0
+    return condition_stats.get(cond_key, {}).get(metric_key, (0.0, 0.0))[1]
+
+
 def load_condition_means(metrics_root: Path) -> tuple[dict[str, dict[str, float]], int, list[str]]:
     grouped: dict[str, dict[str, list[float]]] = {}
     metric_keys: set[str] = set()
@@ -124,8 +134,10 @@ def summarize_by_cardinality(
 def summarize_best_worst(
     condition_means: dict[str, dict[str, float]],
     metric_keys: list[str],
-) -> dict[str, dict[str, str | float]]:
-    summary: dict[str, dict[str, str | float]] = {}
+    condition_stats: dict[str, dict[str, tuple[float, float]]] | None = None,
+    n: int = 3,
+) -> dict[str, dict[str, list[tuple[str, float, float]] | int]]:
+    summary: dict[str, dict[str, list[tuple[str, float, float]] | int]] = {}
     for metric_key in metric_keys:
         items = [
             (cond_key, metrics[metric_key])
@@ -135,14 +147,17 @@ def summarize_best_worst(
         if not items:
             continue
         spec = METRIC_SPEC_BY_KEY[metric_key]
-        best = max(items, key=lambda item: item[1]) if spec.higher_is_better else min(items, key=lambda item: item[1])
-        worst = min(items, key=lambda item: item[1]) if spec.higher_is_better else max(items, key=lambda item: item[1])
-        summary[metric_key] = {
-            "best_condition": best[0],
-            "best_value": best[1],
-            "worst_condition": worst[0],
-            "worst_value": worst[1],
-        }
+        ranked = sorted(items, key=lambda item: item[1], reverse=spec.higher_is_better)
+        best_items = [
+            (cond_key, value, _condition_sd(condition_stats, cond_key, metric_key))
+            for cond_key, value in ranked[:n]
+        ]
+        worst_start = max(n, len(ranked) - n)
+        worst_items = [
+            (cond_key, value, _condition_sd(condition_stats, cond_key, metric_key))
+            for cond_key, value in ranked[worst_start:]
+        ]
+        summary[metric_key] = {"best": best_items, "worst": worst_items, "total": len(items)}
     return summary
 
 
@@ -313,15 +328,23 @@ def cardinality_notes(
     return notes
 
 
-def best_worst_notes(best_worst: dict[str, dict[str, str | float]]) -> list[str]:
+def best_worst_notes(best_worst: dict[str, dict[str, list[tuple[str, float, float]] | int]]) -> list[str]:
     full_condition = condition_metric_key(FOUR_GROUP_ORDER)
-    full_best = [metric_key for metric_key, summary in best_worst.items() if summary["best_condition"] == full_condition]
-    full_worst = [metric_key for metric_key, summary in best_worst.items() if summary["worst_condition"] == full_condition]
+    full_best = [
+        metric_key
+        for metric_key, summary in best_worst.items()
+        if any(cond == full_condition for cond, _, _ in summary["best"])
+    ]
+    full_worst = [
+        metric_key
+        for metric_key, summary in best_worst.items()
+        if any(cond == full_condition for cond, _, _ in summary["worst"])
+    ]
 
     worst_counts: dict[str, int] = {}
     for summary in best_worst.values():
-        worst_condition = str(summary["worst_condition"])
-        worst_counts[worst_condition] = worst_counts.get(worst_condition, 0) + 1
+        for worst_condition, _, _ in summary["worst"]:
+            worst_counts[worst_condition] = worst_counts.get(worst_condition, 0) + 1
 
     notes: list[str] = []
     if full_best:
@@ -461,7 +484,7 @@ def render_markdown(
     tile_count: int,
     metric_keys: list[str],
     by_cardinality: dict[int, dict[str, float]],
-    best_worst: dict[str, dict[str, str | float]],
+    best_worst: dict[str, dict[str, list[tuple[str, float, float]] | int]],
     added_effects: dict[str, dict[str, float]],
     presence_absence: dict[str, dict[str, float]],
     loo_summary: dict[str, dict[str, float]],
@@ -534,12 +557,14 @@ def render_markdown(
         summary = best_worst.get(metric_key)
         if not summary:
             continue
+        best_cond, best_value, _ = summary["best"][0]
+        worst_cond, worst_value, _ = summary["worst"][0]
         row = [
             metric_key,
-            _format_condition_key(str(summary["best_condition"])),
-            _fmt(float(summary["best_value"])),
-            _format_condition_key(str(summary["worst_condition"])),
-            _fmt(float(summary["worst_value"])),
+            _format_condition_key(best_cond),
+            _fmt(best_value),
+            _format_condition_key(worst_cond),
+            _fmt(worst_value),
         ]
         lines.append("| " + " | ".join(row) + " |")
 
