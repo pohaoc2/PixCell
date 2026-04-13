@@ -32,6 +32,7 @@ from tools.stage3.ablation_cache import (
     list_cached_tile_ids,
     load_manifest,
 )
+from tools.stage3.hed_utils import masked_mean_std, rgb_to_hed, tissue_mask_from_rgb
 from tools.stage3.common import print_progress
 from tools.stage3.style_mapping import load_style_mapping
 
@@ -49,15 +50,6 @@ METRIC_NAMES: tuple[str, ...] = DEFAULT_METRIC_NAMES + OPTIONAL_METRIC_NAMES
 _SPATIAL_EXTS: tuple[str, ...] = (".png", ".npy", ".jpg", ".jpeg", ".tif", ".tiff")
 _METRIC_WORKER_CONFIG: dict[str, Any] | None = None
 _METRIC_WORKER_STATE: dict[str, Any] = {}
-_RGB_FROM_HED = np.array(
-    [
-        [0.65, 0.70, 0.29],
-        [0.07, 0.99, 0.11],
-        [0.27, 0.57, 0.78],
-    ],
-    dtype=np.float64,
-)
-_HED_FROM_RGB = np.linalg.inv(_RGB_FROM_HED)
 
 
 def _empty_metrics_record() -> dict[str, float | None]:
@@ -199,25 +191,6 @@ def _load_rgb_pil(path: Path, *, size: tuple[int, int] | None = None) -> Image.I
     if size is not None and image.size != size:
         image = image.resize(size, Image.BILINEAR)
     return image
-
-
-def _rgb_to_hed(image: Image.Image) -> np.ndarray:
-    arr = np.asarray(image, dtype=np.float64) / 255.0
-    arr = np.clip(arr, 1e-6, 1.0)
-    optical_density = -np.log(arr)
-    return optical_density @ _HED_FROM_RGB.T
-
-
-def _tissue_mask_from_rgb(image: Image.Image) -> np.ndarray:
-    arr = np.asarray(image, dtype=np.float32) / 255.0
-    return np.mean(arr, axis=2) < 0.95
-
-
-def _masked_mean_std(values: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
-    data = values[np.asarray(mask, dtype=bool)]
-    if data.size == 0:
-        data = values.reshape(-1)
-    return float(np.mean(data)), float(np.std(data))
 
 
 def _resolve_lpips_device(requested: str) -> str:
@@ -422,7 +395,7 @@ def compute_lpips_scores(
     return scores
 
 
-def compute_style_hed_scores(
+def compute_style_hed_for_pair(
     cache_dir: Path,
     orion_root: Path,
     *,
@@ -441,25 +414,28 @@ def compute_style_hed_scores(
         raise FileNotFoundError(f"reference H&E not found for tile {tile_id!r}")
 
     ref_img = _load_rgb_pil(ref_path)
-    ref_hed = _rgb_to_hed(ref_img)
-    ref_mask = _tissue_mask_from_rgb(ref_img)
+    ref_hed = rgb_to_hed(ref_img)
+    ref_mask = tissue_mask_from_rgb(ref_img)
     scores: dict[str, float] = {}
 
     for cond_key, img_path in _iter_condition_images(cache_dir).items():
         if not img_path.is_file():
             raise FileNotFoundError(f"generated image not found: {img_path}")
         gen_img = _load_rgb_pil(img_path, size=ref_img.size)
-        gen_hed = _rgb_to_hed(gen_img)
-        gen_mask = _tissue_mask_from_rgb(gen_img)
+        gen_hed = rgb_to_hed(gen_img)
+        gen_mask = tissue_mask_from_rgb(gen_img)
         tissue_mask = ref_mask | gen_mask
 
         score = 0.0
         for stain_channel in (0, 1):  # H and E only
-            ref_mean, ref_std = _masked_mean_std(ref_hed[..., stain_channel], tissue_mask)
-            gen_mean, gen_std = _masked_mean_std(gen_hed[..., stain_channel], tissue_mask)
+            ref_mean, ref_std = masked_mean_std(ref_hed[..., stain_channel], tissue_mask)
+            gen_mean, gen_std = masked_mean_std(gen_hed[..., stain_channel], tissue_mask)
             score += abs(gen_mean - ref_mean) + abs(gen_std - ref_std)
         scores[cond_key] = float(score)
     return scores
+
+
+compute_style_hed_scores = compute_style_hed_for_pair
 
 
 def _find_spatial_path(base_dir: Path, tile_id: str) -> Path:
@@ -842,7 +818,7 @@ def compute_metrics_for_cache_dir(
                 rec["accuracy"] = values["accuracy"]
 
     if "style_hed" in metrics_to_compute:
-        for cond_key, score in compute_style_hed_scores(
+        for cond_key, score in compute_style_hed_for_pair(
             cache_dir,
             orion_root,
             style_mapping=style_mapping,

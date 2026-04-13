@@ -89,3 +89,47 @@ def test_export_and_import_cellvit_roundtrip(tmp_path: Path):
     assert report_path.is_file()
     assert (cache_root / "17408_32768" / "singles" / "01_cell_types_cellvit_instances.json").is_file()
     assert (cache_root / "17408_32768" / "all" / "generated_he_cellvit_instances.json").is_file()
+
+
+def test_import_prefers_json_and_supports_nested_patterns(tmp_path: Path):
+    cache_root = _make_cache(tmp_path)
+    batch_dir = tmp_path / "cellvit_batch"
+    manifest_path, _, _ = export_cellvit_batch(cache_root, batch_dir)
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    flat_names = sorted(entry["flat_name"] for entry in payload["entries"])
+
+    default_results_dir = tmp_path / "cellvit_results_default"
+    default_results_dir.mkdir()
+    target_stem = Path(flat_names[0]).stem
+    (default_results_dir / f"{target_stem}.npy").write_bytes(b"npy")
+    (default_results_dir / f"{target_stem}.json").write_text(
+        '{"patch":"preferred","cells":[]}',
+        encoding="utf-8",
+    )
+    other_stem = Path(flat_names[1]).stem
+    (default_results_dir / f"{other_stem}.json").write_text(
+        '{"patch":"other","cells":[]}',
+        encoding="utf-8",
+    )
+
+    imported, _ = import_cellvit_results(manifest_path, default_results_dir)
+    matched = next(item for item in imported if item["flat_name"] == flat_names[0])
+    assert matched["matched_result"].endswith(f"{target_stem}.json")
+
+    nested_results_dir = tmp_path / "cellvit_results_nested"
+    (nested_results_dir / "nested").mkdir(parents=True)
+    for flat_name in flat_names:
+        stem = Path(flat_name).stem
+        (nested_results_dir / "nested" / f"{stem}.json").write_text(
+            '{"patch":"nested","cells":[]}',
+            encoding="utf-8",
+        )
+
+    imported_nested, _ = import_cellvit_results(
+        manifest_path,
+        nested_results_dir,
+        result_pattern="nested/{stem}.json",
+    )
+    assert len(imported_nested) == 2
+    assert all("/nested/" in entry["matched_result"] for entry in imported_nested)

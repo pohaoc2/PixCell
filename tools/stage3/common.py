@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import torch
-from diffusers import DDPMScheduler
+try:
+    import torch
+except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight CLI paths
+    torch = None  # type: ignore[assignment]
+
+try:
+    from diffusers import DDPMScheduler
+except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight CLI paths
+    DDPMScheduler = None  # type: ignore[assignment]
 
 
-def inference_dtype(device: str) -> torch.dtype:
+def inference_dtype(device: str) -> Any:
     """Inference dtype for a requested device string."""
+    if torch is None:
+        raise ModuleNotFoundError("torch is required for inference_dtype()")
     return torch.float16 if str(device).lower().startswith("cuda") else torch.float32
 
 
 def make_inference_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:
     """Construct the shared DDPM inference scheduler used across Stage 3 tools."""
+    if DDPMScheduler is None:
+        raise ModuleNotFoundError("diffusers is required for make_inference_scheduler()")
     scheduler = DDPMScheduler(
         num_train_timesteps=1000,
         beta_start=0.0001,
@@ -33,8 +45,10 @@ def resolve_uni_embedding(
     feat_dir: Path,
     null_uni: bool,
     uni_npy: Path | None = None,
-) -> torch.Tensor:
+) -> Any:
     """Load a cached UNI embedding or fall back to the canonical null embedding."""
+    if torch is None:
+        raise ModuleNotFoundError("torch is required for resolve_uni_embedding()")
     from train_scripts.inference_controlnet import null_uni_embed
 
     feat_path = Path(uni_npy) if uni_npy is not None else Path(feat_dir) / f"{tile_id}_uni.npy"

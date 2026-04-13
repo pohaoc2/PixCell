@@ -182,7 +182,7 @@ git commit -m "test: update and add tests for top-N/worst-N ranking in summarize
 ### Task 3: Update `DatasetSummary` type annotation and call site
 
 **Files:**
-- Modify: `tools/render_ablation_html_report.py`
+- Modify: `tools/ablation_report`
 
 - [ ] **Step 1: Update `DatasetSummary.best_worst` type annotation**
 
@@ -217,7 +217,7 @@ Replace with:
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tools/render_ablation_html_report.py
+git add tools/ablation_report
 git commit -m "feat: pass condition_stats to summarize_best_worst for SD values"
 ```
 
@@ -226,7 +226,7 @@ git commit -m "feat: pass condition_stats to summarize_best_worst for SD values"
 ### Task 4: Replace HTML rendering functions and add CSS
 
 **Files:**
-- Modify: `tools/render_ablation_html_report.py`
+- Modify: `tools/ablation_report`
 
 The existing `render_comparison_table` and `render_best_worst_table` are replaced with a flex-layout of per-metric tables. New CSS classes are added to the HTML template's `<style>` block.
 
@@ -420,7 +420,7 @@ def render_comparison_table(summaries: list[DatasetSummary]) -> str:
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tools/render_ablation_html_report.py
+git add tools/ablation_report
 git commit -m "feat: replace best/worst table with per-metric ranked top-3/worst-3 tables"
 ```
 
@@ -429,7 +429,7 @@ git commit -m "feat: replace best/worst table with per-metric ranked top-3/worst
 ### Task 5: Update matplotlib figure
 
 **Files:**
-- Modify: `tools/render_ablation_html_report.py` (`build_comparison_table_figure`)
+- Modify: `tools/ablation_report` (`build_comparison_table_figure`)
 
 - [ ] **Step 1: Replace `build_comparison_table_figure`**
 
@@ -525,6 +525,6 @@ Expected: all tests PASS
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tools/render_ablation_html_report.py
+git add tools/ablation_report
 git commit -m "feat: update comparison figure to show ranked top-3/worst-3 per metric"
 ```

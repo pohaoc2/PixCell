@@ -84,7 +84,7 @@ The stage-specific runbooks now live in separate files:
 
 Additional workflow references:
 
-- [`ablation_cli.md`](ablation_cli.md): consolidated paired + unpaired ablation workflow
+- [`ablation_cli.md`](ablation_cli.md): full paired + unpaired ablation workflow reference
 
 ---
 

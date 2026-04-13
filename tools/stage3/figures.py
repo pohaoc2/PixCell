@@ -1,7 +1,7 @@
 """
 Matplotlib figures for Stage 3 tile visualizations (overview, attention, residuals, ablation).
 
-Used by tools/stage3/run_evaluation.py and tools/vis/generate_stage3_tile_vis.py.
+Used by tools/stage3/run_evaluation.py and tools/stage3/generate_tile_vis.py.
 """
 from __future__ import annotations
 

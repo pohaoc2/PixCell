@@ -56,13 +56,17 @@ from tools.compute_fid import (
     _generated_feature_cache_path,
     _generated_uni_feature_cache_path,
     all_features_cached,
+    backfill_metrics,
     collect_condition_paths,
     compute_fid_from_stats,
     condition_metric_key,
     default_output_path,
     extract_uni_features,
     extract_virchow2_features,
+    load_metric_scores,
+    main,
     metric_key_for_backend,
+    ordered_condition_keys,
 )
 
 
@@ -290,3 +294,59 @@ def test_metric_key_and_output_path_support_virchow2() -> None:
     assert metric_key_for_backend("virchow2") == "fvd"
     assert metric_key_for_backend("inception") == "fid"
     assert default_output_path(cache_dir, "virchow2") == cache_dir / "fvd_scores.json"
+
+
+def test_backfill_metrics_creates_missing_metrics_json(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    orion_root = tmp_path / "orion"
+    tile_id = "tile_001"
+    _write_complete_ablation_cache(cache_dir, tile_id, orion_root)
+
+    metric_scores = {
+        cond_key: float(index)
+        for index, cond_key in enumerate(ordered_condition_keys(), start=1)
+    }
+
+    backfill_metrics(cache_dir, [tile_id], metric_scores, metric_key="fud")
+
+    metrics_path = cache_dir / tile_id / "metrics.json"
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+
+    assert payload["tile_id"] == tile_id
+    per_condition = payload["per_condition"]
+    assert sorted(per_condition) == sorted(ordered_condition_keys())
+    for cond_key, score in metric_scores.items():
+        assert per_condition[cond_key]["fud"] == score
+
+
+def test_main_backfill_only_reuses_existing_scores(monkeypatch, tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    orion_root = tmp_path / "orion"
+    tile_id = "tile_001"
+    _write_complete_ablation_cache(cache_dir, tile_id, orion_root)
+
+    output_path = cache_dir / "fud_scores.json"
+    scores = {
+        cond_key: float(index) / 10.0
+        for index, cond_key in enumerate(ordered_condition_keys(), start=1)
+    }
+    output_path.write_text(json.dumps(scores, indent=2) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "compute_fid.py",
+            "--cache-dir",
+            str(cache_dir),
+            "--orion-root",
+            str(orion_root),
+            "--backfill-only",
+        ],
+    )
+
+    main()
+
+    payload = json.loads((cache_dir / tile_id / "metrics.json").read_text(encoding="utf-8"))
+    for cond_key, score in load_metric_scores(output_path).items():
+        assert payload["per_condition"][cond_key]["fud"] == score

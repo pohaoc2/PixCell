@@ -1,7 +1,7 @@
 # Design: Per-Metric Ranked Ablation Table
 
 **Date:** 2026-04-10 (revised 2026-04-10)
-**Scope:** `tools/render_ablation_html_report.py`, `tools/summarize_ablation_report.py`, `tests/test_summarize_ablation_report.py`
+**Scope:** `tools/ablation_report`, `tools/summarize_ablation_report.py`, `tests/test_summarize_ablation_report.py`
 
 ## Problem
 
@@ -121,7 +121,7 @@ Changes:
 | File | Change |
 |------|--------|
 | `tools/summarize_ablation_report.py` | Replace `summarize_best_worst` with top-N/worst-N ranking; no changes to `best_worst_notes` |
-| `tools/render_ablation_html_report.py` | Replace `render_best_worst_table`, `render_comparison_table`, `build_comparison_table_figure`, `DatasetSummary.best_worst` annotation; add CSS |
+| `tools/ablation_report` | Replace `render_best_worst_table`, `render_comparison_table`, `build_comparison_table_figure`, `DatasetSummary.best_worst` annotation; add CSS |
 | `tests/test_summarize_ablation_report.py` | Update existing test; add two new ranking tests |
 
 ## Out of scope

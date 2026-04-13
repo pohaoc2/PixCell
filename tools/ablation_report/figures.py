@@ -1,0 +1,614 @@
+from __future__ import annotations
+
+import base64
+import io
+import textwrap
+from pathlib import Path
+
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+
+from .data import load_rgb_pil_local
+from .shared import (
+    CHANNEL_EFFECT_CMAP,
+    FOUR_GROUP_ORDER,
+    GROUP_LABELS,
+    GROUP_SHORT_LABELS,
+    INK,
+    METRIC_LABELS,
+    METRIC_SPEC_BY_KEY,
+    OKABE_GRAY,
+    SOFT_GRID,
+    TRADEOFF_HIGHER_IS_BETTER,
+    TRADEOFF_REFERENCE_BANDS,
+    TRADEOFF_METRIC_ORDER,
+    DatasetSummary,
+    _format_mean_sd,
+    _metric_caption,
+    _ranked_best_worst_selection,
+    _ranked_labels,
+    _reference_band_limits,
+    _tight_range,
+    comparison_metric_keys,
+    condition_indicator_text,
+    humanize_token,
+    metric_tradeoff_keys,
+    plain_takeaway_text,
+    plt,
+    np,
+)
+
+
+def figure_to_data_uri(fig: plt.Figure, *, dpi: int = 180) -> str:
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def save_figure_png(fig: plt.Figure, output_path: Path, *, dpi: int = 220) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    metrics = metric_tradeoff_keys(summaries)
+    n_cols = 3
+    n_rows = max(1, int(np.ceil(len(metrics) / n_cols)))
+    fig = plt.figure(figsize=(15.6, 10.9 if n_rows > 2 else 7.7))
+    outer = fig.add_gridspec(n_rows, n_cols, wspace=0.22, hspace=0.28)
+
+    from tools.stage3.ablation_vis_utils import condition_metric_key, ordered_subset_condition_tuples
+
+    condition_tuples = ordered_subset_condition_tuples()
+    condition_keys = [condition_metric_key(cond) for cond in condition_tuples]
+    x_positions = list(range(len(condition_keys)))
+    spans: list[tuple[int, int, int]] = []
+    start = 0
+    for index in range(1, len(condition_tuples)):
+        if len(condition_tuples[index]) != len(condition_tuples[index - 1]):
+            spans.append((len(condition_tuples[index - 1]), start, index - 1))
+            start = index
+    spans.append((len(condition_tuples[-1]), start, len(condition_tuples) - 1))
+    dataset_styles = {
+        "paired": {"markerfacecolor": INK, "markeredgecolor": INK, "error_linestyle": "solid"},
+        "unpaired": {"markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": (0, (4, 2))},
+    }
+    x_offsets = {"paired": -0.12, "unpaired": 0.12}
+
+    for index, metric_key in enumerate(metrics):
+        row, col = divmod(index, 3)
+        subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
+        ax = fig.add_subplot(subgrid[0, 0])
+        dot_ax = fig.add_subplot(subgrid[1, 0], sharex=ax)
+        all_values: list[float] = []
+        for summary in summaries:
+            valid: list[tuple[int, float, float]] = []
+            for x_value, cond_key in zip(x_positions, condition_keys, strict=True):
+                stats = summary.condition_stats.get(cond_key, {}).get(metric_key)
+                if stats is None:
+                    continue
+                valid.append((x_value, float(stats[0]), float(stats[1])))
+            if not valid:
+                continue
+            xs, ys, stds = zip(*valid)
+            for value, std_value in zip(ys, stds, strict=True):
+                all_values.extend([value - std_value, value + std_value])
+            style = dataset_styles[summary.slug]
+            shifted_xs = [x + x_offsets[summary.slug] for x in xs]
+            container = ax.errorbar(
+                shifted_xs,
+                ys,
+                yerr=stds,
+                color=INK,
+                linestyle="none",
+                marker="o",
+                markerfacecolor=style["markerfacecolor"],
+                markeredgecolor=style["markeredgecolor"],
+                markeredgewidth=1.1,
+                linewidth=1.6,
+                markersize=4.8,
+                capsize=2.0,
+                elinewidth=0.9,
+                zorder=4,
+            )
+            _, _, barlinecols = container.lines
+            for barlinecol in barlinecols:
+                barlinecol.set_linestyle(style["error_linestyle"])
+
+        reference = TRADEOFF_REFERENCE_BANDS.get(metric_key)
+        if reference is not None:
+            mean = float(reference["mean"])
+            std = reference.get("std")
+            all_values.append(mean)
+            if std is not None:
+                all_values.extend([mean - float(std), mean + float(std)])
+
+        if not all_values:
+            ax.axis("off")
+            dot_ax.axis("off")
+            continue
+
+        lo, hi = _tight_range(all_values)
+        spec = METRIC_SPEC_BY_KEY.get(metric_key)
+        higher_is_better = spec.higher_is_better if spec is not None else TRADEOFF_HIGHER_IS_BETTER.get(metric_key, True)
+        arrow = "↑" if higher_is_better else "↓"
+        ax.set_title(
+            f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}",
+            color=INK,
+            fontweight="bold",
+            pad=16,
+        )
+        for _, _, end_idx in spans[:-1]:
+            ax.axvline(end_idx + 0.5, color="#BEBEBE", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
+            dot_ax.axvline(end_idx + 0.5, color="#D0D0D0", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
+        ax.set_xlim(-0.55, len(condition_keys) - 0.45)
+        ax.set_xticks([])
+        ax.set_ylim(lo, hi)
+        band_limits = _reference_band_limits(metric_key)
+        if band_limits is not None and reference is not None:
+            band_lo, band_hi = band_limits
+            band = ax.axhspan(band_lo, band_hi, color="#A8A8A8", alpha=0.22, zorder=0)
+            band.set_hatch("////")
+            band.set_edgecolor("#8A8A8A")
+            band.set_linewidth(0.0)
+            y_span = hi - lo
+            label_y = min(hi - 0.03 * y_span, band_hi + 0.04 * y_span)
+            ax.text(
+                0.02,
+                label_y,
+                str(reference["label"]),
+                transform=ax.get_yaxis_transform(),
+                ha="left",
+                va="bottom",
+                fontsize=8.0,
+                color="#666666",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
+                zorder=5,
+            )
+        elif reference is not None:
+            mean = float(reference["mean"])
+            ax.axhline(mean, color="#8A8A8A", linewidth=1.1, linestyle=(0, (5, 2.5)), zorder=1)
+            y_span = hi - lo
+            label_y = min(hi - 0.03 * y_span, mean + 0.035 * y_span)
+            ax.text(
+                0.02,
+                label_y,
+                str(reference["label"]),
+                transform=ax.get_yaxis_transform(),
+                ha="left",
+                va="bottom",
+                fontsize=8.0,
+                color="#666666",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
+                zorder=5,
+            )
+        ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["bottom"].set_color(INK)
+        ax.spines["left"].set_color(INK)
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", colors=INK, labelsize=8.6)
+        ax.set_axisbelow(True)
+        dot_ax.set_facecolor("white")
+        for x_value, cond in zip(x_positions, condition_tuples, strict=True):
+            active_groups = set(cond)
+            for row_index, group in enumerate(FOUR_GROUP_ORDER):
+                y_value = 3 - row_index
+                is_active = group in active_groups
+                dot_ax.scatter(
+                    x_value,
+                    y_value,
+                    s=24 if is_active else 21,
+                    facecolors=INK if is_active else "white",
+                    edgecolors=INK if is_active else "#A0A0A0",
+                    linewidths=0.9 if is_active else 1.0,
+                    zorder=3,
+                )
+        dot_ax.set_xlim(-0.55, len(condition_keys) - 0.45)
+        dot_ax.set_ylim(-0.6, 3.6)
+        dot_ax.axis("off")
+        if col == 0:
+            ymin, ymax = dot_ax.get_ylim()
+            for row_index, group in enumerate(FOUR_GROUP_ORDER):
+                y_value = 3 - row_index
+                y_axes = (y_value - ymin) / (ymax - ymin)
+                dot_ax.text(
+                    -0.05,
+                    y_axes,
+                    GROUP_SHORT_LABELS[group],
+                    transform=dot_ax.transAxes,
+                    ha="right",
+                    va="center",
+                    fontsize=7.0,
+                    color=INK,
+                )
+
+    for index in range(len(metrics), n_rows * n_cols):
+        row, col = divmod(index, 3)
+        subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
+        fig.add_subplot(subgrid[0, 0]).axis("off")
+        fig.add_subplot(subgrid[1, 0]).axis("off")
+
+    handles = [
+        Line2D([0], [0], color="#444444", linestyle="None", marker="o", markerfacecolor=INK, markeredgecolor=INK, markersize=5.0, linewidth=1.6, label="Paired"),
+        Line2D(
+            [0],
+            [0],
+            color="#444444",
+            linestyle="None",
+            marker="o",
+            markerfacecolor="white",
+            markeredgecolor="#444444",
+            markersize=5.0,
+            linewidth=1.6,
+            label="Unpaired",
+        ),
+        Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="Benchmark band (mean ± SD)"),
+        Line2D([0], [0], color="#8A8A8A", linestyle=(0, (5, 2.5)), linewidth=1.1, label="Benchmark line"),
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 0.972), fontsize=9.6)
+    fig.suptitle("Metric tradeoffs across all 15 channel-group combinations", y=0.992, fontsize=14.0, fontweight="bold")
+    fig.subplots_adjust(left=0.055, right=0.99, bottom=0.06, top=0.90 if n_rows > 2 else 0.885)
+    return fig
+
+
+def heatmap_metric_keys(summary: DatasetSummary) -> list[str]:
+    present = set(summary.metric_keys)
+    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in present]
+
+
+def _shared_heatmap_metric_keys(summaries: list[DatasetSummary]) -> list[str]:
+    if not summaries:
+        return []
+    shared = set(heatmap_metric_keys(summaries[0]))
+    for summary in summaries[1:]:
+        shared &= set(heatmap_metric_keys(summary))
+    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in shared]
+
+
+def _heatmap_matrix(
+    summary: DatasetSummary,
+    source: dict[str, dict[str, tuple[float, float]]],
+    metric_keys: list[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    matrix = np.full((len(FOUR_GROUP_ORDER), len(metric_keys)), np.nan, dtype=float)
+    stds = np.full((len(FOUR_GROUP_ORDER), len(metric_keys)), np.nan, dtype=float)
+    for row, group in enumerate(FOUR_GROUP_ORDER):
+        for col, metric_key in enumerate(metric_keys):
+            value = source.get(group, {}).get(metric_key)
+            if value is not None:
+                matrix[row, col] = float(value[0])
+                stds[row, col] = float(value[1])
+    return matrix, stds
+
+
+def _heatmap_metric_scales(summaries: list[DatasetSummary]) -> dict[str, float]:
+    per_metric_values: dict[str, list[float]] = {}
+    for summary in summaries:
+        metric_keys = heatmap_metric_keys(summary)
+        matrix, _ = _heatmap_matrix(summary, summary.added_effect_stats, metric_keys)
+        for col, metric_key in enumerate(metric_keys):
+            values = matrix[:, col]
+            finite_values = [float(value) for value in values[np.isfinite(values)]]
+            if finite_values:
+                per_metric_values.setdefault(metric_key, []).extend(finite_values)
+
+    scales: dict[str, float] = {}
+    for metric_key, values in per_metric_values.items():
+        scales[metric_key] = max(abs(min(values)), abs(max(values)))
+    return scales
+
+
+def _normalize_heatmap_matrix(
+    matrix: np.ndarray,
+    metric_keys: list[str],
+    metric_scales: dict[str, float],
+) -> np.ndarray:
+    normalized = np.full(matrix.shape, np.nan, dtype=float)
+    for col, metric_key in enumerate(metric_keys):
+        scale = metric_scales.get(metric_key, 0.0)
+        column = matrix[:, col]
+        finite_mask = np.isfinite(column)
+        if not np.any(finite_mask):
+            continue
+        if scale > 0:
+            normalized[finite_mask, col] = np.clip(column[finite_mask] / scale, -1.0, 1.0)
+        else:
+            normalized[finite_mask, col] = 0.0
+    return normalized
+
+
+def _metric_label_with_arrow(metric_key: str) -> str:
+    label = METRIC_LABELS.get(metric_key, metric_key)
+    spec = METRIC_SPEC_BY_KEY.get(metric_key)
+    if spec is not None:
+        arrow = "↑" if spec.higher_is_better else "↓"
+        return f"{label} {arrow}"
+    return label
+
+
+def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    shared_metric_keys = _shared_heatmap_metric_keys(summaries)
+    fig = plt.figure(figsize=(7.9, 3.35 * len(summaries)))
+    grid = fig.add_gridspec(len(summaries), 2, width_ratios=[1, 0.04], wspace=0.05, hspace=0.26)
+    metric_scales = _heatmap_metric_scales(summaries)
+    im = None
+
+    for row, summary in enumerate(summaries):
+        ax = fig.add_subplot(grid[row, 0])
+        raw_matrix, stds = _heatmap_matrix(summary, summary.added_effect_stats, shared_metric_keys)
+        normalized_matrix = _normalize_heatmap_matrix(raw_matrix, shared_metric_keys, metric_scales)
+        masked = np.ma.masked_invalid(normalized_matrix)
+        im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
+        ax.set_title("Marginal effect of adding group", fontsize=10.5, fontweight="normal", color=INK, pad=10)
+        ax.set_ylabel(summary.title, fontsize=10.5, fontweight="normal", color=INK, labelpad=8)
+        ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
+        ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
+        ax.set_xticks(range(len(shared_metric_keys)))
+        ax.set_xticklabels(
+            [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
+            rotation=0,
+            ha="center",
+            fontsize=9.4,
+            color=INK,
+        )
+        for r in range(raw_matrix.shape[0]):
+            for c in range(raw_matrix.shape[1]):
+                value = raw_matrix[r, c]
+                if not np.isfinite(value):
+                    continue
+                norm_value = normalized_matrix[r, c]
+                raw_std = stds[r, c]
+                metric_key = shared_metric_keys[c]
+                spec = METRIC_SPEC_BY_KEY.get(metric_key)
+                display_value = value if (spec is None or spec.higher_is_better) else -value
+                ax.text(
+                    c,
+                    r,
+                    f"{display_value:+.3f}\n±{raw_std:.3f}",
+                    ha="center",
+                    va="center",
+                    fontsize=9.0,
+                    color="white" if abs(norm_value) >= 0.55 else "#111111",
+                )
+        ax.set_xticks(np.arange(-0.5, len(shared_metric_keys), 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
+        ax.grid(which="minor", color="#DDDDDD", linewidth=0.25)
+        ax.tick_params(which="minor", bottom=False, left=False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(axis="x", length=0, pad=6)
+        ax.tick_params(axis="y", length=0)
+
+    cax = fig.add_subplot(grid[:, 1])
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.set_ticks([-1, 0, 1])
+    cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=8.0)
+    cbar.set_label(
+        "Within-column rank\n(each metric scaled separately;\nnumerals: raw Δ ± SD)",
+        color=INK,
+        fontsize=8.0,
+        labelpad=8,
+    )
+    cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
+    fig.suptitle("Channel group contributions to image quality metrics", y=0.99, fontsize=11.5, fontweight="normal")
+    fig.subplots_adjust(left=0.13, right=0.84, top=0.88, bottom=0.10)
+    return fig
+
+
+def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    fig, bar_ax = plt.subplots(1, 1, figsize=(5.8, 3.7))
+    x = np.arange(len(FOUR_GROUP_ORDER))
+    width = 0.28
+    styles = {
+        "paired": {"offset": -width / 2, "facecolor": "white", "alpha": 1.0, "hatch": None},
+        "unpaired": {"offset": width / 2, "facecolor": "white", "alpha": 1.0, "hatch": "//"},
+    }
+    x_tick_labels = ["Cell\ntypes", "Cell\nstate", "Vasc.", "Env."]
+
+    values_for_range: list[float] = []
+    for group_index, group in enumerate(FOUR_GROUP_ORDER):
+        for summary in summaries:
+            style = styles[summary.slug]
+            value = float(summary.loo_summary.get(group, {}).get("mean_diff", 0.0))
+            std_value = float(summary.loo_stats.get(group, {}).get("mean_diff", (value, 0.0))[1])
+            values_for_range.extend([value - std_value, value + std_value])
+            bar_ax.bar(
+                group_index + style["offset"],
+                value,
+                width=width,
+                color=style["facecolor"],
+                alpha=style["alpha"],
+                edgecolor=INK,
+                hatch=style["hatch"],
+                linewidth=1.0,
+                yerr=std_value,
+                capsize=3,
+                error_kw={"ecolor": INK, "elinewidth": 1.0, "capthick": 1.0},
+            )
+    bar_ax.set_title(r"Mean normalized $|\Delta \mathrm{pixel}|$", fontweight="bold", fontsize=11.0, pad=7)
+    bar_ax.set_xticks(x)
+    bar_ax.set_xticklabels(x_tick_labels)
+    for tick in bar_ax.get_xticklabels():
+        tick.set_color(INK)
+        tick.set_fontsize(9.5)
+    lo, hi = _tight_range(values_for_range)
+    bar_ax.set_ylim(max(0.0, lo), hi)
+    bar_ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
+    bar_ax.spines["top"].set_visible(False)
+    bar_ax.spines["right"].set_visible(False)
+    bar_ax.tick_params(axis="y", labelsize=9.5)
+    bar_ax.set_axisbelow(True)
+
+    handles = [
+        Patch(facecolor="white", edgecolor=INK, label="Paired"),
+        Patch(facecolor="white", edgecolor=INK, hatch="//", label="Unpaired"),
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01), fontsize=10.0)
+    fig.suptitle("Representative leave-one-out channel impact", y=1.03, fontsize=13.5, fontweight="bold")
+    fig.subplots_adjust(left=0.10, right=0.985, bottom=0.19, top=0.77)
+    return fig
+
+
+def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+    rows: list[list[str]] = []
+    for summary in summaries:
+        for metric_key in comparison_metric_keys(summary):
+            best_entries, worst_entries, total = _ranked_best_worst_selection(summary.best_worst.get(metric_key))
+            if not best_entries and not worst_entries:
+                continue
+
+            top_labels = _ranked_labels(total, len(best_entries))
+            bottom_labels = _ranked_labels(total, len(worst_entries), tail=True)
+            metric_label = humanize_token(metric_key)
+            if metric_key in METRIC_SPEC_BY_KEY:
+                metric_label += f" {'↑' if METRIC_SPEC_BY_KEY[metric_key].higher_is_better else '↓'}"
+
+            for row_index, (rank_label, best_entry) in enumerate(zip(top_labels, best_entries)):
+                rows.append(
+                    [
+                        summary.title if row_index == 0 else "",
+                        metric_label if row_index == 0 else "",
+                        rank_label,
+                        condition_indicator_text(best_entry[0]),
+                        _format_mean_sd(best_entry[1], best_entry[2]),
+                    ]
+                )
+            if best_entries and worst_entries:
+                rows.append(["", "", "···", "", ""])
+            for rank_label, worst_entry in zip(bottom_labels, worst_entries):
+                rows.append(
+                    [
+                        "",
+                        "",
+                        rank_label,
+                        condition_indicator_text(worst_entry[0]),
+                        _format_mean_sd(worst_entry[1], worst_entry[2]),
+                    ]
+                )
+
+    fig_height = max(3.8, 1.7 + 0.38 * max(len(rows), 1))
+    fig, ax = plt.subplots(figsize=(13.0, fig_height))
+    ax.axis("off")
+    table = ax.table(
+        cellText=rows,
+        colLabels=[
+            "Dataset",
+            "Metric",
+            "Rank",
+            "Condition (CT / CS / Vas / Env)",
+            "Mean ± SD",
+        ],
+        cellLoc="left",
+        colLoc="left",
+        loc="center",
+        bbox=[0.0, 0.02, 1.0, 0.92],
+        colWidths=[0.12, 0.14, 0.07, 0.22, 0.14],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9.5)
+    table.scale(1.0, 1.3)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#C9C3B9")
+        cell.set_linewidth(0.8)
+        if row == 0:
+            cell.set_facecolor("#F3F3EF")
+            cell.set_text_props(weight="bold", color=INK)
+        else:
+            cell.set_facecolor("white")
+            cell.set_text_props(color=INK, weight="normal")
+            if col in {0, 1}:
+                cell.set_text_props(weight="bold", color=INK)
+    for row in range(1, len(rows) + 1):
+        if rows[row - 1][2] == "···":
+            for col in range(5):
+                cell = table[(row, col)]
+                cell.set_text_props(color=OKABE_GRAY, style="italic")
+
+    ax.set_title(
+        "Paired vs Unpaired — Top 3 / Worst 3 Conditions per Metric",
+        fontsize=14,
+        fontweight="bold",
+        pad=10,
+    )
+    return fig
+
+
+def draw_evidence_panel(ax: plt.Axes, label: str, path: Path | None) -> None:
+    ax.set_title(label, fontsize=11.5, fontweight="bold", pad=10, color=INK)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_color("#D9D5CA")
+        spine.set_linewidth(1.0)
+    if path is None or not path.is_file():
+        ax.set_facecolor("#F6F4EF")
+        ax.text(0.5, 0.5, "Figure not found", ha="center", va="center", color=OKABE_GRAY, fontsize=11.0)
+        return
+    ax.imshow(np.asarray(load_rgb_pil_local(path)))
+
+
+def build_dataset_summary_figure(summary: DatasetSummary) -> plt.Figure:
+    fig = plt.figure(figsize=(15.0, 7.2))
+    grid = fig.add_gridspec(1, 3, width_ratios=[0.96, 1.0, 1.0], wspace=0.08)
+    text_ax = fig.add_subplot(grid[0, 0])
+    text_ax.axis("off")
+
+    representative = summary.representative_tile or "not found"
+    metrics_text = ", ".join(
+        f"{humanize_token(metric_key)} {'↑' if METRIC_SPEC_BY_KEY[metric_key].higher_is_better else '↓'}"
+        for metric_key in summary.metric_keys
+    )
+    metrics_text = textwrap.fill(metrics_text, width=34)
+    takeaway_blocks = [
+        textwrap.fill(
+            plain_takeaway_text(note.lstrip("- ").strip()),
+            width=40,
+            initial_indent="- ",
+            subsequent_indent="  ",
+        )
+        for note in summary.key_takeaways[:6]
+    ]
+    takeaways_text = "\n\n".join(takeaway_blocks) if takeaway_blocks else "Representative findings unavailable."
+
+    text_ax.text(0.0, 0.99, summary.title, fontsize=19, fontweight="bold", color=INK, va="top")
+    text_ax.text(
+        0.0,
+        0.91,
+        f"{summary.tile_count} tiles\nRepresentative tile: {representative}",
+        fontsize=11.0,
+        color=OKABE_GRAY,
+        va="top",
+        linespacing=1.5,
+    )
+    text_ax.text(0.0, 0.77, "Metrics", fontsize=12.5, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.72, metrics_text, fontsize=10.8, color=INK, va="top", linespacing=1.4)
+    text_ax.text(0.0, 0.58, "Key takeaways", fontsize=12.5, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.53, takeaways_text, fontsize=10.7, color=INK, va="top", linespacing=1.45)
+
+    draw_evidence_panel(fig.add_subplot(grid[0, 1]), "Representative ablation grid", summary.ablation_grid_path)
+    draw_evidence_panel(fig.add_subplot(grid[0, 2]), "Representative leave-one-out diff", summary.loo_diff_path)
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.96, bottom=0.06)
+    return fig
+
+
+def export_report_png_pages(summaries: list[DatasetSummary], png_dir: Path) -> list[Path]:
+    page_builders: list[tuple[str, plt.Figure]] = [
+        ("01_metric_tradeoffs.png", build_metric_trends_figure(summaries)),
+        ("02_paired_vs_unpaired.png", build_comparison_table_figure(summaries)),
+        ("03_channel_effect_sizes.png", build_channel_effect_heatmaps_figure(summaries)),
+        ("04_leave_one_out_impact.png", build_leave_one_out_figure(summaries)),
+    ]
+    for index, summary in enumerate(summaries, start=5):
+        page_builders.append((f"{index:02d}_{summary.slug}_summary.png", build_dataset_summary_figure(summary)))
+
+    output_paths: list[Path] = []
+    for filename, fig in page_builders:
+        output_path = png_dir / filename
+        save_figure_png(fig, output_path)
+        output_paths.append(output_path)
+    return output_paths

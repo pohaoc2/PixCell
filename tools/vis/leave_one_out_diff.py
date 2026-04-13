@@ -30,19 +30,29 @@ from PIL import Image
 from tools.stage3.ablation_cache import load_manifest
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
-    build_exp_channel_header_rgb,
     default_orion_he_png_path,
     draw_image_border,
 )
 from tools.stage3.style_mapping import load_style_mapping
 
-COLOR_REF = "#999999"
+COLOR_REF = "#000000"
 COLOR_BASELINE = "#9B59B6"
 
 
 def _load_rgb_float32(path: Path) -> np.ndarray:
     """Load a PNG as float32 H×W×3 in [0, 255]."""
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
+
+
+def _resize_rgb_uint8(image: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    """Resize an RGB uint8 image to (height, width) when needed."""
+    target_h, target_w = target_hw
+    if image.shape[:2] == (target_h, target_w):
+        return image
+    return np.asarray(
+        Image.fromarray(image.astype(np.uint8), mode="RGB").resize((target_w, target_h), Image.BILINEAR),
+        dtype=np.uint8,
+    )
 
 
 def _section_by_subset_size(sections: list[dict], subset_size: int) -> dict:
@@ -120,6 +130,30 @@ def save_loo_stats(diffs: dict[str, np.ndarray], out_path: Path) -> None:
     out_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
 
 
+def _display_title(group: str | None) -> str:
+    if group is None:
+        return "All four channels"
+    return f"Drop {group.replace('_', ' ').title()}"
+
+
+def _compute_relative_diff_maps(images: list[np.ndarray], baseline: np.ndarray | None) -> list[np.ndarray]:
+    """Return globally normalized absolute pixel diffs from generated H&E to one baseline image."""
+    if not images:
+        return []
+    if baseline is None:
+        return [np.zeros(images[0].shape[:2], dtype=np.float32) for _ in images]
+
+    baseline_image = _resize_rgb_uint8(baseline, images[0].shape[:2]).astype(np.float32)
+    raw_diffs = [
+        np.abs(image.astype(np.float32) - baseline_image).mean(axis=2).astype(np.float32)
+        for image in images
+    ]
+    global_max = max(float(diff.max()) for diff in raw_diffs)
+    if global_max <= 0.0:
+        return [np.zeros_like(diff, dtype=np.float32) for diff in raw_diffs]
+    return [(diff / global_max).astype(np.float32) for diff in raw_diffs]
+
+
 def render_loo_diff_figure(
     diffs: dict[str, np.ndarray],
     cache_dir: Path,
@@ -129,6 +163,7 @@ def render_loo_diff_figure(
     out_path: Path,
 ) -> None:
     """Save the leave-one-out diff figure."""
+    del diffs  # Stats JSON still uses leave-one-out diffs; the figure is reference-vs-generated.
     cache_dir = Path(cache_dir)
     manifest = load_manifest(cache_dir)
     sections = manifest["sections"]
@@ -144,111 +179,79 @@ def render_loo_diff_figure(
         if he_path is not None:
             ref_he = np.asarray(Image.open(he_path).convert("RGB"), dtype=np.uint8)
 
-    group_thumbs = None
-    if orion_root is not None:
-        try:
-            group_thumbs = build_exp_channel_header_rgb(Path(orion_root) / "exp_channels", tile_id)
-        except (FileNotFoundError, OSError, ValueError, KeyError, ImportError, ModuleNotFoundError):
-            group_thumbs = None
-
     hot_cmap = mcolors.LinearSegmentedColormap.from_list(
         "hot4",
         ["#000000", "#ff4400", "#ffff00", "#ffffff"],
     )
 
-    n_rows = 4
-    n_cols = len(group_names) + 1  # combined reference/baseline column + four groups
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.45 * n_cols, 8.5))
-    fig.suptitle(f"Leave-one-out group diff - tile {tile_id}", fontsize=12, y=0.995)
-
     def _blank_rgb(size: int = 64) -> np.ndarray:
         return np.full((size, size, 3), 45, dtype=np.uint8)
 
-    row_labels = ("Inputs", "Leave-one-out H&E", "Diff heatmap", "Diff stats")
-    for row, label in enumerate(row_labels):
-        axes[row, 0].set_ylabel(label, fontsize=10, rotation=90, labelpad=22)
-
-    # Combined left column: reference on the first row, baseline on the second row.
-    if ref_he is not None:
-        axes[0, 0].imshow(ref_he)
-    else:
-        axes[0, 0].imshow(_blank_rgb())
-    axes[0, 0].set_title("reference", fontsize=9)
-    draw_image_border(axes[0, 0], COLOR_REF, dashed=True)
-    axes[0, 0].set_xticks([])
-    axes[0, 0].set_yticks([])
-    for row in range(1, 4):
-        axes[row, 0].axis("off")
-
-    axes[1, 0].imshow(img_all)
-    axes[1, 0].set_title("baseline", fontsize=9)
-    draw_image_border(axes[1, 0], COLOR_BASELINE, dashed=False)
-    axes[1, 0].set_xticks([])
-    axes[1, 0].set_yticks([])
-    axes[2, 0].axis("off")
-    axes[3, 0].axis("off")
-
-    # Per-group columns.
-    last_im = None
-    for col, group in enumerate(group_names, start=1):
+    display_labels = [_display_title(None)] + [_display_title(group) for group in group_names]
+    display_images = [img_all]
+    for group in group_names:
         entry = find_loo_entry(sections, group)
-        img_loo = _load_rgb_float32(cache_dir / entry["image_path"]).astype(np.uint8)
-        diff = diffs[group]
-        stats = diff * 255.0
+        display_images.append(_load_rgb_float32(cache_dir / entry["image_path"]).astype(np.uint8))
+    display_diffs = _compute_relative_diff_maps(display_images, img_all)
 
-        if group_thumbs is not None:
-            axes[0, col].imshow(group_thumbs.get(group, _blank_rgb()))
-        else:
-            axes[0, col].imshow(_blank_rgb())
-        axes[0, col].set_title(group.replace("_", "\n"), fontsize=9)
-        axes[0, col].axis("off")
+    fig_width = 15.0
+    fig_height = 4.45
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    fig.suptitle(f"Leave-one-out group diff - tile {tile_id}", fontsize=12, y=0.985)
 
-        axes[1, col].imshow(img_loo)
-        axes[1, col].set_title(f"w/o {group}", fontsize=9)
-        axes[1, col].axis("off")
+    left_margin = 0.035
+    right_margin = 0.985
+    top = 0.80
+    bottom = 0.14
+    row_gap = 0.01
+    col_gap = 0.001
+    ref_gap = 0.012
 
-        last_im = axes[2, col].imshow(diff, cmap=hot_cmap, vmin=0.0, vmax=1.0)
-        axes[2, col].axis("off")
+    content_height = top - bottom
+    row_height = (content_height - row_gap) / 2.0
+    ref_width = content_height * (fig_height / fig_width)
+    x_right_start = left_margin + ref_width + ref_gap
+    available_width = right_margin - x_right_start
+    panel_width = (available_width - col_gap * 4.0) / 7.4
 
-        mean = float(stats.mean())
-        std = float(stats.std())
-        max_ = float(stats.max())
-        pct10 = float((stats > 10.0).mean() * 100.0)
-        axes[3, col].text(
-            0.5,
-            0.55,
-            f"mean±std: {mean:.1f} ± {std:.1f}\nmax: {max_:.1f}\npct>10: {pct10:.1f}%",
-            ha="center",
-            va="center",
-            fontsize=9,
-        )
-        axes[3, col].set_xlim(0, 1)
-        axes[3, col].set_ylim(0, 1)
-        axes[3, col].axis("off")
+    reference_ax = fig.add_axes([left_margin, bottom, ref_width, content_height])
+    reference_ax.imshow(ref_he if ref_he is not None else _blank_rgb(128))
+    reference_ax.set_title("Reference H&E (style)", fontsize=10)
+    draw_image_border(reference_ax, COLOR_REF, dashed=True)
+    reference_ax.set_xticks([])
+    reference_ax.set_yticks([])
+
+    last_im = None
+    top_row_y = bottom + row_height + row_gap
+    bottom_row_y = bottom
+
+    for index, (label, image, diff_map) in enumerate(zip(display_labels, display_images, display_diffs, strict=True)):
+        x0 = x_right_start + index * (panel_width + col_gap)
+
+        image_ax = fig.add_axes([x0, top_row_y, panel_width, row_height])
+        image_ax.imshow(image)
+        image_ax.set_title(label, fontsize=9)
+        image_ax.set_xticks([])
+        image_ax.set_yticks([])
+        if index == 0:
+            image_ax.set_ylabel("Generated H&E", fontsize=10, rotation=90, labelpad=2)
+
+        diff_ax = fig.add_axes([x0, bottom_row_y, panel_width, row_height])
+        last_im = diff_ax.imshow(diff_map, cmap=hot_cmap, vmin=0.0, vmax=1.0)
+        diff_ax.set_xticks([])
+        diff_ax.set_yticks([])
+        if index == 0:
+            diff_ax.set_ylabel("Pixel Diff", fontsize=10, rotation=90, labelpad=2)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.subplots_adjust(left=0.07, right=0.998, top=0.93, bottom=0.1, wspace=0.004, hspace=0.14)
     if last_im is not None:
-        ref_ax = axes[2, 1] if n_cols > 1 else axes[2, 0]
-        stats_ax = axes[3, 1] if n_cols > 1 else axes[3, 0]
-        ref_pos = ref_ax.get_position()
-        stats_pos = stats_ax.get_position()
-        gap = max(ref_pos.y0 - stats_pos.y1, 0.02)
-        cbar_height = min(0.01, gap * 0.16)
-        cbar_y = stats_pos.y1 + gap * 0.08
-        cax = fig.add_axes([ref_pos.x0, cbar_y, ref_pos.width, cbar_height])
+        cbar_width = panel_width
+        cbar_x = x_right_start + 4.0 * (panel_width + col_gap)
+        cax = fig.add_axes([cbar_x, 0.06, cbar_width, 0.02])
         cbar = fig.colorbar(last_im, cax=cax, orientation="horizontal")
         cbar.ax.tick_params(labelsize=8, pad=1)
-        fig.text(
-            ref_pos.x0 + ref_pos.width * 0.5,
-            ref_pos.y0 - gap * 0.18,
-            "Normalized absolute pixel diff",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.4},
-        )
+        cbar.set_label("Normalized absolute pixel diff", fontsize=8, labelpad=3)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
