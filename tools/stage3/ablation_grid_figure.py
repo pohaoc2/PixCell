@@ -43,6 +43,7 @@ from tools.stage3.ablation_cache import (
 )
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
+    GROUP_SHORT_LABELS,
     cache_manifest_uni_features,
     condition_metric_key,
     default_orion_he_png_path,
@@ -71,21 +72,23 @@ METRIC_BAR_LABELS: dict[str, str] = {
     "lpips": "LPIPS",
     "aji": "AJI",
     "pq": "PQ",
+    "dice": "DICE",
+    "fud": "FUD",
     "style_hed": "HED",
 }
-METRIC_ORDER: tuple[str, ...] = ("cosine", "lpips", "aji", "pq")
-SORTABLE_METRICS: tuple[str, ...] = METRIC_ORDER + ("style_hed",)
+METRIC_ORDER: tuple[str, ...] = ("lpips", "pq", "dice", "style_hed")
+SORTABLE_METRICS: tuple[str, ...] = ("cosine", "lpips", "aji", "pq", "dice", "fud", "style_hed")
 METRIC_BAR_PRESETS: dict[str, tuple[str, ...]] = {
-    "paired": ("cosine", "lpips", "aji", "pq"),
-    "unpaired": ("aji", "pq", "style_hed"),
+    "paired": ("lpips", "pq", "dice", "style_hed"),
+    "unpaired": ("lpips", "pq", "dice", "style_hed"),
+    "legacy-paired": ("cosine", "lpips", "aji", "pq"),
+    "legacy-unpaired": ("aji", "pq", "style_hed"),
 }
-
-# CT · CS · Va · Nu (matches FOUR_GROUP_ORDER)
-_GROUP_SHORT: dict[str, str] = {
-    "cell_types": "CT",
-    "cell_state": "CS",
-    "vasculature": "Vas",
-    "microenv": "Env",
+LOWER_IS_BETTER_METRICS: frozenset[str] = frozenset({"lpips", "style_hed", "fud"})
+METRIC_BAR_MAX_BY_NAME: dict[str, float] = {
+    "lpips": 0.50,
+    "style_hed": 0.10,
+    "fud": 100.0,
 }
 
 ALL4CH_KEY: str = condition_metric_key(FOUR_GROUP_ORDER)
@@ -98,7 +101,7 @@ def _cardinality_color(n: int) -> str:
 
 def _condition_label(cond: tuple[str, ...]) -> str:
     """Short label following FOUR_GROUP_ORDER: e.g. 'CT+CS+Nu'."""
-    return "+".join(_GROUP_SHORT[g] for g in FOUR_GROUP_ORDER if g in cond)
+    return "+".join(GROUP_SHORT_LABELS[g] for g in FOUR_GROUP_ORDER if g in cond)
 
 
 def _sort_conditions_by_metric(
@@ -266,10 +269,19 @@ def _draw_dot_row(
         )
 
 
-def _metric_fill_fraction(value: float | None) -> float | None:
+def _metric_fill_fraction(value: float | None, metric_name: str) -> float | None:
     if value is None:
         return None
-    return float(np.clip(float(value), 0.0, 1.0))
+    raw_value = float(value)
+    max_value = METRIC_BAR_MAX_BY_NAME.get(metric_name)
+    if max_value is not None and max_value > 0.0:
+        normalized = np.clip(raw_value / max_value, 0.0, 1.0)
+        if metric_name in LOWER_IS_BETTER_METRICS:
+            normalized = 1.0 - normalized
+        return float(np.clip(normalized, 0.0, 1.0))
+    if metric_name in LOWER_IS_BETTER_METRICS:
+        return float(np.clip(1.0 - raw_value, 0.0, 1.0))
+    return float(np.clip(raw_value, 0.0, 1.0))
 
 
 def _draw_metric_bars_cell(
@@ -277,7 +289,7 @@ def _draw_metric_bars_cell(
     metrics: dict[str, float | None],
     metric_names: tuple[str, ...] = METRIC_ORDER,
 ) -> None:
-    """Draw one stacked literal metric bar per requested metric on a shared 0..1 scale."""
+    """Draw one stacked metric bar per requested metric on a simple, metric-aware scale."""
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, float(max(1, len(metric_names))))
     ax.axis("off")
@@ -291,7 +303,7 @@ def _draw_metric_bars_cell(
     for idx, metric_name in enumerate(metric_names):
         y = top_y - idx
         value = metrics.get(metric_name)
-        frac = _metric_fill_fraction(value)
+        frac = _metric_fill_fraction(value, metric_name)
 
         ax.text(
             label_x,
@@ -366,6 +378,49 @@ def _build_manifest_lookup(cache_dir: Path, manifest: dict) -> dict[str, dict]:
             key = condition_metric_key(tuple(entry["active_groups"]))
             lookup[key] = entry
     return lookup
+
+
+def _coerce_grid_metric_value(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        fv = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(fv):
+        return None
+    return fv
+
+
+def _load_grid_metrics(cache_dir: Path) -> dict[str, dict[str, float | None]]:
+    """Load per-condition metrics while preserving legacy ``fid`` as displayable ``fud``."""
+    metrics = {
+        str(key): dict(value) if isinstance(value, dict) else {}
+        for key, value in load_or_build_metrics(cache_dir).items()
+    }
+
+    metrics_path = Path(cache_dir) / "metrics.json"
+    if not metrics_path.is_file():
+        return metrics
+
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    per_condition = payload.get("per_condition", {})
+    if not isinstance(per_condition, dict):
+        return metrics
+
+    for cond_key, raw_record in per_condition.items():
+        if not isinstance(raw_record, dict):
+            continue
+        record = metrics.setdefault(str(cond_key), {})
+        for metric_name in ("cosine", "lpips", "aji", "pq", "dice", "iou", "accuracy", "style_hed"):
+            if metric_name in raw_record:
+                record[metric_name] = _coerce_grid_metric_value(raw_record.get(metric_name))
+        fud_value = raw_record.get("fud")
+        if fud_value is None:
+            fud_value = raw_record.get("fid")
+        if fud_value is not None:
+            record["fud"] = _coerce_grid_metric_value(fud_value)
+    return metrics
 
 
 def _load_cell_mask_array(cache_dir: Path, manifest: dict) -> np.ndarray | None:
@@ -459,7 +514,7 @@ def render_ablation_grid_figure(
     cell_mask = _load_cell_mask_array(cache_dir, manifest)
 
     all15 = ordered_subset_condition_tuples()  # 4+6+4+1 = 15 conditions
-    metrics = load_or_build_metrics(cache_dir)
+    metrics = _load_grid_metrics(cache_dir)
     if auto_cosine:
         cosine_scores = _load_grid_cosine_scores(
             cache_dir, all4ch_image, orion_root,
@@ -569,7 +624,9 @@ def render_ablation_grid_figure(
         _maybe_contour_cell_mask(image_ax, cell_mask, (he_arr.shape[0], he_arr.shape[1]))
     image_ax.set_xticks([])
     image_ax.set_yticks([])
-    draw_image_border(image_ax, COLOR_REF, dashed=True)
+    for spine in image_ax.spines.values():
+        spine.set_visible(False)
+    draw_image_border(image_ax, COLOR_ACTIVE, dashed=True)
 
     # Metric bars: place the reference label in the middle row
     ref_bar_ax = fig.add_subplot(gs[base + 2, gc])
@@ -645,7 +702,7 @@ def _print_progress(completed: int, total: int, *, prefix: str = "Rendering") ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Render 4×4 ablation grid figure sorted by cosine similarity.",
+        description="Render 4×4 ablation grid figure sorted by one per-condition metric.",
     )
     parser.add_argument(
         "--cache-dir", type=Path, required=True,
@@ -673,7 +730,10 @@ def main() -> None:
         type=str,
         choices=list(METRIC_BAR_PRESETS),
         default="paired",
-        help="Metric bars shown in each cell: paired=Cosine/LPIPS/AJI/PQ, unpaired=AJI/PQ/HED.",
+        help=(
+            "Metric bars shown in each cell: paired/unpaired=LPIPS/PQ/DICE/HED. "
+            "Use legacy-paired or legacy-unpaired for the older bar sets."
+        ),
     )
     parser.add_argument(
         "--sort-by",

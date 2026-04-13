@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+from glob import has_magic
 import json
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -38,8 +39,40 @@ def _select_best_match(matches: list[Path], preferred_exts: list[str]) -> Path:
     )[0]
 
 
+class _ResultIndex:
+    def __init__(self, results_dir: Path) -> None:
+        self.results_dir = results_dir
+        self._by_name: dict[str, list[Path]] = {}
+        self._all_files: list[tuple[PurePosixPath, Path]] = []
+        self._pattern_cache: dict[str, list[Path]] = {}
+
+        for path in sorted(results_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            rel_path = PurePosixPath(path.relative_to(results_dir).as_posix())
+            self._all_files.append((rel_path, path))
+            self._by_name.setdefault(path.name, []).append(path)
+
+    def resolve(self, pattern: str) -> list[Path]:
+        normalized_pattern = pattern.replace("\\", "/")
+        if not has_magic(normalized_pattern) and "/" not in normalized_pattern:
+            return list(self._by_name.get(normalized_pattern, []))
+
+        cached = self._pattern_cache.get(normalized_pattern)
+        if cached is not None:
+            return list(cached)
+
+        matches = [
+            path
+            for rel_path, path in self._all_files
+            if rel_path.match(normalized_pattern)
+        ]
+        self._pattern_cache[normalized_pattern] = matches
+        return list(matches)
+
+
 def _resolve_result_for_entry(
-    results_dir: Path,
+    result_index: _ResultIndex,
     flat_name: str,
     *,
     result_pattern: str,
@@ -48,7 +81,7 @@ def _resolve_result_for_entry(
     flat_path = Path(flat_name)
     stem = flat_path.stem
     pattern = result_pattern.format(name=flat_name, stem=stem)
-    matches = [path for path in results_dir.rglob(pattern) if path.is_file()]
+    matches = result_index.resolve(pattern)
     if not matches:
         raise FileNotFoundError(
             f"no CellViT result matched {pattern!r} for exported file {flat_name!r}"
@@ -69,6 +102,7 @@ def import_cellvit_results(
     manifest_path = Path(manifest_path).resolve()
     results_dir = Path(results_dir).resolve()
     preferred_exts = preferred_exts or [".json", ".npy", ".png"]
+    result_index = _ResultIndex(results_dir)
 
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     entries = payload.get("entries", [])
@@ -78,7 +112,7 @@ def import_cellvit_results(
         source_path = Path(entry["source_path"])
         flat_name = str(entry["flat_name"])
         matched = _resolve_result_for_entry(
-            results_dir,
+            result_index,
             flat_name,
             result_pattern=result_pattern,
             preferred_exts=preferred_exts,

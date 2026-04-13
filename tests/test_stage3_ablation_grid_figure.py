@@ -40,8 +40,11 @@ from tools.stage3.ablation_grid_figure import (
     _condition_label,
     _draw_dot_row,
     _draw_metric_bars_cell,
+    _load_grid_metrics,
+    _metric_fill_fraction,
     _load_cellvit_contours,
     _sort_conditions_by_metric,
+    METRIC_BAR_PRESETS,
 )
 from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER
 
@@ -118,9 +121,45 @@ def test_draw_metric_bars_cell_no_crash():
     fig, ax = plt.subplots()
     _draw_metric_bars_cell(
         ax,
-        {"cosine": 0.995, "lpips": None, "aji": 0.7, "pq": None},
+        {"pq": 0.41, "dice": 0.81, "fud": 45.0, "style_hed": 0.06},
+        metric_names=METRIC_BAR_PRESETS["paired"],
     )
     plt.close(fig)
+
+
+def test_metric_fill_fraction_supports_fud_and_inverts_lower_is_better():
+    assert _metric_fill_fraction(0.40, "pq") == pytest.approx(0.40)
+    assert _metric_fill_fraction(0.80, "dice") == pytest.approx(0.80)
+    assert _metric_fill_fraction(50.0, "fud") == pytest.approx(0.50)
+    assert _metric_fill_fraction(0.02, "style_hed") == pytest.approx(0.80)
+
+
+def test_load_grid_metrics_maps_legacy_fid_to_fud(tmp_path: Path):
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "tile_id": "tile_a",
+                "per_condition": {
+                    "cell_types": {
+                        "pq": 0.25,
+                        "dice": 0.75,
+                        "fid": 48.0,
+                        "style_hed": 0.04,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = _load_grid_metrics(tmp_path)
+
+    assert metrics["cell_types"]["pq"] == pytest.approx(0.25)
+    assert metrics["cell_types"]["dice"] == pytest.approx(0.75)
+    assert metrics["cell_types"]["fud"] == pytest.approx(48.0)
+    assert metrics["cell_types"]["style_hed"] == pytest.approx(0.04)
 
 
 def test_draw_dot_row_uses_circle_markers():
@@ -134,8 +173,8 @@ def test_draw_dot_row_uses_circle_markers():
     expected = MarkerStyle("o").get_path().transformed(MarkerStyle("o").get_transform()).vertices
     actual = ax.collections[0].get_paths()[0].vertices
     assert np.allclose(actual, expected)
-    assert np.allclose(ax.collections[0].get_offsets()[0], [0.18, 0.46])
-    assert ax.collections[0].get_sizes()[0] == pytest.approx(68.0)
+    assert np.allclose(ax.collections[0].get_offsets()[0], [0.25, 0.48])
+    assert ax.collections[0].get_sizes()[0] == pytest.approx(65.0)
     assert np.allclose(ax.collections[0].get_facecolors()[0][:3], [0.0, 0.0, 0.0])
     assert np.allclose(ax.collections[1].get_facecolors()[0][:3], [1.0, 1.0, 1.0])
     assert ax.collections[0].get_clip_on() is False

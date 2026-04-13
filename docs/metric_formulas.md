@@ -107,5 +107,5 @@ The HED style score compares stain-channel mean and standard deviation differenc
 
 - Only the Hematoxylin and Eosin channels are used.
 - The mask is `tissue_mask_ref OR tissue_mask_gen`.
-- Implemented in [`tools/compute_ablation_metrics.py`](/home/pohaoc2/UW/bagherilab/PixCell/tools/compute_ablation_metrics.py) and mirrored locally in [`tools/render_ablation_html_report.py`](/home/pohaoc2/UW/bagherilab/PixCell/tools/render_ablation_html_report.py).
+- Implemented in [`tools/compute_ablation_metrics.py`](/home/ec2-user/PixCell/tools/compute_ablation_metrics.py) and reused by [`tools/ablation_report/data.py`](/home/ec2-user/PixCell/tools/ablation_report/data.py).
 - Lower is better.

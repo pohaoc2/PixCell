@@ -205,7 +205,7 @@ python tools/cellvit/import_results.py \
 Comment:
 - Paired main metrics usually keep: `all`
 - Unpaired main metrics usually keep: `aji pq style_hed`
-- `all` now means `cosine lpips aji pq style_hed`
+- `all` now means `cosine lpips aji pq dice iou accuracy style_hed`
 - Request a subset explicitly if you want to skip the slower HED pass
 
 ### Paired
@@ -277,6 +277,7 @@ python tools/compute_fid.py \
 Comment:
 - FVD uses Virchow-2 tile embeddings and is written to `fvd_scores.json`.
 - Access to `paige-ai/Virchow2` must be approved on Hugging Face before first use.
+- The report renderer auto-consumes `fvd_scores.json` as a FUD fallback when `fud_scores.json` is absent.
 
 ### Paired
 
@@ -313,7 +314,7 @@ Comment:
 ### Paired
 
 ```bash
-python tools/vis/stage3_ablation_grid_figure.py \
+python tools/stage3/ablation_grid_figure.py \
   --cache-dir inference_output/paired_ablation/ablation_results \
   --orion-root data/orion-crc33 \
   --output-name ablation_grid \
@@ -324,7 +325,7 @@ python tools/vis/stage3_ablation_grid_figure.py \
 ### Unpaired
 
 ```bash
-python tools/vis/stage3_ablation_grid_figure.py \
+python tools/stage3/ablation_grid_figure.py \
   --cache-dir inference_output/unpaired_ablation/ablation_results \
   --orion-root data/orion-crc33 \
   --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \

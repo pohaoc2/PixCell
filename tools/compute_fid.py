@@ -117,6 +117,14 @@ def parse_args() -> argparse.Namespace:
             "for Inception."
         ),
     )
+    parser.add_argument(
+        "--backfill-only",
+        action="store_true",
+        help=(
+            "Skip feature extraction and only backfill per-tile metrics.json files "
+            "from an existing score JSON."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -580,6 +588,33 @@ def write_metric_scores(output_path: Path, metric_scores: dict[str, float]) -> N
     output_path.write_text(json.dumps(ordered, indent=2) + "\n", encoding="utf-8")
 
 
+def load_metric_scores(output_path: Path) -> dict[str, float]:
+    if not output_path.is_file():
+        raise FileNotFoundError(f"missing score JSON: {output_path}")
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid score JSON payload in {output_path}")
+    return {
+        str(key): float(value)
+        for key, value in payload.items()
+        if value is not None
+    }
+
+
+def _ensure_metrics_json(tile_dir: Path) -> Path:
+    from tools.compute_ablation_metrics import load_or_build_metrics, write_metrics
+
+    metrics_path = tile_dir / "metrics.json"
+    if metrics_path.is_file():
+        return metrics_path
+
+    per_condition = load_or_build_metrics(tile_dir)
+    for cond_key in ordered_condition_keys():
+        per_condition.setdefault(cond_key, {})
+    return write_metrics(tile_dir, per_condition)
+
+
 def backfill_metrics(
     cache_dir: Path,
     tile_ids: list[str],
@@ -588,22 +623,20 @@ def backfill_metrics(
     metric_key: str,
 ) -> None:
     for tile_id in tile_ids:
-        metrics_path = cache_dir / tile_id / "metrics.json"
-        if not metrics_path.is_file():
-            raise FileNotFoundError(f"missing metrics.json: {metrics_path}")
+        tile_dir = cache_dir / tile_id
+        metrics_path = _ensure_metrics_json(tile_dir)
 
         payload = json.loads(metrics_path.read_text(encoding="utf-8"))
         per_condition = payload.get("per_condition")
         if not isinstance(per_condition, dict):
             raise ValueError(f"invalid per_condition payload in {metrics_path}")
 
-        for cond_key, record in per_condition.items():
-            if cond_key not in metric_scores:
-                continue
+        for cond_key, score in metric_scores.items():
+            record = per_condition.setdefault(cond_key, {})
             if not isinstance(record, dict):
                 record = {}
                 per_condition[cond_key] = record
-            record[metric_key] = float(metric_scores[cond_key])
+            record[metric_key] = float(score)
 
         metrics_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -613,7 +646,6 @@ def main() -> None:
     cache_dir = args.cache_dir.resolve()
     orion_root = args.orion_root.resolve()
     style_mapping = load_style_mapping(args.style_mapping_json)
-    device = resolve_device(args.device)
     feature_backend = str(args.feature_backend)
     uni_model = args.uni_model.resolve()
     virchow2_model = str(args.virchow2_model)
@@ -624,6 +656,18 @@ def main() -> None:
         if args.output is not None
         else default_output_path(cache_dir, feature_backend)
     )
+
+    if args.backfill_only:
+        tile_ids = list_cached_tile_ids(cache_dir)
+        if not tile_ids:
+            raise FileNotFoundError(f"no cached tile manifests found under {cache_dir}")
+        metric_scores = load_metric_scores(output_path)
+        backfill_metrics(cache_dir, tile_ids, metric_scores, metric_key=metric_key)
+        print(f"Backfilled {metric_key} into {len(tile_ids)} metrics.json files")
+        print(f"Loaded {metric_label} scores from {output_path}")
+        return
+
+    device = resolve_device(args.device)
 
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")

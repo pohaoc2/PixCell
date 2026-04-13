@@ -5,7 +5,6 @@ import argparse
 import json
 import statistics
 import sys
-from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
 
@@ -13,37 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, condition_metric_key
-
-
-@dataclass(frozen=True)
-class MetricSpec:
-    key: str
-    label: str
-    higher_is_better: bool
-
-
-METRIC_SPECS: tuple[MetricSpec, ...] = (
-    MetricSpec("cosine", "cosine", True),
-    MetricSpec("lpips", "lpips", False),
-    MetricSpec("aji", "aji", True),
-    MetricSpec("pq", "pq", True),
-    MetricSpec("fud", "fud", False),
-    MetricSpec("style_hed", "style_hed", False),
-)
-METRIC_SPEC_BY_KEY = {spec.key: spec for spec in METRIC_SPECS}
-DEFAULT_METRIC_ORDER = tuple(spec.key for spec in METRIC_SPECS)
+from tools.ablation_report.shared import DEFAULT_METRIC_ORDER, METRIC_SPEC_BY_KEY
+from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, _fmt, _mean, condition_metric_key
 LOO_DISTANCE_KEYS: tuple[str, ...] = ("mean_diff", "pct_pixels_above_10")
-
-
-def _mean(values: list[float]) -> float | None:
-    return float(statistics.mean(values)) if values else None
-
-
-def _fmt(value: float | None) -> str:
-    if value is None:
-        return "-"
-    return f"{value:.3f}"
 
 
 def _format_condition_key(cond_key: str) -> str:
@@ -91,12 +62,12 @@ def load_condition_means(metrics_root: Path) -> tuple[dict[str, dict[str, float]
             if not isinstance(record, dict):
                 continue
             bucket = grouped.setdefault(str(cond_key), {})
-            for metric in METRIC_SPECS:
-                value = _metric_value_from_record(record, metric.key)
+            for metric_key in DEFAULT_METRIC_ORDER:
+                value = _metric_value_from_record(record, metric_key)
                 if value is None:
                     continue
-                bucket.setdefault(metric.key, []).append(float(value))
-                metric_keys.add(metric.key)
+                bucket.setdefault(metric_key, []).append(float(value))
+                metric_keys.add(metric_key)
 
     condition_means: dict[str, dict[str, float]] = {}
     for cond_key, record in grouped.items():

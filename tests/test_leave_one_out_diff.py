@@ -97,6 +97,26 @@ def test_compute_loo_diffs_global_normalization(tmp_path):
     assert all_vals.max() > 0.0
 
 
+def test_relative_diff_maps_global_normalization() -> None:
+    from tools.vis.leave_one_out_diff import _compute_relative_diff_maps
+
+    baseline = np.zeros((2, 2, 3), dtype=np.uint8)
+    images = [
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        np.full((2, 2, 3), 10, dtype=np.uint8),
+        np.full((2, 2, 3), 20, dtype=np.uint8),
+    ]
+
+    diff_maps = _compute_relative_diff_maps(images, baseline)
+
+    assert len(diff_maps) == 3
+    assert diff_maps[0].shape == (2, 2)
+    assert diff_maps[0].dtype == np.float32
+    assert float(diff_maps[0].max()) == 0.0
+    assert float(diff_maps[1].max()) == 0.5
+    assert float(diff_maps[2].max()) == 1.0
+
+
 def test_save_stats_and_render_figure(tmp_path):
     from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure, save_loo_stats
 

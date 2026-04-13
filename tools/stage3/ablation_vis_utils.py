@@ -6,6 +6,7 @@ Legacy manifests may still list ``cell_identity``; it is normalized to ``cell_ty
 from __future__ import annotations
 
 import json
+import statistics
 from collections.abc import Mapping
 from collections.abc import Sequence
 from itertools import combinations
@@ -16,6 +17,12 @@ import numpy as np
 
 # Canonical four groups (display / config order; see docs/ablation_vis_spec.md)
 FOUR_GROUP_ORDER: tuple[str, ...] = ("cell_types", "cell_state", "vasculature", "microenv")
+GROUP_SHORT_LABELS: dict[str, str] = {
+    "cell_types": "CT",
+    "cell_state": "CS",
+    "vasculature": "Vas",
+    "microenv": "Env",
+}
 
 _LEGACY_GROUP_ALIASES: dict[str, str] = {
     "cell_identity": "cell_types",
@@ -41,6 +48,16 @@ def public_group_names(active_groups: tuple[str, ...]) -> tuple[str, ...]:
 def condition_metric_key(active_groups: tuple[str, ...]) -> str:
     """Stable ``+``-joined key for JSON metrics (e.g. ``cell_types+cell_state``)."""
     return "+".join(public_group_names(active_groups))
+
+
+def _mean(values: list[float]) -> float | None:
+    return float(statistics.mean(values)) if values else None
+
+
+def _fmt(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.3f}"
 
 
 def ordered_subset_condition_tuples() -> list[tuple[str, ...]]:
@@ -221,10 +238,12 @@ def draw_image_border(
     *,
     dashed: bool = False,
     linewidth: float = 1.2,
+    linestyle: str | tuple[float, tuple[float, ...]] | None = None,
 ) -> None:
     """Draw a visible border around an image axes even when spines are hidden."""
     from matplotlib.patches import Rectangle
 
+    border_linestyle = linestyle if linestyle is not None else ("--" if dashed else "-")
     patch = Rectangle(
         (0.0, 0.0),
         1.0,
@@ -233,7 +252,7 @@ def draw_image_border(
         fill=False,
         edgecolor=color,
         linewidth=linewidth,
-        linestyle="--" if dashed else "-",
+        linestyle=border_linestyle,
         zorder=10,
         clip_on=False,
     )

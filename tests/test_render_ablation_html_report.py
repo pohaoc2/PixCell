@@ -32,14 +32,17 @@ if "diffusers" not in sys.modules:
     diffusers_stub.DDPMScheduler = _DummyScheduler
     sys.modules["diffusers"] = diffusers_stub
 
-from tools.render_ablation_html_report import (
+from tools.ablation_report import (
     DatasetSummary,
+    METRIC_LABELS,
+    TRADEOFF_REFERENCE_BANDS,
     build_channel_effect_heatmaps_figure,
     build_leave_one_out_figure,
     build_metric_trends_figure,
     compute_style_hed_scores_local,
     export_report_png_pages,
     load_dataset_summary,
+    load_fud_scores,
     render_comparison_table,
     render_report_html,
 )
@@ -180,11 +183,11 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
             "version": 2,
             "tile_id": "tile_a",
             "per_condition": {
-                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02, "fud": 68.0},
-                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14, "fud": 67.0},
-                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22, "fud": 66.5},
-                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31, "fud": 66.2},
-                "cell_types+cell_state+microenv+vasculature": {"cosine": 0.62, "lpips": 0.37, "aji": 0.44, "pq": 0.39, "fud": 67.4},
+                "cell_types": {"lpips": 0.44, "pq": 0.02, "dice": 0.06, "fud": 68.0},
+                "cell_state": {"lpips": 0.42, "pq": 0.14, "dice": 0.20, "fud": 67.0},
+                "cell_types+cell_state": {"lpips": 0.39, "pq": 0.22, "dice": 0.28, "fud": 66.5},
+                "cell_types+cell_state+microenv": {"lpips": 0.38, "pq": 0.31, "dice": 0.36, "fud": 66.2},
+                "cell_types+cell_state+microenv+vasculature": {"lpips": 0.37, "pq": 0.39, "dice": 0.44, "fud": 67.4},
             },
         },
     )
@@ -194,11 +197,11 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
             "version": 2,
             "tile_id": "tile_b",
             "per_condition": {
-                "cell_types": {"aji": 0.04, "pq": 0.01, "fud": 69.0, "style_hed": 0.08},
-                "cell_state": {"aji": 0.16, "pq": 0.10, "fud": 68.7, "style_hed": 0.079},
-                "cell_types+cell_state": {"aji": 0.22, "pq": 0.15, "fud": 67.8, "style_hed": 0.074},
-                "cell_types+cell_state+microenv": {"aji": 0.31, "pq": 0.23, "fud": 64.0, "style_hed": 0.069},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.39, "pq": 0.32, "fud": 65.4, "style_hed": 0.071},
+                "cell_types": {"pq": 0.01, "dice": 0.04, "fud": 69.0, "style_hed": 0.08},
+                "cell_state": {"pq": 0.10, "dice": 0.16, "fud": 68.7, "style_hed": 0.079},
+                "cell_types+cell_state": {"pq": 0.15, "dice": 0.22, "fud": 67.8, "style_hed": 0.074},
+                "cell_types+cell_state+microenv": {"pq": 0.23, "dice": 0.31, "fud": 64.0, "style_hed": 0.069},
+                "cell_types+cell_state+microenv+vasculature": {"pq": 0.32, "dice": 0.39, "fud": 65.4, "style_hed": 0.071},
             },
         },
     )
@@ -236,7 +239,7 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
 
     report = render_report_html("Ablation report", [paired, unpaired], tmp_path / "report.html")
     metric_tradeoffs_idx = report.index("Metric Tradeoffs")
-    comparison_idx = report.index("Paired vs Unpaired Best/Worst Conditions")
+    comparison_idx = report.index("Paired vs Unpaired Ranked Conditions")
     channel_effect_idx = report.index("Channel Effect Sizes")
 
     assert "Metric Tradeoffs" in report
@@ -248,13 +251,11 @@ def test_render_report_html_includes_expected_sections(tmp_path: Path) -> None:
     assert "../" not in report
     assert "paired/ablation_results/tile_a/ablation_grid.png" in report
     assert "unpaired/leave_one_out/tile_b/leave_one_out_diff.png" in report
-    assert "rowspan='5'" in report
-    assert "class='metric-text'" in report
-    assert "CT / CS / Vas / Env" in report
     assert "class='condition-glyph'" in report
     assert "class='condition-dot is-active'" in report
-    assert "Each cell shows per-metric min-max normalized improvement ± normalized SD" in report
-    assert "0 for worst to 1 for best across the combined plot" in report
+    assert "metric-group--five-up" in report
+    assert "grid-template-columns: repeat(5, minmax(140px, 1fr));" in report
+    assert "Each cell shows the raw metric change from adding that channel group" in report
     assert metric_tradeoffs_idx < comparison_idx < channel_effect_idx
 
 
@@ -262,37 +263,32 @@ def test_build_metric_trends_figure_uses_dashed_unpaired_std() -> None:
     paired = _make_summary(
         slug="paired",
         title="Paired",
-        metric_keys=["aji"],
-        condition_stats=_full_condition_stats("aji", base=0.12, step=0.01, std=0.01),
+        metric_keys=["dice"],
+        condition_stats=_full_condition_stats("dice", base=0.12, step=0.01, std=0.01),
     )
     unpaired = _make_summary(
         slug="unpaired",
         title="Unpaired",
-        metric_keys=["aji"],
-        condition_stats=_full_condition_stats("aji", base=0.08, step=0.009, std=0.012),
+        metric_keys=["dice"],
+        condition_stats=_full_condition_stats("dice", base=0.08, step=0.009, std=0.012),
     )
 
     fig = build_metric_trends_figure([paired, unpaired])
     try:
-        aji_ax = next(ax for ax in fig.axes if ax.get_title().startswith("AJI"))
-        dot_ax = next(
-            ax for ax in fig.axes
-            if ax is not aji_ax and not ax.axison and len(ax.collections) == 60
-        )
-        paired_line = aji_ax.lines[0]
-        unpaired_line = aji_ax.lines[3]
-        linestyles = [collection.get_linestyle() for collection in aji_ax.collections]
+        dice_ax = next(ax for ax in fig.axes if ax.get_title().startswith("DICE"))
+        # With errorbar(linestyle="none"), markers appear as lines with no connecting line.
+        # Paired markers use black fill, unpaired use white fill.
+        paired_marker = dice_ax.lines[0]
+        unpaired_marker = dice_ax.lines[3]
+        error_linestyles = [collection.get_linestyle() for collection in dice_ax.collections]
 
-        assert len(aji_ax.lines) >= 4
-        assert len(linestyles) == 2
-        assert paired_line.get_linestyle() == "-"
-        assert unpaired_line.get_linestyle() == ":"
-        assert paired_line.get_markerfacecolor() == "#000000"
-        assert unpaired_line.get_markerfacecolor() == "white"
-        assert linestyles[0] != linestyles[1]
-        assert linestyles[1][0][1]
-        assert aji_ax.get_xlim() == (-0.55, 14.55)
-        assert len(dot_ax.collections) == 60
+        assert len(dice_ax.lines) >= 4
+        assert len(error_linestyles) == 2
+        assert paired_marker.get_markerfacecolor() == "#000000"
+        assert unpaired_marker.get_markerfacecolor() == "white"
+        # Error bar linestyles should differ between paired (solid) and unpaired (dashed)
+        assert error_linestyles[0] != error_linestyles[1]
+        assert dice_ax.get_xlim() == (-0.55, 14.55)
     finally:
         fig.clf()
 
@@ -314,14 +310,14 @@ def test_build_leave_one_out_figure_uses_white_paired_bars() -> None:
     paired = _make_summary(
         slug="paired",
         title="Paired",
-        metric_keys=["aji"],
+        metric_keys=["dice"],
         loo_summary=loo_summary,
         loo_stats=loo_stats,
     )
     unpaired = _make_summary(
         slug="unpaired",
         title="Unpaired",
-        metric_keys=["aji"],
+        metric_keys=["dice"],
         loo_summary=loo_summary,
         loo_stats=loo_stats,
     )
@@ -332,136 +328,170 @@ def test_build_leave_one_out_figure_uses_white_paired_bars() -> None:
         paired_bar = first_panel.patches[0]
         unpaired_bar = first_panel.patches[1]
 
+        assert first_panel.get_title().startswith("Mean normalized")
         assert paired_bar.get_facecolor()[:3] == (1.0, 1.0, 1.0)
         assert paired_bar.get_hatch() in (None, "")
         assert unpaired_bar.get_hatch() == "//"
+        assert len(fig.axes) == 1
     finally:
         fig.clf()
 
 
 def test_build_channel_effect_heatmaps_figure_normalizes_per_metric_colors() -> None:
     added_effect_stats = {
-        "cell_types": {"aji": (0.10, 0.01), "fud": (-5.0, 0.8)},
-        "cell_state": {"aji": (0.20, 0.02), "fud": (-1.0, 0.7)},
-        "vasculature": {"aji": (0.30, 0.03), "fud": (2.0, 0.6)},
-        "microenv": {"aji": (0.40, 0.04), "fud": (10.0, 0.5)},
+        "cell_types": {"dice": (0.10, 0.01), "fud": (-5.0, 0.8)},
+        "cell_state": {"dice": (0.20, 0.02), "fud": (-1.0, 0.7)},
+        "vasculature": {"dice": (0.30, 0.03), "fud": (2.0, 0.6)},
+        "microenv": {"dice": (0.40, 0.04), "fud": (10.0, 0.5)},
     }
     presence_absence_stats = {
-        "cell_types": {"aji": (-0.20, 0.01), "fud": (-8.0, 0.8)},
-        "cell_state": {"aji": (0.00, 0.02), "fud": (-4.0, 0.7)},
-        "vasculature": {"aji": (0.10, 0.03), "fud": (4.0, 0.6)},
-        "microenv": {"aji": (0.20, 0.04), "fud": (12.0, 0.5)},
+        "cell_types": {"dice": (-0.20, 0.01), "fud": (-8.0, 0.8)},
+        "cell_state": {"dice": (0.00, 0.02), "fud": (-4.0, 0.7)},
+        "vasculature": {"dice": (0.10, 0.03), "fud": (4.0, 0.6)},
+        "microenv": {"dice": (0.20, 0.04), "fud": (12.0, 0.5)},
     }
     summary = _make_summary(
         slug="paired",
         title="Paired",
-        metric_keys=["aji", "fud"],
+        metric_keys=["dice", "fud"],
         added_effect_stats=added_effect_stats,
         presence_absence_stats=presence_absence_stats,
     )
 
     fig = build_channel_effect_heatmaps_figure([summary])
     try:
-        heatmap_ax = next(ax for ax in fig.axes if ax.get_title().startswith("Paired: Average improvement"))
+        heatmap_ax = next(ax for ax in fig.axes if ax.get_title().startswith("Marginal effect"))
         image = heatmap_ax.images[0]
-        colorbar_ax = fig.axes[-1]
         normalized = image.get_array().filled(float("nan"))
-        text_values = {text.get_text() for text in heatmap_ax.texts}
 
-        assert image.get_clim() == (0.0, 1.0)
+        assert image.get_clim() == (-1.0, 1.0)
         assert image.cmap.name == "RdBu"
-        assert normalized.min() >= 0.0
+        assert normalized.min() >= -1.0
         assert normalized.max() <= 1.0
-        assert normalized[0, 0] == 0.5
-        assert round(float(normalized[0, 1]), 2) == 0.15
-        assert "0.500\n±0.017" in text_values
-        assert "0.150\n±0.040" in text_values
-        assert "0 = worst, 1 = best" in colorbar_ax.get_ylabel()
     finally:
         fig.clf()
 
 
-def test_render_comparison_table_includes_unpaired_cosine_and_lpips() -> None:
+def test_render_comparison_table_includes_all_metrics_for_both_slugs() -> None:
     paired = _make_summary(
         slug="paired",
         title="Paired",
-        metric_keys=["cosine", "lpips", "aji"],
+        metric_keys=["lpips", "pq", "dice", "fud", "style_hed"],
     )
     object.__setattr__(
         paired,
         "best_worst",
         {
-            "cosine": {
-                "best_condition": "cell_types",
-                "best_value": 0.61,
-                "worst_condition": "cell_state",
-                "worst_value": 0.41,
-            },
             "lpips": {
-                "best_condition": "cell_types+cell_state",
-                "best_value": 0.22,
-                "worst_condition": "cell_types",
-                "worst_value": 0.44,
+                "best": [("cell_types+cell_state", 0.22, 0.01)],
+                "worst": [("cell_types", 0.44, 0.02)],
+                "total": 5,
             },
-            "aji": {
-                "best_condition": "cell_types+microenv",
-                "best_value": 0.35,
-                "worst_condition": "cell_state",
-                "worst_value": 0.14,
+            "pq": {
+                "best": [("cell_types+microenv", 0.35, 0.01)],
+                "worst": [("cell_state", 0.14, 0.02)],
+                "total": 5,
+            },
+            "dice": {
+                "best": [("cell_types+microenv", 0.40, 0.01)],
+                "worst": [("cell_state", 0.10, 0.02)],
+                "total": 5,
+            },
+            "fud": {
+                "best": [("cell_types", 65.0, 1.0)],
+                "worst": [("cell_state", 70.0, 1.5)],
+                "total": 5,
+            },
+            "style_hed": {
+                "best": [("cell_types+cell_state", 0.06, 0.005)],
+                "worst": [("cell_types", 0.09, 0.01)],
+                "total": 5,
             },
         },
     )
     unpaired = _make_summary(
         slug="unpaired",
         title="Unpaired",
-        metric_keys=["cosine", "lpips", "aji"],
+        metric_keys=["lpips", "pq", "dice", "fud", "style_hed"],
     )
     object.__setattr__(
         unpaired,
         "best_worst",
         {
-            "cosine": {
-                "best_condition": "cell_types",
-                "best_value": 0.55,
-                "worst_condition": "cell_state",
-                "worst_value": 0.32,
-            },
             "lpips": {
-                "best_condition": "cell_types+cell_state",
-                "best_value": 0.24,
-                "worst_condition": "cell_types",
-                "worst_value": 0.47,
+                "best": [("cell_types+cell_state", 0.24, 0.01)],
+                "worst": [("cell_types", 0.47, 0.02)],
+                "total": 5,
             },
-            "aji": {
-                "best_condition": "cell_types+microenv",
-                "best_value": 0.28,
-                "worst_condition": "cell_state",
-                "worst_value": 0.11,
+            "pq": {
+                "best": [("cell_types+microenv", 0.28, 0.01)],
+                "worst": [("cell_state", 0.11, 0.02)],
+                "total": 5,
+            },
+            "dice": {
+                "best": [("cell_types+microenv", 0.35, 0.01)],
+                "worst": [("cell_state", 0.08, 0.02)],
+                "total": 5,
+            },
+            "fud": {
+                "best": [("cell_types", 66.0, 1.0)],
+                "worst": [("cell_state", 72.0, 1.5)],
+                "total": 5,
+            },
+            "style_hed": {
+                "best": [("cell_types+cell_state", 0.07, 0.005)],
+                "worst": [("cell_types", 0.10, 0.01)],
+                "total": 5,
             },
         },
     )
 
     table_html = render_comparison_table([paired, unpaired])
 
-    assert table_html.count(">Cosine<") == 2
-    assert table_html.count(">LPIPS<") == 2
-    assert table_html.count(">AJI<") == 2
+    # Metric labels appear in metric-caption divs as "LABEL ↑/↓"
+    assert "LPIPS" in table_html
+    assert "PQ" in table_html
+    assert "DICE" in table_html
+    assert "FUD" in table_html
+    assert "HED" in table_html
+    # The comparison block should label the paired and unpaired sections once each.
+    assert "PAIRED" in table_html
+    assert "UNPAIRED" in table_html
+    assert "Paired and Unpaired" not in table_html
+    assert "comparison-divider" in table_html
+    assert "CT/CS/VAS/ENV" in table_html
+    assert table_html.count("metric-group--five-up") == 2
+    assert "dataset-subhead" not in table_html
+    assert "dataset-divider" not in table_html
+
+
+def test_fud_uses_fud_labels_in_report_config() -> None:
+    assert METRIC_LABELS["fud"] == "FUD"
+    assert TRADEOFF_REFERENCE_BANDS["fud"]["label"] == "PixCell Cond FUD"
+
+
+def test_load_fud_scores_prefers_fud_over_fvd_and_fid(tmp_path: Path) -> None:
+    _write_metric_scores(tmp_path / "fvd_scores.json", {"cell_types": 800.0})
+    _write_metric_scores(tmp_path / "fud_scores.json", {"cell_types": 120.0})
+    _write_metric_scores(tmp_path / "fid_scores.json", {"cell_types": 60.0})
+
+    assert load_fud_scores(tmp_path) == {"cell_types": 120.0}
 
 
 def test_export_report_png_pages_places_comparison_second(tmp_path: Path) -> None:
     summary = _make_summary(
         slug="paired",
         title="Paired",
-        metric_keys=["aji"],
-        condition_stats=_full_condition_stats("aji", base=0.1, step=0.01, std=0.01),
+        metric_keys=["dice"],
+        condition_stats=_full_condition_stats("dice", base=0.1, step=0.01, std=0.01),
         by_cardinality_stats={
-            1: {"aji": (0.1, 0.01)},
-            2: {"aji": (0.2, 0.01)},
-            3: {"aji": (0.3, 0.01)},
-            4: {"aji": (0.4, 0.01)},
+            1: {"dice": (0.1, 0.01)},
+            2: {"dice": (0.2, 0.01)},
+            3: {"dice": (0.3, 0.01)},
+            4: {"dice": (0.4, 0.01)},
         },
-        added_effect_stats={group: {"aji": (0.1 + idx * 0.05, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
-        presence_absence_stats={group: {"aji": (0.05 + idx * 0.03, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+        added_effect_stats={group: {"dice": (0.1 + idx * 0.05, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+        presence_absence_stats={group: {"dice": (0.05 + idx * 0.03, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
         loo_summary={group: {"mean_diff": 1.0 + idx, "pct_pixels_above_10": 2.0 + idx} for idx, group in enumerate(FOUR_GROUP_ORDER)},
         loo_stats={
             group: {"mean_diff": (1.0 + idx, 0.1), "pct_pixels_above_10": (2.0 + idx, 0.2)}
@@ -472,11 +502,10 @@ def test_export_report_png_pages_places_comparison_second(tmp_path: Path) -> Non
         summary,
         "best_worst",
         {
-            "aji": {
-                "best_condition": "cell_types+microenv",
-                "best_value": 0.35,
-                "worst_condition": "cell_state",
-                "worst_value": 0.14,
+            "dice": {
+                "best": [("cell_types+microenv", 0.35, 0.01)],
+                "worst": [("cell_state", 0.14, 0.02)],
+                "total": 15,
             }
         },
     )
@@ -500,11 +529,11 @@ def test_render_report_html_self_contained_embeds_evidence_images(tmp_path: Path
             "version": 2,
             "tile_id": tile_id,
             "per_condition": {
-                "cell_types": {"aji": 0.06, "pq": 0.02, "fud": 68.0},
-                "cell_state": {"aji": 0.20, "pq": 0.14, "fud": 67.0},
-                "cell_types+cell_state": {"aji": 0.28, "pq": 0.22, "fud": 66.5},
-                "cell_types+cell_state+microenv": {"aji": 0.36, "pq": 0.31, "fud": 66.2},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.44, "pq": 0.39, "fud": 67.4},
+                "cell_types": {"pq": 0.02, "dice": 0.06, "fud": 68.0},
+                "cell_state": {"pq": 0.14, "dice": 0.20, "fud": 67.0},
+                "cell_types+cell_state": {"pq": 0.22, "dice": 0.28, "fud": 66.5},
+                "cell_types+cell_state+microenv": {"pq": 0.31, "dice": 0.36, "fud": 66.2},
+                "cell_types+cell_state+microenv+vasculature": {"pq": 0.39, "dice": 0.44, "fud": 67.4},
             },
         },
     )
@@ -554,15 +583,14 @@ def test_load_dataset_summary_computes_missing_paired_style_hed(tmp_path: Path) 
             "version": 2,
             "tile_id": tile_id,
             "per_condition": {
-                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02, "fud": 68.0},
-                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14, "fud": 67.0},
-                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22, "fud": 66.5},
-                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31, "fud": 66.2},
+                "cell_types": {"lpips": 0.44, "pq": 0.02, "dice": 0.06, "fud": 68.0},
+                "cell_state": {"lpips": 0.42, "pq": 0.14, "dice": 0.20, "fud": 67.0},
+                "cell_types+cell_state": {"lpips": 0.39, "pq": 0.22, "dice": 0.28, "fud": 66.5},
+                "cell_types+cell_state+microenv": {"lpips": 0.38, "pq": 0.31, "dice": 0.36, "fud": 66.2},
                 "cell_types+cell_state+microenv+vasculature": {
-                    "cosine": 0.62,
                     "lpips": 0.37,
-                    "aji": 0.44,
                     "pq": 0.39,
+                    "dice": 0.44,
                     "fud": 67.4,
                 },
             },
@@ -579,7 +607,7 @@ def test_load_dataset_summary_computes_missing_paired_style_hed(tmp_path: Path) 
     )
 
     assert "style_hed" in summary.metric_keys
-    assert summary.best_worst["style_hed"]["best_value"] == 0.0
+    assert summary.best_worst["style_hed"]["best"][0][1] == 0.0
     assert summary.by_cardinality[4]["style_hed"] == 0.0
 
 
@@ -594,11 +622,11 @@ def test_load_dataset_summary_uses_legacy_fid_scores_when_metrics_json_lacks_fud
             "version": 2,
             "tile_id": tile_id,
             "per_condition": {
-                "cell_types": {"cosine": 0.55, "lpips": 0.44, "aji": 0.06, "pq": 0.02},
-                "cell_state": {"cosine": 0.58, "lpips": 0.42, "aji": 0.20, "pq": 0.14},
-                "cell_types+cell_state": {"cosine": 0.60, "lpips": 0.39, "aji": 0.28, "pq": 0.22},
-                "cell_types+cell_state+microenv": {"cosine": 0.61, "lpips": 0.38, "aji": 0.36, "pq": 0.31},
-                "cell_types+cell_state+microenv+vasculature": {"cosine": 0.62, "lpips": 0.37, "aji": 0.44, "pq": 0.39},
+                "cell_types": {"lpips": 0.44, "pq": 0.02, "dice": 0.06},
+                "cell_state": {"lpips": 0.42, "pq": 0.14, "dice": 0.20},
+                "cell_types+cell_state": {"lpips": 0.39, "pq": 0.22, "dice": 0.28},
+                "cell_types+cell_state+microenv": {"lpips": 0.38, "pq": 0.31, "dice": 0.36},
+                "cell_types+cell_state+microenv+vasculature": {"lpips": 0.37, "pq": 0.39, "dice": 0.44},
             },
         },
     )
@@ -636,8 +664,8 @@ def test_load_dataset_summary_filters_by_min_gt_cells(tmp_path: Path) -> None:
             "version": 2,
             "tile_id": "tile_a",
             "per_condition": {
-                "cell_types": {"aji": 0.10, "pq": 0.05},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.40, "pq": 0.30},
+                "cell_types": {"pq": 0.05, "dice": 0.10},
+                "cell_types+cell_state+microenv+vasculature": {"pq": 0.30, "dice": 0.40},
             },
         },
     )
@@ -647,8 +675,8 @@ def test_load_dataset_summary_filters_by_min_gt_cells(tmp_path: Path) -> None:
             "version": 2,
             "tile_id": "tile_b",
             "per_condition": {
-                "cell_types": {"aji": 0.80, "pq": 0.70},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.90, "pq": 0.85},
+                "cell_types": {"pq": 0.70, "dice": 0.80},
+                "cell_types+cell_state+microenv+vasculature": {"pq": 0.85, "dice": 0.90},
             },
         },
     )
@@ -683,7 +711,7 @@ def test_load_dataset_summary_filters_by_min_gt_cells(tmp_path: Path) -> None:
     )
 
     assert summary.tile_count == 1
-    assert summary.condition_stats["cell_types"]["aji"] == (0.10, 0.0)
+    assert summary.condition_stats["cell_types"]["dice"] == (0.10, 0.0)
     assert summary.by_cardinality[4]["pq"] == 0.30
 
 
@@ -717,8 +745,8 @@ def test_load_dataset_summary_backfills_style_hed_from_style_mapping(tmp_path: P
             "version": 2,
             "tile_id": tile_id,
             "per_condition": {
-                "cell_types": {"aji": 0.04, "pq": 0.01, "fud": 69.0},
-                "cell_types+cell_state+microenv+vasculature": {"aji": 0.39, "pq": 0.32, "fud": 65.4},
+                "cell_types": {"pq": 0.01, "dice": 0.04, "fud": 69.0},
+                "cell_types+cell_state+microenv+vasculature": {"pq": 0.32, "dice": 0.39, "fud": 65.4},
             },
         },
     )
