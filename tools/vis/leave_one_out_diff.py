@@ -39,6 +39,14 @@ from tools.stage3.style_mapping import load_style_mapping
 COLOR_REF = "#000000"
 COLOR_BASELINE = "#9B59B6"
 
+# Per-group highlight colours for the SSIM figure
+_LOO_SSIM_HIGHLIGHT: dict[str, str] = {
+    "cell_state": "#ff6644",
+    "microenv": "#ddaa00",
+}
+_LOO_SSIM_INSET_TEAL = "#00ccaa"
+_LOO_SSIM_NEUTRAL = "#555555"
+
 
 def _load_rgb_float32(path: Path) -> np.ndarray:
     """Load a PNG as float32 H×W×3 in [0, 255]."""
@@ -456,6 +464,184 @@ def render_loo_diff_figure(
             else "Pixel diff (per-condition, 99th-pct norm.)"
         )
         cbar.set_label(cbar_label, fontsize=8, labelpad=3)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def render_loo_ssim_figure(
+    cache_dir: Path,
+    *,
+    orion_root: Path | None = None,
+    style_mapping: dict[str, str] | None = None,
+    out_path: Path,
+    crop_size: int = 64,
+) -> None:
+    """Save the LOO SSIM publication figure (3 rows x 5 columns).
+
+    Row 0 -- Generated H&E (full tile) with teal inset-region marker on the
+             all-channels panel.
+    Row 1 -- Cell inset: 64x64 crop (same region every column), upsampled 4x
+             with nearest-neighbour. Region auto-selected from max mean SSIM loss.
+    Row 2 -- SSIM structural loss map (cell-masked, globally normalised).
+             All-channels column shown as black "0 (baseline)" panel.
+
+    Args:
+        cache_dir: Ablation cache directory containing manifest.json.
+        orion_root: Optional ORION dataset root (reserved, unused in output).
+        style_mapping: Optional tile-id remapping (reserved, unused in output).
+        out_path: Destination PNG path.
+        crop_size: Side length of the inset crop in pixels (default 64).
+    """
+    from matplotlib.patches import Rectangle
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    cache_dir = Path(cache_dir)
+    manifest = load_manifest(cache_dir)
+    sections = manifest["sections"]
+    group_names = tuple(manifest["group_names"])
+    tile_id = str(manifest["tile_id"])
+    cell_mask = _load_cell_mask_array(cache_dir, manifest)
+
+    # Load images
+    all_entry = _find_all_entry(sections, len(group_names))
+    img_all = _load_rgb_float32(cache_dir / all_entry["image_path"]).astype(np.uint8)
+
+    loo_images: list[np.ndarray] = []
+    for group in FOUR_GROUP_ORDER:
+        entry = find_loo_entry(sections, group)
+        loo_images.append(
+            _load_rgb_float32(cache_dir / entry["image_path"]).astype(np.uint8)
+        )
+
+    # SSIM loss maps
+    raw_ssim: list[np.ndarray] = [ssim_loss_map(img_all, img) for img in loo_images]
+
+    if cell_mask is not None:
+        H, W = img_all.shape[:2]
+        if cell_mask.shape != (H, W):
+            cell_mask = np.asarray(
+                Image.fromarray((np.clip(cell_mask, 0, 1) * 255).astype(np.uint8)).resize(
+                    (W, H), Image.BILINEAR
+                ),
+                dtype=np.float32,
+            ) / 255.0
+        binary = (cell_mask > 0.5).astype(np.float32)
+        raw_ssim = [m * binary for m in raw_ssim]
+
+    global_max = max(float(m.max()) for m in raw_ssim)
+    if global_max > 0.0:
+        ssim_norm: list[np.ndarray] = [
+            np.clip(m / global_max, 0.0, 1.0).astype(np.float32) for m in raw_ssim
+        ]
+    else:
+        ssim_norm = [np.zeros_like(m) for m in raw_ssim]
+
+    # Inset region selection
+    loss_mean = np.stack(ssim_norm).mean(axis=0).astype(np.float32)
+    iy, ix = _select_inset_region(loss_mean, crop=crop_size, stride=8)
+
+    def _crop_upsample(img: np.ndarray) -> np.ndarray:
+        H_out, W_out = img.shape[:2]
+        crop = img[iy : iy + crop_size, ix : ix + crop_size]
+        return np.asarray(
+            Image.fromarray(crop).resize((W_out, H_out), Image.NEAREST),
+            dtype=np.uint8,
+        )
+
+    he_images = [img_all] + loo_images
+    inset_images = [_crop_upsample(img) for img in he_images]
+    ssim_display = [np.zeros(img_all.shape[:2], dtype=np.float32)] + ssim_norm
+
+    col_labels = ["All channels"] + [
+        f"Drop {g.replace('_', ' ').title()}" for g in FOUR_GROUP_ORDER
+    ]
+    col_title_colors = ["#cccccc"] + [
+        _LOO_SSIM_HIGHLIGHT.get(g, "#888888") for g in FOUR_GROUP_ORDER
+    ]
+    col_title_weights = ["normal"] + [
+        "bold" if g in _LOO_SSIM_HIGHLIGHT else "normal" for g in FOUR_GROUP_ORDER
+    ]
+    inset_colors = [_LOO_SSIM_INSET_TEAL] + [
+        _LOO_SSIM_HIGHLIGHT.get(g, _LOO_SSIM_NEUTRAL) for g in FOUR_GROUP_ORDER
+    ]
+    inset_lw = [2.0] + [2.0 if g in _LOO_SSIM_HIGHLIGHT else 1.0 for g in FOUR_GROUP_ORDER]
+
+    hot_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "hot4", ["#000000", "#ff4400", "#ffff00", "#ffffff"]
+    )
+
+    fig, axes = plt.subplots(3, 5, figsize=(15, 9))
+    fig.suptitle(
+        f"Leave-one-out group diff (SSIM) -- tile {tile_id}", fontsize=12, y=0.985
+    )
+
+    for col in range(5):
+        ax0 = axes[0, col]
+        ax0.imshow(he_images[col])
+        if cell_mask is not None:
+            _maybe_contour_cell_mask(ax0, cell_mask, he_images[col].shape[:2])
+        if col == 0:
+            ax0.add_patch(
+                Rectangle(
+                    (ix, iy),
+                    crop_size,
+                    crop_size,
+                    linewidth=2,
+                    edgecolor=_LOO_SSIM_INSET_TEAL,
+                    facecolor="none",
+                )
+            )
+        ax0.set_title(
+            col_labels[col],
+            fontsize=9,
+            color=col_title_colors[col],
+            fontweight=col_title_weights[col],
+        )
+        ax0.set_xticks([])
+        ax0.set_yticks([])
+        if col == 0:
+            ax0.set_ylabel("Generated H&E", fontsize=10)
+
+        ax1 = axes[1, col]
+        ax1.imshow(inset_images[col])
+        for spine in ax1.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor(inset_colors[col])
+            spine.set_linewidth(inset_lw[col])
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+        if col == 0:
+            ax1.set_ylabel("Cell inset\n(auto-selected)", fontsize=10)
+
+        ax2 = axes[2, col]
+        ax2.imshow(ssim_display[col], cmap=hot_cmap, vmin=0.0, vmax=1.0)
+        if col == 0:
+            ax2.text(
+                0.5, 0.5, "0\n(baseline)",
+                transform=ax2.transAxes,
+                ha="center", va="center",
+                fontsize=8, color="#777777",
+            )
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+        if col == 0:
+            ax2.set_ylabel("SSIM loss\n(cell-masked)", fontsize=10)
+
+    divider = make_axes_locatable(axes[2, 4])
+    cbar_ax = divider.append_axes("bottom", size="8%", pad=0.20)
+    sm = matplotlib.cm.ScalarMappable(
+        cmap=hot_cmap, norm=mcolors.Normalize(vmin=0.0, vmax=1.0)
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax, orientation="horizontal")
+    cbar.set_ticks([0.0, 0.5, 1.0])
+    cbar.ax.tick_params(labelsize=8, pad=1)
+    cbar.set_label("SSIM structural loss (globally normalized)", fontsize=8, labelpad=3)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

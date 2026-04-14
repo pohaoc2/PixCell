@@ -429,3 +429,80 @@ def test_select_inset_region_uniform_loss_returns_origin() -> None:
 
     assert y == 0
     assert x == 0
+
+
+# ── render_loo_ssim_figure ────────────────────────────────────────────────────
+
+def _make_cache_large(tmp_path: Path, resolution: int = 128) -> Path:
+    """Like _make_cache but with resolution×resolution images for SSIM tests."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    group_names = ("cell_types", "cell_state", "vasculature", "microenv")
+
+    all_img = np.full((resolution, resolution, 3), 200, dtype=np.uint8)
+    (tmp_path / "all").mkdir()
+    Image.fromarray(all_img).save(tmp_path / "all" / "generated_he.png")
+
+    (tmp_path / "triples").mkdir()
+    entries_triples = []
+    for i, omit in enumerate(group_names):
+        active = [g for g in group_names if g != omit]
+        val = 80 + i * 30
+        img = np.full((resolution, resolution, 3), val, dtype=np.uint8)
+        fname = f"{i + 1:02d}_{'__'.join(active)}.png"
+        Image.fromarray(img).save(tmp_path / "triples" / fname)
+        entries_triples.append({
+            "active_groups": active,
+            "condition_label": f"triples_{i}",
+            "image_label": f"lbl_{i}",
+            "image_path": f"triples/{fname}",
+        })
+
+    manifest = {
+        "version": 1,
+        "tile_id": "large_tile",
+        "group_names": list(group_names),
+        "sections": [
+            {"title": "3 active groups", "subset_size": 3, "entries": entries_triples},
+            {
+                "title": "4 active groups",
+                "subset_size": 4,
+                "entries": [{
+                    "active_groups": list(group_names),
+                    "condition_label": "all",
+                    "image_label": "all",
+                    "image_path": "all/generated_he.png",
+                }],
+            },
+        ],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return tmp_path
+
+
+def test_render_loo_ssim_figure_produces_png(tmp_path) -> None:
+    from tools.vis.leave_one_out_diff import render_loo_ssim_figure
+
+    cache = _make_cache_large(tmp_path / "cache")
+    out_path = tmp_path / "leave_one_out_ssim.png"
+    render_loo_ssim_figure(cache, out_path=out_path)
+
+    assert out_path.is_file()
+    assert out_path.stat().st_size > 0
+
+
+def test_render_loo_ssim_figure_with_cell_mask(tmp_path) -> None:
+    from tools.vis.leave_one_out_diff import render_loo_ssim_figure
+
+    cache = _make_cache_large(tmp_path / "cache")
+    mask = np.zeros((128, 128), dtype=np.uint8)
+    mask[32:96, 32:96] = 255
+    Image.fromarray(mask).save(cache / "cell_mask.png")
+    manifest = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))
+    manifest["cell_mask_path"] = "cell_mask.png"
+    (cache / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    out_path = tmp_path / "ssim_with_mask.png"
+    render_loo_ssim_figure(cache, out_path=out_path)
+
+    assert out_path.is_file()
+    assert out_path.stat().st_size > 0
