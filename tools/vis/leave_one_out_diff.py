@@ -22,6 +22,7 @@ from typing import Any
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -197,6 +198,55 @@ def _normalize_cell_masked_diff(
         return np.zeros_like(diff, dtype=np.float32)
     masked = diff * (cell_mask > 0.5).astype(np.float32)
     return np.clip(masked / p99, 0.0, 1.0).astype(np.float32)
+
+
+def _render_cell_masked_overlay(
+    ax,
+    raw_diff: np.ndarray,
+    cell_mask: np.ndarray,
+    baseline_he: np.ndarray,
+    cmap,
+    *,
+    bg_brightness: float = 0.5,
+) -> matplotlib.cm.ScalarMappable:
+    """Render a cell-masked diff overlay onto `ax`.
+
+    Cell-region pixels: hot-colormap colour keyed to the per-condition
+    99th-percentile-normalised diff.  Background pixels: dimmed greyscale
+    of `baseline_he`.
+
+    Args:
+        ax: matplotlib Axes to draw on.
+        raw_diff: H×W float32 absolute pixel diff in [0, 255].
+        cell_mask: H×W float32 in [0, 1]; pixels > 0.5 are cells.
+        baseline_he: H×W×3 uint8 baseline H&E image.
+        cmap: Matplotlib colormap applied to the normalised diff.
+        bg_brightness: Multiplier for the greyscale background (default 0.5).
+
+    Returns:
+        ScalarMappable suitable for passing to fig.colorbar().
+    """
+    diff_norm = _normalize_cell_masked_diff(raw_diff, cell_mask)
+
+    bg = baseline_he.mean(axis=2).astype(np.float32) / 255.0 * bg_brightness
+
+    heatmap_rgba = cmap(diff_norm)  # H×W×4
+
+    alpha = (cell_mask > 0.5).astype(np.float32)
+    composite = np.stack(
+        [alpha * heatmap_rgba[:, :, c] + (1.0 - alpha) * bg for c in range(3)],
+        axis=2,
+    )
+    composite = np.clip(composite, 0.0, 1.0).astype(np.float32)
+
+    ax.imshow(composite, vmin=0.0, vmax=1.0)
+
+    sm = matplotlib.cm.ScalarMappable(
+        cmap=cmap,
+        norm=mcolors.Normalize(vmin=0.0, vmax=1.0),
+    )
+    sm.set_array([])
+    return sm
 
 
 def _load_cell_mask_array(cache_dir: Path, manifest: dict) -> np.ndarray | None:

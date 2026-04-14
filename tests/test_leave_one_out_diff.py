@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import numpy as np
 import pytest
 from PIL import Image
@@ -262,3 +263,65 @@ def test_normalize_cell_masked_diff_zero_diff_returns_zeros() -> None:
     result = _normalize_cell_masked_diff(diff, cell_mask)
 
     assert float(result.max()) == 0.0
+
+
+# ── _render_cell_masked_overlay ───────────────────────────────────────────────
+
+def test_render_cell_masked_overlay_returns_scalar_mappable() -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as mcm
+    from tools.vis.leave_one_out_diff import _render_cell_masked_overlay
+
+    hot_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "hot4", ["#000000", "#ff4400", "#ffff00", "#ffffff"]
+    )
+    fig, ax = plt.subplots()
+    raw_diff = np.full((4, 4), 80.0, dtype=np.float32)
+    cell_mask = np.zeros((4, 4), dtype=np.float32)
+    cell_mask[1:3, 1:3] = 1.0
+    baseline_he = np.full((4, 4, 3), 128, dtype=np.uint8)
+
+    result = _render_cell_masked_overlay(ax, raw_diff, cell_mask, baseline_he, hot_cmap)
+
+    assert isinstance(result, mcm.ScalarMappable)
+    plt.close(fig)
+
+
+def test_render_cell_masked_overlay_no_crash_empty_mask() -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from tools.vis.leave_one_out_diff import _render_cell_masked_overlay
+
+    hot_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "hot4", ["#000000", "#ff4400", "#ffff00", "#ffffff"]
+    )
+    fig, ax = plt.subplots()
+    raw_diff = np.full((4, 4), 30.0, dtype=np.float32)
+    cell_mask = np.zeros((4, 4), dtype=np.float32)  # no cell pixels
+    baseline_he = np.full((4, 4, 3), 200, dtype=np.uint8)
+
+    _render_cell_masked_overlay(ax, raw_diff, cell_mask, baseline_he, hot_cmap)  # must not raise
+
+    plt.close(fig)
+
+
+def test_render_cell_masked_overlay_no_crash_zero_diff() -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from tools.vis.leave_one_out_diff import _render_cell_masked_overlay
+
+    hot_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "hot4", ["#000000", "#ff4400", "#ffff00", "#ffffff"]
+    )
+    fig, ax = plt.subplots()
+    raw_diff = np.zeros((4, 4), dtype=np.float32)  # self-diff column (all-four baseline)
+    cell_mask = np.ones((4, 4), dtype=np.float32)
+    baseline_he = np.full((4, 4, 3), 128, dtype=np.uint8)
+
+    _render_cell_masked_overlay(ax, raw_diff, cell_mask, baseline_he, hot_cmap)  # must not raise
+
+    plt.close(fig)
