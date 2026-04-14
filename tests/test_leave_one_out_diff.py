@@ -356,3 +356,38 @@ def test_render_loo_figure_no_mask_fallback_produces_png(tmp_path) -> None:
 
     assert fig_path.is_file()
     assert fig_path.stat().st_size > 0
+
+
+# ── ssim_loss_map ─────────────────────────────────────────────────────────────
+
+def test_ssim_loss_map_identical_images_returns_near_zero() -> None:
+    from tools.vis.leave_one_out_diff import ssim_loss_map
+
+    img = np.full((32, 32, 3), 128, dtype=np.uint8)
+    result = ssim_loss_map(img, img)
+
+    assert result.shape == (32, 32)
+    assert result.dtype == np.float32
+    assert float(result.max()) < 0.05  # near-zero for identical images
+
+
+def test_ssim_loss_map_different_images_has_nonzero_loss() -> None:
+    from tools.vis.leave_one_out_diff import ssim_loss_map
+
+    img_a = np.zeros((32, 32, 3), dtype=np.uint8)
+    img_b = np.full((32, 32, 3), 200, dtype=np.uint8)
+    result = ssim_loss_map(img_a, img_b)
+
+    assert float(result.mean()) > 0.1
+
+
+def test_ssim_loss_map_values_in_0_1() -> None:
+    from tools.vis.leave_one_out_diff import ssim_loss_map
+
+    rng = np.random.default_rng(42)
+    img_a = rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)
+    img_b = rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)
+    result = ssim_loss_map(img_a, img_b)
+
+    assert result.min() >= 0.0
+    assert result.max() <= 1.0 + 1e-6

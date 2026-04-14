@@ -260,6 +260,31 @@ def _load_cell_mask_array(cache_dir: Path, manifest: dict) -> np.ndarray | None:
     return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
 
+def ssim_loss_map(img_all: np.ndarray, img_drop: np.ndarray, *, win_size: int = 11) -> np.ndarray:
+    """Return H×W float32 SSIM structural loss in [0, 1].
+
+    Args:
+        img_all: H×W×3 uint8 baseline (all channels) image.
+        img_drop: H×W×3 uint8 leave-one-out image.
+        win_size: SSIM window size; auto-clamped to image size (must be odd).
+
+    Returns:
+        H×W float32 array where 0 = identical structure, 1 = maximum loss.
+    """
+    from skimage.metrics import structural_similarity as _ssim
+
+    gray_all = img_all.mean(axis=2).astype(np.float64)
+    gray_drop = img_drop.mean(axis=2).astype(np.float64)
+    H, W = gray_all.shape
+    actual_win = min(win_size, H, W)
+    if actual_win % 2 == 0:
+        actual_win -= 1
+    actual_win = max(actual_win, 3)
+    _, ssim_full = _ssim(gray_all, gray_drop, full=True, win_size=actual_win, data_range=255)
+    return np.clip(1.0 - ssim_full, 0.0, 1.0).astype(np.float32)
+
+
+
 def _maybe_contour_cell_mask(
     ax,
     cell_mask: np.ndarray | None,
