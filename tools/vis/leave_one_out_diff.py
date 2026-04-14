@@ -653,11 +653,18 @@ def render_loo_cache(
     style_mapping: dict[str, str] | None = None,
     out_path: Path | None = None,
     stats_path: Path | None = None,
+    ssim: bool = False,
 ) -> tuple[Path, Path]:
-    """Render one cache dir and return figure/stats paths."""
+    """Render one cache dir and return figure/stats paths.
+
+    When ``ssim=True``, also writes ``leave_one_out_ssim.png`` alongside the
+    existing pixel-diff figure.
+    """
     cache_dir = Path(cache_dir)
     out_path = Path(out_path) if out_path is not None else cache_dir / "leave_one_out_diff.png"
-    stats_path = Path(stats_path) if stats_path is not None else out_path.with_name("leave_one_out_diff_stats.json")
+    stats_path = (
+        Path(stats_path) if stats_path is not None else out_path.with_name("leave_one_out_diff_stats.json")
+    )
 
     diffs = compute_loo_diffs(cache_dir)
     save_loo_stats(diffs, stats_path)
@@ -668,6 +675,16 @@ def render_loo_cache(
         style_mapping=style_mapping,
         out_path=out_path,
     )
+
+    if ssim:
+        ssim_path = out_path.with_name("leave_one_out_ssim.png")
+        render_loo_ssim_figure(
+            cache_dir,
+            orion_root=orion_root,
+            style_mapping=style_mapping,
+            out_path=ssim_path,
+        )
+
     return out_path, stats_path
 
 
@@ -697,6 +714,7 @@ def render_loo_cache_root(
     out_root: Path | None = None,
     workers: int = 1,
     show_progress: bool = True,
+    ssim: bool = False,
 ) -> list[tuple[Path, Path]]:
     """Render leave-one-out figures for every cache under cache_root."""
     cache_root = Path(cache_root)
@@ -733,6 +751,7 @@ def render_loo_cache_root(
                     style_mapping=style_mapping,
                     out_path=out_path,
                     stats_path=stats_path,
+                    ssim=ssim,
                 )
             )
         return rendered
@@ -749,6 +768,7 @@ def render_loo_cache_root(
                 style_mapping=style_mapping,
                 out_path=out_path,
                 stats_path=stats_path,
+                ssim=ssim,
             )
             future_to_cache[future] = cache_dir
 
@@ -800,6 +820,11 @@ def main() -> None:
         action="store_true",
         help="Disable the batch progress bar in --cache-root mode",
     )
+    parser.add_argument(
+        "--ssim",
+        action="store_true",
+        help="Also render the SSIM structural-loss figure (leave_one_out_ssim.png)",
+    )
     args = parser.parse_args()
 
     orion_root = Path(args.orion_root) if args.orion_root else None
@@ -814,6 +839,7 @@ def main() -> None:
             orion_root=orion_root,
             style_mapping=style_mapping,
             out_path=out_path,
+            ssim=args.ssim,
         )
         print(f"Saved stats -> {stats_path}")
         print(f"Saved figure -> {fig_path}")
@@ -829,6 +855,7 @@ def main() -> None:
         out_root=out_root,
         workers=args.workers,
         show_progress=not args.no_progress,
+        ssim=args.ssim,
     )
     print(f"Rendered {len(rendered)} cache dirs under {args.cache_root}")
     for fig_path, stats_path in rendered:
