@@ -136,8 +136,18 @@ def _display_title(group: str | None) -> str:
     return f"Drop {group.replace('_', ' ').title()}"
 
 
-def _compute_relative_diff_maps(images: list[np.ndarray], baseline: np.ndarray | None) -> list[np.ndarray]:
-    """Return globally normalized absolute pixel diffs from generated H&E to one baseline image."""
+def _compute_relative_diff_maps(
+    images: list[np.ndarray],
+    baseline: np.ndarray | None,
+    per_map: bool = False,
+) -> list[np.ndarray]:
+    """Return normalized absolute pixel diffs from generated H&E to one baseline image.
+
+    When ``per_map=False`` (default) all maps are normalized by the single global max
+    so values remain quantitatively comparable across conditions.  When ``per_map=True``
+    each diff map is normalized independently by its own 99th-percentile value, which
+    stretches sparse diffs across the full colormap range for visualization.
+    """
     if not images:
         return []
     if baseline is None:
@@ -148,10 +158,75 @@ def _compute_relative_diff_maps(images: list[np.ndarray], baseline: np.ndarray |
         np.abs(image.astype(np.float32) - baseline_image).mean(axis=2).astype(np.float32)
         for image in images
     ]
+
+    if per_map:
+        normalized: list[np.ndarray] = []
+        for diff in raw_diffs:
+            p99 = float(np.percentile(diff, 99))
+            if p99 <= 0.0:
+                normalized.append(np.zeros_like(diff, dtype=np.float32))
+            else:
+                normalized.append(np.clip(diff / p99, 0.0, 1.0).astype(np.float32))
+        return normalized
+
     global_max = max(float(diff.max()) for diff in raw_diffs)
     if global_max <= 0.0:
         return [np.zeros_like(diff, dtype=np.float32) for diff in raw_diffs]
     return [(diff / global_max).astype(np.float32) for diff in raw_diffs]
+
+
+def _normalize_cell_masked_diff(
+    diff: np.ndarray,
+    cell_mask: np.ndarray,
+) -> np.ndarray:
+    """Normalize diff by 99th percentile of cell-region pixels; zero out background.
+
+    Args:
+        diff: H×W float32 absolute pixel diff (values in [0, 255]).
+        cell_mask: H×W float32 in [0, 1]; pixels > 0.5 are treated as cells.
+
+    Returns:
+        H×W float32 in [0, 1]. Non-cell pixels are 0. Returns all-zeros when
+        there are no cell pixels or when the 99th-percentile diff is zero.
+    """
+    cell_pixels = diff[cell_mask > 0.5]
+    if len(cell_pixels) == 0 or float(cell_pixels.max()) <= 0.0:
+        return np.zeros_like(diff, dtype=np.float32)
+    p99 = float(np.percentile(cell_pixels, 99))
+    if p99 <= 0.0:
+        return np.zeros_like(diff, dtype=np.float32)
+    masked = diff * (cell_mask > 0.5).astype(np.float32)
+    return np.clip(masked / p99, 0.0, 1.0).astype(np.float32)
+
+
+def _load_cell_mask_array(cache_dir: Path, manifest: dict) -> np.ndarray | None:
+    """Load cached reference cell mask for contour overlay when available."""
+    rel = manifest.get("cell_mask_path")
+    if not rel:
+        return None
+    path = cache_dir / str(rel)
+    if not path.is_file():
+        return None
+    return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
+
+
+def _maybe_contour_cell_mask(
+    ax,
+    cell_mask: np.ndarray | None,
+    image_hw: tuple[int, int],
+) -> None:
+    """Overlay the reference cell-mask contour on an H&E axes."""
+    if cell_mask is None:
+        return
+    img_h, img_w = image_hw
+    mask_h, mask_w = cell_mask.shape[:2]
+    if (mask_h, mask_w) != (img_h, img_w):
+        resized = Image.fromarray(
+            (np.clip(cell_mask, 0, 1) * 255).astype(np.uint8),
+            mode="L",
+        ).resize((img_w, img_h), Image.BILINEAR)
+        cell_mask = np.asarray(resized, dtype=np.float32) / 255.0
+    ax.contour(cell_mask, levels=[0.5], colors=["lime"], linewidths=0.7, alpha=0.85)
 
 
 def render_loo_diff_figure(
@@ -169,6 +244,7 @@ def render_loo_diff_figure(
     sections = manifest["sections"]
     group_names = tuple(manifest["group_names"])
     tile_id = str(manifest["tile_id"])
+    cell_mask = _load_cell_mask_array(cache_dir, manifest)
 
     all_entry = _find_all_entry(sections, len(group_names))
     img_all = _load_rgb_float32(cache_dir / all_entry["image_path"]).astype(np.uint8)
@@ -192,7 +268,7 @@ def render_loo_diff_figure(
     for group in group_names:
         entry = find_loo_entry(sections, group)
         display_images.append(_load_rgb_float32(cache_dir / entry["image_path"]).astype(np.uint8))
-    display_diffs = _compute_relative_diff_maps(display_images, img_all)
+    display_diffs = _compute_relative_diff_maps(display_images, img_all, per_map=True)
 
     fig_width = 15.0
     fig_height = 4.45
@@ -215,7 +291,9 @@ def render_loo_diff_figure(
     panel_width = (available_width - col_gap * 4.0) / 7.4
 
     reference_ax = fig.add_axes([left_margin, bottom, ref_width, content_height])
-    reference_ax.imshow(ref_he if ref_he is not None else _blank_rgb(128))
+    reference_image = ref_he if ref_he is not None else _blank_rgb(128)
+    reference_ax.imshow(reference_image)
+    _maybe_contour_cell_mask(reference_ax, cell_mask, reference_image.shape[:2])
     reference_ax.set_title("Reference H&E (style)", fontsize=10)
     draw_image_border(reference_ax, COLOR_REF, dashed=True)
     reference_ax.set_xticks([])
@@ -230,6 +308,7 @@ def render_loo_diff_figure(
 
         image_ax = fig.add_axes([x0, top_row_y, panel_width, row_height])
         image_ax.imshow(image)
+        _maybe_contour_cell_mask(image_ax, cell_mask, image.shape[:2])
         image_ax.set_title(label, fontsize=9)
         image_ax.set_xticks([])
         image_ax.set_yticks([])
@@ -251,7 +330,7 @@ def render_loo_diff_figure(
         cax = fig.add_axes([cbar_x, 0.06, cbar_width, 0.02])
         cbar = fig.colorbar(last_im, cax=cax, orientation="horizontal")
         cbar.ax.tick_params(labelsize=8, pad=1)
-        cbar.set_label("Normalized absolute pixel diff", fontsize=8, labelpad=3)
+        cbar.set_label("Pixel diff (per-condition, 99th-pct norm.)", fontsize=8, labelpad=3)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

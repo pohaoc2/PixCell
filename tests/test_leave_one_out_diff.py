@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 
@@ -59,6 +60,12 @@ def _make_cache(
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return tmp_path
+
+
+def _write_cell_mask(path: Path) -> None:
+    mask = np.zeros((4, 4), dtype=np.uint8)
+    mask[1:3, 1:3] = 255
+    Image.fromarray(mask).save(path)
 
 
 def test_find_loo_entry_returns_correct_triple(tmp_path):
@@ -117,6 +124,25 @@ def test_relative_diff_maps_global_normalization() -> None:
     assert float(diff_maps[2].max()) == 1.0
 
 
+def test_maybe_contour_cell_mask_calls_contour_with_resized_mask() -> None:
+    from tools.vis.leave_one_out_diff import _maybe_contour_cell_mask
+
+    calls: list[tuple[np.ndarray, list[float]]] = []
+
+    class _DummyAxes:
+        def contour(self, arr, levels, **_kwargs):
+            calls.append((np.asarray(arr), list(levels)))
+
+    cell_mask = np.zeros((2, 2), dtype=np.float32)
+    cell_mask[0, 0] = 1.0
+    _maybe_contour_cell_mask(_DummyAxes(), cell_mask, (4, 4))
+
+    assert len(calls) == 1
+    contour_arr, levels = calls[0]
+    assert contour_arr.shape == (4, 4)
+    assert levels == [0.5]
+
+
 def test_save_stats_and_render_figure(tmp_path):
     from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure, save_loo_stats
 
@@ -133,6 +159,21 @@ def test_save_stats_and_render_figure(tmp_path):
     stats = json.loads(stats_path.read_text(encoding="utf-8"))
     assert set(stats) == {"cell_types", "cell_state", "vasculature", "microenv"}
     assert stats["cell_types"]["max_diff"] > 0.0
+
+
+def test_render_loo_figure_with_cached_cell_mask(tmp_path):
+    from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure
+
+    cache = _make_cache(tmp_path)
+    _write_cell_mask(cache / "cell_mask.png")
+    manifest = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))
+    manifest["cell_mask_path"] = "cell_mask.png"
+    (cache / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    fig_path = tmp_path / "leave_one_out_diff_with_mask.png"
+    render_loo_diff_figure(compute_loo_diffs(cache), cache, out_path=fig_path)
+
+    assert fig_path.is_file()
 
 
 def test_render_loo_cache_root_renders_multiple_tile_dirs(tmp_path):
@@ -177,3 +218,47 @@ def test_render_loo_figure_uses_style_mapping_for_reference(tmp_path):
     )
 
     assert fig_path.is_file()
+
+
+# ── _normalize_cell_masked_diff ───────────────────────────────────────────────
+
+def test_normalize_cell_masked_diff_zeroes_background_and_normalizes_cells() -> None:
+    from tools.vis.leave_one_out_diff import _normalize_cell_masked_diff
+
+    diff = np.full((4, 4), 100.0, dtype=np.float32)
+    cell_mask = np.zeros((4, 4), dtype=np.float32)
+    cell_mask[1:3, 1:3] = 1.0  # 4 cell pixels in the centre
+
+    result = _normalize_cell_masked_diff(diff, cell_mask)
+
+    assert result.dtype == np.float32
+    assert result.shape == (4, 4)
+    # Background pixels are zeroed out
+    assert float(result[0, 0]) == 0.0
+    assert float(result[3, 3]) == 0.0
+    # Cell pixels: uniform diff=100, p99=100 → normalized to 1.0
+    assert float(result[1, 1]) == pytest.approx(1.0, abs=1e-5)
+    assert result.min() >= 0.0
+    assert result.max() <= 1.0 + 1e-6
+
+
+def test_normalize_cell_masked_diff_empty_mask_returns_zeros() -> None:
+    from tools.vis.leave_one_out_diff import _normalize_cell_masked_diff
+
+    diff = np.full((4, 4), 50.0, dtype=np.float32)
+    cell_mask = np.zeros((4, 4), dtype=np.float32)
+
+    result = _normalize_cell_masked_diff(diff, cell_mask)
+
+    assert float(result.max()) == 0.0
+
+
+def test_normalize_cell_masked_diff_zero_diff_returns_zeros() -> None:
+    from tools.vis.leave_one_out_diff import _normalize_cell_masked_diff
+
+    diff = np.zeros((4, 4), dtype=np.float32)
+    cell_mask = np.ones((4, 4), dtype=np.float32)
+
+    result = _normalize_cell_masked_diff(diff, cell_mask)
+
+    assert float(result.max()) == 0.0
