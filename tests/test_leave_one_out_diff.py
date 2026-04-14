@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 import matplotlib.colors as mcolors
 import numpy as np
 import pytest
 from PIL import Image
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _make_cache(
@@ -506,3 +511,65 @@ def test_render_loo_ssim_figure_with_cell_mask(tmp_path) -> None:
 
     assert out_path.is_file()
     assert out_path.stat().st_size > 0
+
+
+def test_render_loo_cache_ssim_mode_writes_only_ssim_and_stats(tmp_path) -> None:
+    from tools.vis.leave_one_out_diff import render_loo_cache
+
+    cache = _make_cache_large(tmp_path / "cache")
+    ssim_path = tmp_path / "custom_ssim.png"
+
+    fig_path, stats_path = render_loo_cache(
+        cache,
+        out_path=ssim_path,
+        figure_mode="ssim",
+        crop_size=32,
+    )
+
+    assert fig_path == ssim_path
+    assert fig_path.is_file()
+    assert stats_path.is_file()
+    assert not (cache / "leave_one_out_diff.png").exists()
+
+
+def test_render_loo_cache_root_ssim_mode_uses_ssim_filename(tmp_path) -> None:
+    from tools.vis.leave_one_out_diff import render_loo_cache_root
+
+    cache_root = tmp_path / "cache"
+    _make_cache_large(cache_root / "tile_a")
+    _make_cache_large(cache_root / "tile_b")
+    out_root = tmp_path / "loo_outputs"
+
+    rendered = render_loo_cache_root(
+        cache_root,
+        out_root=out_root,
+        workers=2,
+        show_progress=False,
+        figure_mode="ssim",
+        crop_size=32,
+    )
+
+    assert len(rendered) == 2
+    for fig_path, stats_path in rendered:
+        assert fig_path.name == "leave_one_out_ssim.png"
+        assert fig_path.is_file()
+        assert stats_path.is_file()
+
+
+def test_main_ssim_mode_writes_requested_output(tmp_path, capsys) -> None:
+    from tools.vis.leave_one_out_diff import main
+
+    cache = _make_cache_large(tmp_path / "cache")
+    out_path = tmp_path / "tile_ssim.png"
+
+    main([
+        "--cache-dir", str(cache),
+        "--figure", "ssim",
+        "--crop-size", "32",
+        "--out", str(out_path),
+    ])
+
+    captured = capsys.readouterr()
+    assert "Saved stats ->" in captured.out
+    assert "Saved SSIM figure ->" in captured.out
+    assert out_path.is_file()
