@@ -325,3 +325,34 @@ def test_render_cell_masked_overlay_no_crash_zero_diff() -> None:
     _render_cell_masked_overlay(ax, raw_diff, cell_mask, baseline_he, hot_cmap)  # must not raise
 
     plt.close(fig)
+
+
+# ── render_loo_diff_figure overlay integration ────────────────────────────────
+
+def test_render_loo_figure_overlay_path_produces_png(tmp_path) -> None:
+    """With a cell mask present, render_loo_diff_figure must produce a PNG."""
+    from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure
+
+    cache = _make_cache(tmp_path)
+    _write_cell_mask(cache / "cell_mask.png")
+    manifest = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))
+    manifest["cell_mask_path"] = "cell_mask.png"
+    (cache / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    fig_path = tmp_path / "overlay.png"
+    render_loo_diff_figure(compute_loo_diffs(cache), cache, out_path=fig_path)
+
+    assert fig_path.is_file()
+    assert fig_path.stat().st_size > 0
+
+
+def test_render_loo_figure_no_mask_fallback_produces_png(tmp_path) -> None:
+    """Without a cell mask, render_loo_diff_figure falls back to per-map normalisation."""
+    from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure
+
+    cache = _make_cache(tmp_path)
+    fig_path = tmp_path / "fallback.png"
+    render_loo_diff_figure(compute_loo_diffs(cache), cache, out_path=fig_path)
+
+    assert fig_path.is_file()
+    assert fig_path.stat().st_size > 0

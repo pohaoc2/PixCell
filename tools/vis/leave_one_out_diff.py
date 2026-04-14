@@ -318,7 +318,16 @@ def render_loo_diff_figure(
     for group in group_names:
         entry = find_loo_entry(sections, group)
         display_images.append(_load_rgb_float32(cache_dir / entry["image_path"]).astype(np.uint8))
-    display_diffs = _compute_relative_diff_maps(display_images, img_all, per_map=True)
+
+    baseline_float = img_all.astype(np.float32)
+    raw_diffs = [
+        np.abs(img.astype(np.float32) - baseline_float).mean(axis=2).astype(np.float32)
+        for img in display_images
+    ]
+    fallback_diffs = (
+        None if cell_mask is not None
+        else _compute_relative_diff_maps(display_images, img_all, per_map=True)
+    )
 
     fig_width = 15.0
     fig_height = 4.45
@@ -353,7 +362,7 @@ def render_loo_diff_figure(
     top_row_y = bottom + row_height + row_gap
     bottom_row_y = bottom
 
-    for index, (label, image, diff_map) in enumerate(zip(display_labels, display_images, display_diffs, strict=True)):
+    for index, (label, image, raw_diff) in enumerate(zip(display_labels, display_images, raw_diffs, strict=True)):
         x0 = x_right_start + index * (panel_width + col_gap)
 
         image_ax = fig.add_axes([x0, top_row_y, panel_width, row_height])
@@ -366,7 +375,12 @@ def render_loo_diff_figure(
             image_ax.set_ylabel("Generated H&E", fontsize=10, rotation=90, labelpad=2)
 
         diff_ax = fig.add_axes([x0, bottom_row_y, panel_width, row_height])
-        last_im = diff_ax.imshow(diff_map, cmap=hot_cmap, vmin=0.0, vmax=1.0)
+        if cell_mask is not None:
+            last_im = _render_cell_masked_overlay(diff_ax, raw_diff, cell_mask, img_all, hot_cmap)
+        else:
+            last_im = diff_ax.imshow(
+                fallback_diffs[index], cmap=hot_cmap, vmin=0.0, vmax=1.0
+            )
         diff_ax.set_xticks([])
         diff_ax.set_yticks([])
         if index == 0:
@@ -380,7 +394,12 @@ def render_loo_diff_figure(
         cax = fig.add_axes([cbar_x, 0.06, cbar_width, 0.02])
         cbar = fig.colorbar(last_im, cax=cax, orientation="horizontal")
         cbar.ax.tick_params(labelsize=8, pad=1)
-        cbar.set_label("Pixel diff (per-condition, 99th-pct norm.)", fontsize=8, labelpad=3)
+        cbar_label = (
+            "Cell-masked pixel diff (per-condition, 99th-pct norm.)"
+            if cell_mask is not None
+            else "Pixel diff (per-condition, 99th-pct norm.)"
+        )
+        cbar.set_label(cbar_label, fontsize=8, labelpad=3)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
