@@ -37,6 +37,7 @@ from tools.ablation_report import (
     METRIC_LABELS,
     TRADEOFF_REFERENCE_BANDS,
     build_channel_effect_heatmaps_figure,
+    build_comparison_table_figure,
     build_leave_one_out_figure,
     build_metric_trends_figure,
     compute_style_hed_scores_local,
@@ -360,7 +361,7 @@ def test_build_channel_effect_heatmaps_figure_normalizes_per_metric_colors() -> 
 
     fig = build_channel_effect_heatmaps_figure([summary])
     try:
-        heatmap_ax = next(ax for ax in fig.axes if ax.get_title().startswith("Marginal effect"))
+        heatmap_ax = next(ax for ax in fig.axes if ax.images)
         image = heatmap_ax.images[0]
         normalized = image.get_array().filled(float("nan"))
 
@@ -516,6 +517,76 @@ def test_export_report_png_pages_places_comparison_second(tmp_path: Path) -> Non
     assert output_paths[1].name == "02_paired_vs_unpaired.png"
     assert output_paths[2].name == "03_channel_effect_sizes.png"
     assert output_paths[3].name == "04_leave_one_out_impact.png"
+
+
+def test_build_comparison_table_figure_matches_html_style_grouping() -> None:
+    paired = _make_summary(
+        slug="paired",
+        title="Paired",
+        metric_keys=["dice"],
+    )
+    unpaired = _make_summary(
+        slug="unpaired",
+        title="Unpaired",
+        metric_keys=["dice"],
+    )
+    object.__setattr__(
+        paired,
+        "best_worst",
+        {
+            "dice": {
+                "best": [("cell_types+microenv", 0.35, 0.01)],
+                "worst": [("cell_state", 0.14, 0.02)],
+                "total": 15,
+            }
+        },
+    )
+    object.__setattr__(
+        unpaired,
+        "best_worst",
+        {
+            "dice": {
+                "best": [("cell_state+microenv", 0.31, 0.01)],
+                "worst": [("cell_types", 0.11, 0.02)],
+                "total": 15,
+            }
+        },
+    )
+
+    fig = build_comparison_table_figure([paired, unpaired])
+    text_values = []
+    for ax in fig.axes:
+        text_values.extend(text.get_text() for text in ax.texts)
+
+    assert "PAIRED" in text_values
+    assert "UNPAIRED" in text_values
+    assert "DICE ↑" in text_values
+    assert "CT/CS/VAS/ENV" in text_values
+
+
+def test_build_channel_effect_heatmaps_figure_uses_single_bottom_x_label_row() -> None:
+    paired = _make_summary(
+        slug="paired",
+        title="Paired",
+        metric_keys=["dice", "pq"],
+        added_effect_stats={group: {"dice": (0.1 + idx * 0.05, 0.01), "pq": (0.02 + idx * 0.01, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+    )
+    unpaired = _make_summary(
+        slug="unpaired",
+        title="Unpaired",
+        metric_keys=["dice", "pq"],
+        added_effect_stats={group: {"dice": (0.08 + idx * 0.04, 0.01), "pq": (0.01 + idx * 0.01, 0.01)} for idx, group in enumerate(FOUR_GROUP_ORDER)},
+    )
+
+    fig = build_channel_effect_heatmaps_figure([paired, unpaired])
+    heatmap_axes = fig.axes[:-1]
+    top_ax, bottom_ax = heatmap_axes
+
+    assert top_ax.get_title() == ""
+    assert all(not tick.get_text() for tick in top_ax.get_xticklabels())
+    assert any(tick.get_text() for tick in bottom_ax.get_xticklabels())
+    assert len(fig.axes[-1].get_yticks()) == 3
+    assert all(spine.get_visible() for spine in top_ax.spines.values())
 
 
 def test_render_report_html_self_contained_embeds_evidence_images(tmp_path: Path) -> None:

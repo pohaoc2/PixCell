@@ -9,6 +9,11 @@ Usage:
     python tools/vis/leave_one_out_diff.py \
         --cache-root inference_output/cache \
         --orion-root data/orion-crc33
+
+    python tools/vis/leave_one_out_diff.py \
+        --cache-dir inference_output/cache/512_9728 \
+        --figure ssim \
+        --out inference_output/cache/512_9728/leave_one_out_ssim.png
 """
 from __future__ import annotations
 
@@ -46,6 +51,7 @@ _LOO_SSIM_HIGHLIGHT: dict[str, str] = {
 }
 _LOO_SSIM_INSET_TEAL = "#00ccaa"
 _LOO_SSIM_NEUTRAL = "#555555"
+_FIGURE_MODES = ("diff", "ssim", "both")
 
 
 def _load_rgb_float32(path: Path) -> np.ndarray:
@@ -143,6 +149,48 @@ def _display_title(group: str | None) -> str:
     if group is None:
         return "All four channels"
     return f"Drop {group.replace('_', ' ').title()}"
+
+
+def _resolve_figure_mode(figure_mode: str, legacy_ssim: bool = False) -> str:
+    """Normalize CLI figure-mode flags while preserving legacy --ssim behavior."""
+    if legacy_ssim:
+        return "both"
+    if figure_mode not in _FIGURE_MODES:
+        raise ValueError(f"Unsupported figure_mode={figure_mode!r}; expected one of {_FIGURE_MODES}")
+    return figure_mode
+
+
+def _resolve_render_paths(
+    cache_dir: Path,
+    *,
+    figure_mode: str,
+    out_path: Path | None = None,
+    stats_path: Path | None = None,
+    ssim_out_path: Path | None = None,
+) -> tuple[Path | None, Path | None, Path]:
+    """Resolve diff, SSIM, and stats output paths for one cache directory."""
+    cache_dir = Path(cache_dir)
+    figure_mode = _resolve_figure_mode(figure_mode)
+
+    resolved_stats = (
+        Path(stats_path) if stats_path is not None
+        else cache_dir / "leave_one_out_diff_stats.json"
+    )
+
+    diff_path: Path | None = None
+    ssim_path: Path | None = None
+    if figure_mode == "diff":
+        diff_path = Path(out_path) if out_path is not None else cache_dir / "leave_one_out_diff.png"
+    elif figure_mode == "ssim":
+        ssim_path = Path(out_path) if out_path is not None else cache_dir / "leave_one_out_ssim.png"
+    else:
+        diff_path = Path(out_path) if out_path is not None else cache_dir / "leave_one_out_diff.png"
+        ssim_path = (
+            Path(ssim_out_path) if ssim_out_path is not None
+            else diff_path.with_name("leave_one_out_ssim.png")
+        )
+
+    return diff_path, ssim_path, resolved_stats
 
 
 def _compute_relative_diff_maps(
@@ -268,6 +316,20 @@ def _load_cell_mask_array(cache_dir: Path, manifest: dict) -> np.ndarray | None:
     return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
 
+def _box_filter_mean(image: np.ndarray, window: int) -> np.ndarray:
+    """Return reflect-padded local mean over a square window."""
+    pad = window // 2
+    padded = np.pad(image, ((pad, pad), (pad, pad)), mode="reflect")
+    integral = np.pad(padded, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+    summed = (
+        integral[window:, window:]
+        - integral[:-window, window:]
+        - integral[window:, :-window]
+        + integral[:-window, :-window]
+    )
+    return summed / float(window * window)
+
+
 def ssim_loss_map(img_all: np.ndarray, img_drop: np.ndarray, *, win_size: int = 11) -> np.ndarray:
     """Return H×W float32 SSIM structural loss in [0, 1].
 
@@ -279,8 +341,6 @@ def ssim_loss_map(img_all: np.ndarray, img_drop: np.ndarray, *, win_size: int = 
     Returns:
         H×W float32 array where 0 = identical structure, 1 = maximum loss.
     """
-    from skimage.metrics import structural_similarity as _ssim
-
     gray_all = img_all.mean(axis=2).astype(np.float64)
     gray_drop = img_drop.mean(axis=2).astype(np.float64)
     H, W = gray_all.shape
@@ -288,8 +348,30 @@ def ssim_loss_map(img_all: np.ndarray, img_drop: np.ndarray, *, win_size: int = 
     if actual_win % 2 == 0:
         actual_win -= 1
     actual_win = max(actual_win, 3)
-    _, ssim_full = _ssim(gray_all, gray_drop, full=True, win_size=actual_win, data_range=255)
-    return np.clip(1.0 - ssim_full, 0.0, 1.0).astype(np.float32)
+    try:
+        from skimage.metrics import structural_similarity as _ssim
+
+        _, ssim_full = _ssim(gray_all, gray_drop, full=True, win_size=actual_win, data_range=255)
+        return np.clip(1.0 - ssim_full, 0.0, 1.0).astype(np.float32)
+    except ImportError:
+        c1 = (0.01 * 255.0) ** 2
+        c2 = (0.03 * 255.0) ** 2
+        mu_all = _box_filter_mean(gray_all, actual_win)
+        mu_drop = _box_filter_mean(gray_drop, actual_win)
+        mu_all_sq = mu_all * mu_all
+        mu_drop_sq = mu_drop * mu_drop
+        mu_all_drop = mu_all * mu_drop
+
+        sigma_all_sq = _box_filter_mean(gray_all * gray_all, actual_win) - mu_all_sq
+        sigma_drop_sq = _box_filter_mean(gray_drop * gray_drop, actual_win) - mu_drop_sq
+        sigma_all_drop = _box_filter_mean(gray_all * gray_drop, actual_win) - mu_all_drop
+
+        numerator = (2.0 * mu_all_drop + c1) * (2.0 * sigma_all_drop + c2)
+        denominator = (mu_all_sq + mu_drop_sq + c1) * (sigma_all_sq + sigma_drop_sq + c2)
+        ssim_full = np.ones_like(gray_all, dtype=np.float64)
+        valid = denominator > 0.0
+        ssim_full[valid] = numerator[valid] / denominator[valid]
+        return np.clip(1.0 - ssim_full, 0.0, 1.0).astype(np.float32)
 
 
 def _select_inset_region(
@@ -653,39 +735,51 @@ def render_loo_cache(
     style_mapping: dict[str, str] | None = None,
     out_path: Path | None = None,
     stats_path: Path | None = None,
+    ssim_out_path: Path | None = None,
+    figure_mode: str = "diff",
     ssim: bool = False,
+    crop_size: int = 64,
 ) -> tuple[Path, Path]:
     """Render one cache dir and return figure/stats paths.
 
-    When ``ssim=True``, also writes ``leave_one_out_ssim.png`` alongside the
-    existing pixel-diff figure.
+    ``figure_mode`` controls which figure(s) are written:
+    ``"diff"`` (default), ``"ssim"``, or ``"both"``. The legacy ``ssim=True``
+    flag is preserved as an alias for ``figure_mode="both"``.
     """
     cache_dir = Path(cache_dir)
-    out_path = Path(out_path) if out_path is not None else cache_dir / "leave_one_out_diff.png"
-    stats_path = (
-        Path(stats_path) if stats_path is not None else out_path.with_name("leave_one_out_diff_stats.json")
+    figure_mode = _resolve_figure_mode(figure_mode, legacy_ssim=ssim)
+    diff_out_path, ssim_render_path, stats_path = _resolve_render_paths(
+        cache_dir,
+        figure_mode=figure_mode,
+        out_path=out_path,
+        stats_path=stats_path,
+        ssim_out_path=ssim_out_path,
     )
 
     diffs = compute_loo_diffs(cache_dir)
     save_loo_stats(diffs, stats_path)
-    render_loo_diff_figure(
-        diffs,
-        cache_dir,
-        orion_root=orion_root,
-        style_mapping=style_mapping,
-        out_path=out_path,
-    )
+    if diff_out_path is not None:
+        render_loo_diff_figure(
+            diffs,
+            cache_dir,
+            orion_root=orion_root,
+            style_mapping=style_mapping,
+            out_path=diff_out_path,
+        )
 
-    if ssim:
-        ssim_path = out_path.with_name("leave_one_out_ssim.png")
+    if ssim_render_path is not None:
         render_loo_ssim_figure(
             cache_dir,
             orion_root=orion_root,
             style_mapping=style_mapping,
-            out_path=ssim_path,
+            out_path=ssim_render_path,
+            crop_size=crop_size,
         )
 
-    return out_path, stats_path
+    primary_figure_path = diff_out_path if diff_out_path is not None else ssim_render_path
+    if primary_figure_path is None:
+        raise RuntimeError("No figure output path resolved")
+    return primary_figure_path, stats_path
 
 
 def _find_cache_dirs(cache_root: Path) -> list[Path]:
@@ -714,7 +808,9 @@ def render_loo_cache_root(
     out_root: Path | None = None,
     workers: int = 1,
     show_progress: bool = True,
+    figure_mode: str = "diff",
     ssim: bool = False,
+    crop_size: int = 64,
 ) -> list[tuple[Path, Path]]:
     """Render leave-one-out figures for every cache under cache_root."""
     cache_root = Path(cache_root)
@@ -723,16 +819,31 @@ def render_loo_cache_root(
         raise FileNotFoundError(f"No manifest.json files found under {cache_root}")
 
     worker_count = max(1, int(workers))
+    figure_mode = _resolve_figure_mode(figure_mode, legacy_ssim=ssim)
 
-    def _resolve_outputs(cache_dir: Path) -> tuple[Path, Path]:
+    def _resolve_outputs(cache_dir: Path) -> tuple[Path | None, Path | None, Path]:
         if out_root is None:
-            out_path = cache_dir / "leave_one_out_diff.png"
-            stats_path = cache_dir / "leave_one_out_diff_stats.json"
+            return _resolve_render_paths(cache_dir, figure_mode=figure_mode)
+
+        rel = cache_dir.relative_to(cache_root)
+        base_dir = Path(out_root) / rel
+        out_path = None
+        ssim_out_path = None
+        if figure_mode == "diff":
+            out_path = base_dir / "leave_one_out_diff.png"
+        elif figure_mode == "ssim":
+            out_path = base_dir / "leave_one_out_ssim.png"
         else:
-            rel = cache_dir.relative_to(cache_root)
-            out_path = Path(out_root) / rel / "leave_one_out_diff.png"
-            stats_path = Path(out_root) / rel / "leave_one_out_diff_stats.json"
-        return out_path, stats_path
+            out_path = base_dir / "leave_one_out_diff.png"
+            ssim_out_path = base_dir / "leave_one_out_ssim.png"
+        stats_path = base_dir / "leave_one_out_diff_stats.json"
+        return _resolve_render_paths(
+            cache_dir,
+            figure_mode=figure_mode,
+            out_path=out_path,
+            ssim_out_path=ssim_out_path,
+            stats_path=stats_path,
+        )
 
     if worker_count == 1:
         rendered: list[tuple[Path, Path]] = []
@@ -743,15 +854,20 @@ def render_loo_cache_root(
             disable=not show_progress,
         )
         for cache_dir in iterator:
-            out_path, stats_path = _resolve_outputs(cache_dir)
+            diff_out_path, ssim_out_path, stats_path = _resolve_outputs(cache_dir)
+            primary_out = diff_out_path if diff_out_path is not None else ssim_out_path
+            if primary_out is None:
+                raise RuntimeError("No primary figure output path resolved")
             rendered.append(
                 render_loo_cache(
                     cache_dir,
                     orion_root=orion_root,
                     style_mapping=style_mapping,
-                    out_path=out_path,
+                    out_path=primary_out,
                     stats_path=stats_path,
-                    ssim=ssim,
+                    ssim_out_path=ssim_out_path,
+                    figure_mode=figure_mode,
+                    crop_size=crop_size,
                 )
             )
         return rendered
@@ -760,15 +876,20 @@ def render_loo_cache_root(
     rendered: list[tuple[Path, Path]] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         for cache_dir in cache_dirs:
-            out_path, stats_path = _resolve_outputs(cache_dir)
+            diff_out_path, ssim_out_path, stats_path = _resolve_outputs(cache_dir)
+            primary_out = diff_out_path if diff_out_path is not None else ssim_out_path
+            if primary_out is None:
+                raise RuntimeError("No primary figure output path resolved")
             future = executor.submit(
                 render_loo_cache,
                 cache_dir,
                 orion_root=orion_root,
                 style_mapping=style_mapping,
-                out_path=out_path,
+                out_path=primary_out,
                 stats_path=stats_path,
-                ssim=ssim,
+                ssim_out_path=ssim_out_path,
+                figure_mode=figure_mode,
+                crop_size=crop_size,
             )
             future_to_cache[future] = cache_dir
 
@@ -788,7 +909,7 @@ def render_loo_cache_root(
     return rendered
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Leave-one-out group pixel diff from ablation cache")
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--cache-dir", help="Path to one tile cache dir containing manifest.json")
@@ -802,7 +923,7 @@ def main() -> None:
     parser.add_argument(
         "--out",
         default=None,
-        help="Output PNG path (default: <cache-dir>/leave_one_out_diff.png)",
+        help="Output PNG path for the requested figure mode in --cache-dir mode.",
     )
     parser.add_argument(
         "--out-root",
@@ -821,32 +942,71 @@ def main() -> None:
         help="Disable the batch progress bar in --cache-root mode",
     )
     parser.add_argument(
+        "--figure",
+        choices=_FIGURE_MODES,
+        default="diff",
+        help="Which figure to render: diff, ssim, or both (default: diff).",
+    )
+    parser.add_argument(
         "--ssim",
         action="store_true",
-        help="Also render the SSIM structural-loss figure (leave_one_out_ssim.png)",
+        help="Legacy alias for --figure both; preserved for backwards compatibility.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--ssim-out",
+        default=None,
+        help="Optional SSIM PNG path in --cache-dir mode when --figure both is used.",
+    )
+    parser.add_argument(
+        "--crop-size",
+        type=int,
+        default=64,
+        help="Inset crop side length in pixels for the SSIM figure (default: 64).",
+    )
+    args = parser.parse_args(argv)
 
     orion_root = Path(args.orion_root) if args.orion_root else None
     style_mapping = load_style_mapping(args.style_mapping_json)
     out_root = Path(args.out_root) if args.out_root else None
+    figure_mode = _resolve_figure_mode(args.figure, legacy_ssim=args.ssim)
+
+    if args.crop_size <= 0:
+        parser.error("--crop-size must be a positive integer")
+    if args.ssim_out and not args.cache_dir:
+        parser.error("--ssim-out is only valid with --cache-dir")
+    if args.ssim_out and figure_mode != "both":
+        parser.error("--ssim-out is only valid when --figure both is used")
 
     if args.cache_dir:
         cache_dir = Path(args.cache_dir)
-        out_path = Path(args.out) if args.out else cache_dir / "leave_one_out_diff.png"
+        out_path = Path(args.out) if args.out else None
+        ssim_out_path = Path(args.ssim_out) if args.ssim_out else None
+        diff_render_path, ssim_render_path, stats_path = _resolve_render_paths(
+            cache_dir,
+            figure_mode=figure_mode,
+            out_path=out_path,
+            ssim_out_path=ssim_out_path,
+        )
         fig_path, stats_path = render_loo_cache(
             cache_dir,
             orion_root=orion_root,
             style_mapping=style_mapping,
             out_path=out_path,
-            ssim=args.ssim,
+            ssim_out_path=ssim_out_path,
+            figure_mode=figure_mode,
+            crop_size=args.crop_size,
         )
         print(f"Saved stats -> {stats_path}")
-        print(f"Saved figure -> {fig_path}")
+        if diff_render_path is not None:
+            print(f"Saved diff figure -> {diff_render_path}")
+        if ssim_render_path is not None:
+            print(f"Saved SSIM figure -> {ssim_render_path}")
         return
 
     if args.out:
         parser.error("--out is only valid with --cache-dir")
+    if args.ssim_out:
+        parser.error("--ssim-out is only valid with --cache-dir")
 
     rendered = render_loo_cache_root(
         Path(args.cache_root),
@@ -855,9 +1015,10 @@ def main() -> None:
         out_root=out_root,
         workers=args.workers,
         show_progress=not args.no_progress,
-        ssim=args.ssim,
+        figure_mode=figure_mode,
+        crop_size=args.crop_size,
     )
-    print(f"Rendered {len(rendered)} cache dirs under {args.cache_root}")
+    print(f"Rendered {figure_mode} figure(s) for {len(rendered)} cache dirs under {args.cache_root}")
     for fig_path, stats_path in rendered:
         print(f"Saved stats -> {stats_path}")
         print(f"Saved figure -> {fig_path}")

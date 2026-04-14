@@ -53,6 +53,129 @@ def save_figure_png(fig: plt.Figure, output_path: Path, *, dpi: int = 220) -> No
     plt.close(fig)
 
 
+def _comparison_metric_order(summaries: list[DatasetSummary]) -> list[str]:
+    metrics = [
+        metric
+        for metric in TRADEOFF_METRIC_ORDER
+        if any(metric in comparison_metric_keys(summary) for summary in summaries)
+    ]
+    if metrics:
+        return metrics
+    for summary in summaries:
+        summary_metrics = comparison_metric_keys(summary)
+        if summary_metrics:
+            return summary_metrics
+    return []
+
+
+def _render_condition_glyph_axes(ax: plt.Axes, condition: object, *, center_x: float, center_y: float, dx: float) -> None:
+    active_groups = set()
+    for token in str(condition).split("+"):
+        normalized = token.strip()
+        if normalized in FOUR_GROUP_ORDER:
+            active_groups.add(normalized)
+    xs = [center_x + dx * offset for offset in (-1.5, -0.5, 0.5, 1.5)]
+    ys = [center_y] * len(FOUR_GROUP_ORDER)
+    facecolors = [INK if group in active_groups else "white" for group in FOUR_GROUP_ORDER]
+    edgecolors = [INK if group in active_groups else "#A0A0A0" for group in FOUR_GROUP_ORDER]
+    linewidths = [0.9 if group in active_groups else 1.0 for group in FOUR_GROUP_ORDER]
+    sizes = [22 if group in active_groups else 20 for group in FOUR_GROUP_ORDER]
+    ax.scatter(
+        xs,
+        ys,
+        s=sizes,
+        facecolors=facecolors,
+        edgecolors=edgecolors,
+        linewidths=linewidths,
+        transform=ax.transAxes,
+        clip_on=False,
+        zorder=3,
+    )
+
+
+def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_key: str) -> None:
+    best_entries, worst_entries, total = _ranked_best_worst_selection(summary.best_worst.get(metric_key))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    caption = _metric_caption(metric_key)
+    ax.text(
+        0.5,
+        0.975,
+        caption,
+        ha="center",
+        va="top",
+        fontsize=8.1,
+        fontweight="bold",
+        color=INK,
+        family="DejaVu Serif",
+    )
+
+    if not best_entries and not worst_entries:
+        ax.text(0.5, 0.55, "No ranked entries", ha="center", va="center", fontsize=8.0, color=OKABE_GRAY)
+        return
+
+    top_labels = _ranked_labels(total, len(best_entries))
+    bottom_labels = _ranked_labels(total, len(worst_entries), tail=True)
+    rows: list[tuple[str, object]] = []
+    rows.extend((rank_label, entry) for rank_label, entry in zip(top_labels, best_entries))
+    if best_entries and worst_entries:
+        rows.append(("···", None))
+    rows.extend((rank_label, entry) for rank_label, entry in zip(bottom_labels, worst_entries))
+
+    x_rank = 0.09
+    x_cond = 0.42
+    x_value = 0.985
+    top_line_y = 0.88
+    header_y = 0.835
+    header_bottom_y = 0.80
+    bottom_line_y = 0.08
+
+    ax.plot([0.0, 1.0], [top_line_y, top_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
+    ax.plot([0.0, 1.0], [header_bottom_y, header_bottom_y], color=INK, linewidth=0.8, transform=ax.transAxes, clip_on=False)
+    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=6.8, color=INK, family="DejaVu Serif")
+    ax.text(
+        x_cond,
+        header_y,
+        "CT/CS/VAS/ENV",
+        ha="center",
+        va="center",
+        fontsize=6.5,
+        color=INK,
+        family="DejaVu Serif",
+    )
+    ax.text(
+        x_value,
+        header_y,
+        "Mean" if metric_key == "fud" else "Mean ± SD",
+        ha="right",
+        va="center",
+        fontsize=6.8,
+        color=INK,
+        family="DejaVu Serif",
+    )
+
+    available_h = header_bottom_y - bottom_line_y
+    row_h = available_h / max(len(rows), 1)
+    for index, (rank_label, entry) in enumerate(rows):
+        y = header_bottom_y - (index + 0.5) * row_h
+        if entry is None:
+            sep_y = header_bottom_y - index * row_h
+            ax.plot([0.0, 1.0], [sep_y, sep_y], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
+            ax.plot([0.0, 1.0], [sep_y - row_h, sep_y - row_h], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
+            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=7.4, color=INK, family="DejaVu Serif")
+            continue
+
+        condition, mean_value, sd_value = entry
+        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=7.1, color="#555555", family="DejaVu Serif")
+        _render_condition_glyph_axes(ax, condition, center_x=x_cond, center_y=y, dx=0.055)
+        value_text = f"{float(mean_value):.3f}" if metric_key == "fud" else _format_mean_sd(mean_value, sd_value)
+        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=7.0, color=INK, family="DejaVu Serif")
+
+    ax.plot([0.0, 1.0], [bottom_line_y, bottom_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
+
+
 def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     metrics = metric_tradeoff_keys(summaries)
     n_cols = 3
@@ -334,7 +457,7 @@ def _metric_label_with_arrow(metric_key: str) -> str:
 def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     shared_metric_keys = _shared_heatmap_metric_keys(summaries)
     fig = plt.figure(figsize=(7.9, 3.35 * len(summaries)))
-    grid = fig.add_gridspec(len(summaries), 2, width_ratios=[1, 0.04], wspace=0.05, hspace=0.26)
+    grid = fig.add_gridspec(len(summaries), 2, width_ratios=[1, 0.04], wspace=0.05, hspace=0.16)
     metric_scales = _heatmap_metric_scales(summaries)
     im = None
 
@@ -344,18 +467,20 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         normalized_matrix = _normalize_heatmap_matrix(raw_matrix, shared_metric_keys, metric_scales)
         masked = np.ma.masked_invalid(normalized_matrix)
         im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
-        ax.set_title("Marginal effect of adding group", fontsize=10.5, fontweight="normal", color=INK, pad=10)
         ax.set_ylabel(summary.title, fontsize=10.5, fontweight="normal", color=INK, labelpad=8)
         ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
         ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
         ax.set_xticks(range(len(shared_metric_keys)))
-        ax.set_xticklabels(
-            [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
-            rotation=0,
-            ha="center",
-            fontsize=9.4,
-            color=INK,
-        )
+        if row == len(summaries) - 1:
+            ax.set_xticklabels(
+                [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
+                rotation=0,
+                ha="center",
+                fontsize=9.4,
+                color=INK,
+            )
+        else:
+            ax.set_xticklabels([])
         for r in range(raw_matrix.shape[0]):
             for c in range(raw_matrix.shape[1]):
                 value = raw_matrix[r, c]
@@ -377,10 +502,12 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
                 )
         ax.set_xticks(np.arange(-0.5, len(shared_metric_keys), 1), minor=True)
         ax.set_yticks(np.arange(-0.5, len(FOUR_GROUP_ORDER), 1), minor=True)
-        ax.grid(which="minor", color="#DDDDDD", linewidth=0.25)
+        ax.grid(which="minor", color="#D4D4D4", linewidth=0.35)
         ax.tick_params(which="minor", bottom=False, left=False)
         for spine in ax.spines.values():
-            spine.set_visible(False)
+            spine.set_visible(True)
+            spine.set_color(INK)
+            spine.set_linewidth(1.0)
         ax.tick_params(axis="x", length=0, pad=6)
         ax.tick_params(axis="y", length=0)
 
@@ -395,7 +522,9 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         labelpad=8,
     )
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
-    fig.suptitle("Channel group contributions to image quality metrics", y=0.99, fontsize=11.5, fontweight="normal")
+    cbar.outline.set_edgecolor(INK)
+    cbar.outline.set_linewidth(1.0)
+    fig.suptitle("Channel group contributions to image quality metrics", y=0.985, fontsize=11.5, fontweight="normal")
     fig.subplots_adjust(left=0.13, right=0.84, top=0.88, bottom=0.10)
     return fig
 
@@ -455,86 +584,43 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
 
 
 def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure:
-    rows: list[list[str]] = []
-    for summary in summaries:
-        for metric_key in comparison_metric_keys(summary):
-            best_entries, worst_entries, total = _ranked_best_worst_selection(summary.best_worst.get(metric_key))
-            if not best_entries and not worst_entries:
-                continue
+    metric_keys = _comparison_metric_order(summaries)
+    rendered_summaries = [summary for summary in summaries if any(metric in comparison_metric_keys(summary) for metric in metric_keys)]
+    if not rendered_summaries:
+        fig, ax = plt.subplots(figsize=(12.0, 2.4))
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No paired vs unpaired comparison data available.", ha="center", va="center", fontsize=12.0, color=OKABE_GRAY)
+        return fig
 
-            top_labels = _ranked_labels(total, len(best_entries))
-            bottom_labels = _ranked_labels(total, len(worst_entries), tail=True)
-            metric_label = humanize_token(metric_key)
-            if metric_key in METRIC_SPEC_BY_KEY:
-                metric_label += f" {'↑' if METRIC_SPEC_BY_KEY[metric_key].higher_is_better else '↓'}"
+    fig = plt.figure(figsize=(14.2, max(3.0, 1.95 * len(rendered_summaries) + 0.35)))
+    outer = fig.add_gridspec(len(rendered_summaries), 1, hspace=0.12)
 
-            for row_index, (rank_label, best_entry) in enumerate(zip(top_labels, best_entries)):
-                rows.append(
-                    [
-                        summary.title if row_index == 0 else "",
-                        metric_label if row_index == 0 else "",
-                        rank_label,
-                        condition_indicator_text(best_entry[0]),
-                        _format_mean_sd(best_entry[1], best_entry[2]),
-                    ]
-                )
-            if best_entries and worst_entries:
-                rows.append(["", "", "···", "", ""])
-            for rank_label, worst_entry in zip(bottom_labels, worst_entries):
-                rows.append(
-                    [
-                        "",
-                        "",
-                        rank_label,
-                        condition_indicator_text(worst_entry[0]),
-                        _format_mean_sd(worst_entry[1], worst_entry[2]),
-                    ]
-                )
+    for row_index, summary in enumerate(rendered_summaries):
+        row_grid = outer[row_index].subgridspec(2, 1, height_ratios=[0.11, 1.0], hspace=0.03)
+        label_ax = fig.add_subplot(row_grid[0, 0])
+        label_ax.axis("off")
+        label_ax.text(
+            0.0,
+            0.62,
+            summary.title.upper(),
+            ha="left",
+            va="center",
+            fontsize=9.4,
+            fontweight="bold",
+            color=INK,
+            family="DejaVu Serif",
+            transform=label_ax.transAxes,
+            clip_on=False,
+        )
+        label_ax.plot([0.0, 1.0], [0.08, 0.08], color=INK, linewidth=2.0, transform=label_ax.transAxes, clip_on=False)
 
-    fig_height = max(3.8, 1.7 + 0.38 * max(len(rows), 1))
-    fig, ax = plt.subplots(figsize=(13.0, fig_height))
-    ax.axis("off")
-    table = ax.table(
-        cellText=rows,
-        colLabels=[
-            "Dataset",
-            "Metric",
-            "Rank",
-            "Condition (CT / CS / Vas / Env)",
-            "Mean ± SD",
-        ],
-        cellLoc="left",
-        colLoc="left",
-        loc="center",
-        bbox=[0.0, 0.02, 1.0, 0.92],
-        colWidths=[0.12, 0.14, 0.07, 0.22, 0.14],
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9.5)
-    table.scale(1.0, 1.3)
-    for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor("#C9C3B9")
-        cell.set_linewidth(0.8)
-        if row == 0:
-            cell.set_facecolor("#F3F3EF")
-            cell.set_text_props(weight="bold", color=INK)
-        else:
-            cell.set_facecolor("white")
-            cell.set_text_props(color=INK, weight="normal")
-            if col in {0, 1}:
-                cell.set_text_props(weight="bold", color=INK)
-    for row in range(1, len(rows) + 1):
-        if rows[row - 1][2] == "···":
-            for col in range(5):
-                cell = table[(row, col)]
-                cell.set_text_props(color=OKABE_GRAY, style="italic")
+        metric_grid = row_grid[1, 0].subgridspec(1, len(metric_keys), wspace=0.08)
+        for col_index, metric_key in enumerate(metric_keys):
+            ax = fig.add_subplot(metric_grid[0, col_index])
+            _draw_comparison_metric_panel(ax, summary, metric_key)
 
-    ax.set_title(
-        "Paired vs Unpaired — Top 3 / Worst 3 Conditions per Metric",
-        fontsize=14,
-        fontweight="bold",
-        pad=10,
-    )
+    fig.suptitle("Paired vs Unpaired Ranked Conditions", y=0.995, fontsize=13.5, fontweight="bold")
+    fig.subplots_adjust(left=0.028, right=0.992, bottom=0.05, top=0.92)
     return fig
 
 

@@ -126,7 +126,7 @@ Three CLIs support the channel-impact workflow:
 
 | Script                            | Purpose                                                     | Typical command                                                                                                                                                                                                                                                                                            |
 | --------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tools/vis/leave_one_out_diff.py` | Render leave-one-out diffs from cached ablations            | `conda run -n pixcell python tools/vis/leave_one_out_diff.py --cache-root inference_output/paired_ablation/ablation_results --orion-root data/orion-crc33 --out-root inference_output/paired_ablation/leave_one_out`                                                                                           |
+| `tools/vis/leave_one_out_diff.py` | Render leave-one-out figures from cached ablations          | `conda run -n pixcell python tools/vis/leave_one_out_diff.py --cache-root inference_output/paired_ablation/ablation_results --orion-root data/orion-crc33 --out-root inference_output/paired_ablation/leave_one_out --figure both`                                                                                  |
 | `tools/stage3/classify_tiles.py`  | Classify tiles and write `tile_classes.json`                | `conda run -n pixcell python tools/stage3/classify_tiles.py --exp-root data/orion-crc33 --out tile_classes.json`                                                                                                                                                                                           |
 | `tools/stage3/channel_sweep.py`   | Generate caches plus rendered figures for experiments 1/2/3 | `conda run -n pixcell python tools/stage3/channel_sweep.py --class-json tile_classes.json --data-root data/orion-crc33 --checkpoint-dir checkpoints/pixcell_controlnet_exp/npy_inputs --out inference_output/channel_sweep --cache-dir inference_output/channel_sweep/cache --experiments 1 2 3 --seed 42` |
 
@@ -137,7 +137,14 @@ Useful commands:
 conda run -n pixcell python tools/vis/leave_one_out_diff.py \
     --cache-root inference_output/paired_ablation/ablation_results \
     --orion-root data/orion-crc33 \
-    --out-root inference_output/paired_ablation/leave_one_out
+    --out-root inference_output/paired_ablation/leave_one_out \
+    --figure both
+
+conda run -n pixcell python tools/vis/leave_one_out_diff.py \
+    --cache-dir inference_output/paired_ablation/ablation_results/29952_46080 \
+    --figure ssim \
+    --crop-size 64 \
+    --out inference_output/paired_ablation/leave_one_out/29952_46080/leave_one_out_ssim.png
 
 conda run -n pixcell python tools/stage3/classify_tiles.py \
     --exp-root data/orion-crc33 \
@@ -160,7 +167,8 @@ conda run -n pixcell python tools/vis/leave_one_out_diff.py \
     --cache-root inference_output/unpaired_ablation/ablation_results \
     --orion-root data/orion-crc33 \
     --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
-    --out-root inference_output/unpaired_ablation/leave_one_out
+    --out-root inference_output/unpaired_ablation/leave_one_out \
+    --figure both
 
 conda run -n pixcell python tools/stage3/channel_sweep.py \
     --class-json inference_output/unpaired_ablation/channel_sweep/tile_classes.json \

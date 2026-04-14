@@ -369,7 +369,7 @@ python tools/render_dataset_metrics.py \
 ## Step 10. Run leave-one-out analysis
 
 Comment:
-- Writes one `leave_one_out_diff.png` and one `leave_one_out_diff_stats.json` per tile.
+- Writes `leave_one_out_diff.png`, `leave_one_out_ssim.png`, and `leave_one_out_diff_stats.json` per tile when `--figure both` is used.
 
 ### Paired
 
@@ -377,7 +377,8 @@ Comment:
 python tools/vis/leave_one_out_diff.py \
   --cache-root inference_output/paired_ablation/ablation_results \
   --orion-root data/orion-crc33 \
-  --out-root inference_output/paired_ablation/leave_one_out
+  --out-root inference_output/paired_ablation/leave_one_out \
+  --figure both
 ```
 
 ### Unpaired
@@ -387,7 +388,8 @@ python tools/vis/leave_one_out_diff.py \
   --cache-root inference_output/unpaired_ablation/ablation_results \
   --orion-root data/orion-crc33 \
   --style-mapping-json inference_output/unpaired_ablation/metadata/unpaired_mapping.json \
-  --out-root inference_output/unpaired_ablation/leave_one_out
+  --out-root inference_output/unpaired_ablation/leave_one_out \
+  --figure both
 ```
 
 ## Step 11. Run experiments 1/2/3
