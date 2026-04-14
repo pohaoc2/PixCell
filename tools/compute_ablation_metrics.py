@@ -907,15 +907,20 @@ def main() -> None:
             f"no per-tile caches under {cache_dir} (expected subdirs like <tile_id>/manifest.json)"
         )
 
-    if args.jobs > 1:
-        if str(args.device).lower() == "cuda" and any(
-            metric in metrics_to_compute for metric in ("cosine", "lpips")
-        ):
-            print(
-                "Note: parallel metric workers on CUDA each load their own model state and may "
-                "contend for GPU memory; reduce --jobs or use --device cpu if needed.",
-                file=sys.stderr,
-            )
+    run_parallel = args.jobs > 1
+    if run_parallel and str(args.device).lower() == "cuda" and any(
+        metric in metrics_to_compute for metric in ("cosine", "lpips")
+    ):
+        print(
+            "Note: falling back to serial metric computation because parallel CUDA workers "
+            "would each initialize their own LPIPS / UNI model state and may hang or "
+            "contend for GPU memory. Use --jobs 1 on CUDA, or switch to --device cpu "
+            "if you want parallel workers.",
+            file=sys.stderr,
+        )
+        run_parallel = False
+
+    if run_parallel:
         _run_parallel_cache_metrics(
             cache_parent=cache_dir,
             tile_ids=tile_ids,

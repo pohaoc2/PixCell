@@ -24,32 +24,34 @@ Two latent streams are active throughout the system:
 ### Training
 
 ```
-H&E Image [256, 256, 3]                     Cell Mask [256, 256, 1]
-        │                                            │
-        ├──► SD3.5 VAE Encoder (FROZEN)              └──► SD3.5 VAE Encoder (FROZEN)
-        │         │                                            │
-        │         ▼                                            ▼
-        │   clean H&E latent x_0                        mask latent [B, 16, 32, 32]
-        │   [B, 16, 32, 32]                                      │
-        │         │                                              │
-        │         └──► Forward Diffusion                         │
-        │               t ~ Uniform(0, 1000)                     │
-        │               ε ~ N(0, I)                              │
-        │               x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε          │
-        │                              │                         │
-        ▼                              │                         ▼
-UNI-2h Embedder (FROZEN)               │                 Multi-Group TME Module
-[B, 1536]                              │                 + raw TME channels [B, 9, 256, 256]
-        │                              │                         │
-        │                              ▼                         ▼
-        │                      noisy latent x_t           conditioning latent
-        │                      [B, 16, 32, 32]           [B, 16, 32, 32]
-        │                              │                         │
-        │                              ├──────────────┬──────────┘
-        │                              │              │
-        │                              ▼              ▼
-        │                      PixCell ControlNet (TRAINABLE, 27 blocks)
-        │                      input = x_t + conditioning + UNI + timestep
+H&E Image [256, 256, 3]
+        │
+        ├──► SD3.5 VAE Encoder (FROZEN)
+        │         │
+        │         ▼
+        │   clean H&E latent x_0
+        │   [B, 16, 32, 32]
+        │         │
+        │         └──► Forward Diffusion
+        │               t ~ Uniform(0, 1000)
+        │               ε ~ N(0, I)
+        │               x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε
+        │                              │
+        ▼                              │
+UNI-2h Embedder (FROZEN)               │       raw TME channels [B, 9, 256, 256]
+[B, 1536]                              │                │
+        │                              │                ▼
+        │                              │       Multi-Group TME Module
+        │                              │                │
+        │                              ▼                ▼
+        │                      noisy latent x_t    conditioning latent
+        │                      [B, 16, 32, 32]     [B, 16, 32, 32]
+        │                              │                │
+        │                              ├────────────────┘
+        │                              │
+        │                              ▼
+        ├──────────────────────────────► PixCell ControlNet (TRAINABLE, 27 blocks)
+        │                               input = x_t + conditioning + UNI + timestep
         │                              │
         │                              ▼
         │                      27 residuals [B, N, 1152]
@@ -68,36 +70,46 @@ UNI-2h Embedder (FROZEN)               │                 Multi-Group TME Modul
                                  (first 16 output channels used as ε_pred)
 ```
 
+**Training steps:**
+
+1. Encode target H&E patch with SD3.5 VAE → clean latent `x_0 [B, 16, 32, 32]`.
+2. Extract semantic features of the same H&E with UNI-2h Embedder → `[B, 1536]`.
+3. Sample timestep `t ~ Uniform(0, 1000)` and noise `ε ~ N(0, I)`; compute noisy latent `x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε`.
+4. Encode TME channel groups through Multi-Group TME Module → conditioning latent `[B, 16, 32, 32]`.
+5. Pass `x_t`, conditioning latent, UNI embedding, and timestep through PixCell ControlNet → 27 residuals `[B, N, 1152]`.
+6. Pass `x_t`, UNI embedding, timestep, and ControlNet residuals through frozen Base PixArt-256 Transformer → model output `[B, 32, 32, 32]`.
+7. Compute diffusion loss `‖ε_pred − ε‖²` using first 16 output channels as `ε_pred`.
+
 At inference, the denoising latent stream changes but the conditioning path stays the same:
 
 ### Inference
 
 ```
-Reference H&E [256, 256, 3]             Cell Mask [256, 256, 1]
+Reference H&E [256, 256, 3]          raw TME channels [B, 9, 256, 256]
         │                                        │
-        └──► UNI-2h Embedder                     └──► SD3.5 VAE Encoder
-             [B, 1536]                                      │
-                  │                                          ▼
-                  │                                  mask latent [B, 16, 32, 32]
-                  │                                          │
-                  │                                          ▼
-                  │                                  Multi-Group TME Module
-                  │                                  + raw TME channels [B, 9, 256, 256]
-                  │                                          │
-                  │                                          ▼
-                  │                                  conditioning latent
-                  │                                  [B, 16, 32, 32]
-                  │                                          │
-                  │                                          │
-Random Gaussian latent x_T [B, 16, 32, 32]                  │
-                  │                                          │
-                  ├──────────────────────────────┬───────────┘
+        └──► UNI-2h Embedder                     ▼
+             [B, 1536]               Multi-Group TME Module
                   │                              │
-                  ▼                              ▼
-          Denoising loop (20 scheduler steps) with:
+                  │                              ▼
+                  │                    conditioning latent
+                  │                    [B, 16, 32, 32]
+                  │                              │
+                  │                              │
+Random Gaussian latent x_T [B, 16, 32, 32]      │
+                  │                              │
+                  ├──────────────────────────────┘
+                  ├──────────────── UNI [B, 1536]
+                  │
+                  │
+                  ▼
+          Denoising loop (20 DDPM steps, t = T…1):
             - current latent x_t
-            - ControlNet residuals from conditioning + UNI
-            - Base transformer cross-attention to UNI
+            - conditioning latent [B, 16, 32, 32]
+            - UNI embedding [B, 1536]
+            - timestep t
+            ──► PixCell ControlNet + Base Transformer
+            ──► apply CFG (cfg_scale=2.5)
+            ──► update x_{t-1}
                   │
                   ▼
           final latent x_0_hat [B, 16, 32, 32]
@@ -109,7 +121,15 @@ Random Gaussian latent x_T [B, 16, 32, 32]                  │
           Generated H&E [256, 256, 3]
 ```
 
-For official PixCell ControlNet, `TMEMOD` is absent and `conditioning latent = mask latent`.
+**Inference steps:**
+
+1. Extract semantic features from reference H&E using UNI-2h → `[B, 1536]` (zeros for unconditional / TME-only generation).
+2. Encode TME channel groups through Multi-Group TME Module → conditioning latent `[B, 16, 32, 32]`.
+3. Sample random Gaussian latent `x_T ~ N(0, I) [B, 16, 32, 32]`.
+4. Denoising loop (20 DDPM steps, `t = T…1`): pass `x_t` + conditioning latent + UNI + timestep through ControlNet + Base Transformer; apply CFG (`cfg_scale=2.5`); update `x_{t-1}`.
+5. Decode final latent `x_0_hat` with SD3.5 VAE Decoder → Generated H&E `[256, 256, 3]`.
+
+For official PixCell ControlNet, `TMEMOD` is absent and `conditioning latent = cell-mask VAE latent`.
 
 ---
 
