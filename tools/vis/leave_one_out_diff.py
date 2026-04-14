@@ -228,7 +228,7 @@ def _render_cell_masked_overlay(
     """
     diff_norm = _normalize_cell_masked_diff(raw_diff, cell_mask)
 
-    bg = baseline_he.mean(axis=2).astype(np.float32) / 255.0 * bg_brightness
+    bg = baseline_he.astype(np.float32).mean(axis=2) / 255.0 * bg_brightness
 
     heatmap_rgba = cmap(diff_norm)  # H×W×4
 
