@@ -391,3 +391,41 @@ def test_ssim_loss_map_values_in_0_1() -> None:
 
     assert result.min() >= 0.0
     assert result.max() <= 1.0 + 1e-6
+
+
+# ── _select_inset_region ──────────────────────────────────────────────────────
+
+def test_select_inset_region_picks_highest_loss_region() -> None:
+    from tools.vis.leave_one_out_diff import _select_inset_region
+
+    loss = np.zeros((128, 128), dtype=np.float32)
+    loss[64:80, 64:80] = 1.0  # hot spot
+
+    y, x = _select_inset_region(loss, crop=64, stride=8)
+
+    # The selected crop must overlap with the hot spot
+    assert y <= 64 and y + 64 >= 80, f"y={y} misses hot spot rows 64–80"
+    assert x <= 64 and x + 64 >= 80, f"x={x} misses hot spot cols 64–80"
+
+
+def test_select_inset_region_returns_valid_crop_bounds() -> None:
+    from tools.vis.leave_one_out_diff import _select_inset_region
+
+    rng = np.random.default_rng(7)
+    loss = rng.random((256, 256)).astype(np.float32)
+
+    y, x = _select_inset_region(loss, crop=64, stride=8)
+
+    assert 0 <= y <= 256 - 64, f"y={y} out of bounds"
+    assert 0 <= x <= 256 - 64, f"x={x} out of bounds"
+
+
+def test_select_inset_region_uniform_loss_returns_origin() -> None:
+    """Uniform loss: first window wins (top-left corner)."""
+    from tools.vis.leave_one_out_diff import _select_inset_region
+
+    loss = np.ones((128, 128), dtype=np.float32)
+    y, x = _select_inset_region(loss, crop=64, stride=8)
+
+    assert y == 0
+    assert x == 0

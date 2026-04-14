@@ -284,6 +284,37 @@ def ssim_loss_map(img_all: np.ndarray, img_drop: np.ndarray, *, win_size: int = 
     return np.clip(1.0 - ssim_full, 0.0, 1.0).astype(np.float32)
 
 
+def _select_inset_region(
+    loss_mean: np.ndarray,
+    crop: int = 64,
+    stride: int = 8,
+) -> tuple[int, int]:
+    """Return (y, x) top-left of the crop with highest mean SSIM loss.
+
+    Slides a ``crop × crop`` window (step ``stride``) over ``loss_mean`` and
+    picks the position whose window mean is highest.  The first window wins on
+    ties (top-left bias).
+
+    Args:
+        loss_mean: H×W float32 mean SSIM loss map (average across conditions).
+        crop: Crop side length in pixels.
+        stride: Sliding-window stride in pixels.
+
+    Returns:
+        ``(y, x)`` top-left corner of the selected crop (both ≥ 0).
+    """
+    H, W = loss_mean.shape
+    best_score: float = -1.0
+    best_yx: tuple[int, int] = (0, 0)
+    for y in range(0, H - crop + 1, stride):
+        for x in range(0, W - crop + 1, stride):
+            score = float(loss_mean[y : y + crop, x : x + crop].mean())
+            if score > best_score:
+                best_score = score
+                best_yx = (y, x)
+    return best_yx
+
+
 
 def _maybe_contour_cell_mask(
     ax,
