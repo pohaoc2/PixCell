@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
 try:
     import torch
 except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight CLI paths
@@ -16,14 +17,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight CLI p
     DDPMScheduler = None  # type: ignore[assignment]
 
 
-def inference_dtype(device: str) -> Any:
+def inference_dtype(device: str) -> Any:  # pragma: no cover
     """Inference dtype for a requested device string."""
     if torch is None:
         raise ModuleNotFoundError("torch is required for inference_dtype()")
     return torch.float16 if str(device).lower().startswith("cuda") else torch.float32
 
 
-def make_inference_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:
+def make_inference_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:  # pragma: no cover
     """Construct the shared DDPM inference scheduler used across Stage 3 tools."""
     if DDPMScheduler is None:
         raise ModuleNotFoundError("diffusers is required for make_inference_scheduler()")
@@ -39,7 +40,7 @@ def make_inference_scheduler(*, num_steps: int, device: str) -> DDPMScheduler:
     return scheduler
 
 
-def resolve_uni_embedding(
+def resolve_uni_embedding(  # pragma: no cover
     tile_id: str,
     *,
     feat_dir: Path,

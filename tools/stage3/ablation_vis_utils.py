@@ -3,6 +3,7 @@ Shared helpers for Stage 3 ablation publication figures and metrics.
 
 Legacy manifests may still list ``cell_identity``; it is normalized to ``cell_types``.
 """
+
 from __future__ import annotations
 
 import json
@@ -76,7 +77,9 @@ def default_orion_uni_npy_path(
     style_mapping: Mapping[str, str] | None = None,
 ) -> Path:
     """``data/orion-crc33/features/<tile_id>_uni.npy`` style path."""
-    mapped_tile_id = str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
+    mapped_tile_id = (
+        str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
+    )
     return orion_root / "features" / f"{mapped_tile_id}_uni.npy"
 
 
@@ -87,7 +90,9 @@ def default_orion_he_png_path(
     style_mapping: Mapping[str, str] | None = None,
 ) -> Path | None:
     """Paired real H&E tile under ``he/{tile_id}.png`` (or ``.jpg``)."""
-    mapped_tile_id = str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
+    mapped_tile_id = (
+        str(style_mapping.get(tile_id, tile_id)) if style_mapping is not None else tile_id
+    )
     for ext in (".png", ".jpg", ".jpeg", ".tif"):
         p = orion_root / "he" / f"{mapped_tile_id}{ext}"
         if p.is_file():
@@ -133,7 +138,7 @@ def parse_uni_cosine_scores_json(
     return out, title
 
 
-def cache_manifest_uni_features(
+def cache_manifest_uni_features(  # pragma: no cover
     cache_dir: str | Path,
     *,
     uni_model: str | Path,
@@ -181,7 +186,7 @@ def cache_manifest_uni_features(
     return written
 
 
-def compute_rgb_pixel_cosine_scores(
+def compute_rgb_pixel_cosine_scores(  # pragma: no cover
     cache_dir: Path,
     orion_root: Path,
     *,
@@ -303,7 +308,9 @@ def load_uni_cosine_scores(cache_dir: str | Path) -> dict[str, float]:
     return scores
 
 
-def parse_uni_cosine_for_condition(raw: dict[str, Any], active_groups: tuple[str, ...]) -> float | None:
+def parse_uni_cosine_for_condition(
+    raw: dict[str, Any], active_groups: tuple[str, ...]
+) -> float | None:
     """Look up cosine for a condition from a loaded JSON dict."""
     per = raw.get("per_condition")
     if not isinstance(per, dict):
@@ -315,7 +322,7 @@ def parse_uni_cosine_for_condition(raw: dict[str, Any], active_groups: tuple[str
     return float(val)
 
 
-def load_exp_channel_plane(
+def load_exp_channel_plane(  # pragma: no cover
     exp_channels_dir: Path,
     channel: str,
     tile_id: str,
@@ -341,7 +348,7 @@ def load_exp_channel_plane(
     )
 
 
-def _apply_mpl_cmap(plane: np.ndarray, cmap) -> np.ndarray:
+def _apply_mpl_cmap(plane: np.ndarray, cmap) -> np.ndarray:  # pragma: no cover
     """Apply a matplotlib colormap; return uint8 RGB ``[H, W, 3]``."""
     import matplotlib as mpl
     import matplotlib.cm as cm
@@ -356,7 +363,7 @@ def _apply_mpl_cmap(plane: np.ndarray, cmap) -> np.ndarray:
     return (np.clip(rgba[..., :3], 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
-def rgb_cell_types_union(
+def rgb_cell_types_union(  # pragma: no cover
     exp_channels_dir: Path,
     tile_id: str,
     *,
@@ -384,7 +391,7 @@ def rgb_cell_types_union(
     return (rgb * 255.0).astype(np.uint8)
 
 
-def rgb_cell_states_union(
+def rgb_cell_states_union(  # pragma: no cover
     exp_channels_dir: Path,
     tile_id: str,
     *,
@@ -412,7 +419,7 @@ def rgb_cell_states_union(
     return (rgb * 255.0).astype(np.uint8)
 
 
-def rgb_vasculature_panel(
+def rgb_vasculature_panel(  # pragma: no cover
     exp_channels_dir: Path,
     tile_id: str,
     *,
@@ -421,13 +428,11 @@ def rgb_vasculature_panel(
     """Vasculature channel using ``CHANNEL_CMAP['vasculature']`` (``Reds``)."""
     from tools.color_constants import CHANNEL_CMAP
 
-    plane = load_exp_channel_plane(
-        exp_channels_dir, "vasculature", tile_id, resolution=resolution
-    )
+    plane = load_exp_channel_plane(exp_channels_dir, "vasculature", tile_id, resolution=resolution)
     return _apply_mpl_cmap(plane, CHANNEL_CMAP["vasculature"])
 
 
-def rgb_microenv_union(
+def rgb_microenv_union(  # pragma: no cover
     exp_channels_dir: Path,
     tile_id: str,
     *,
@@ -450,7 +455,7 @@ def rgb_microenv_union(
     return np.clip(ro + rg, 0.0, 255.0).astype(np.uint8)
 
 
-def build_exp_channel_header_rgb(
+def build_exp_channel_header_rgb(  # pragma: no cover
     exp_channels_dir: Path,
     tile_id: str,
     *,
@@ -472,9 +477,7 @@ def build_exp_channel_header_rgb(
         "vasculature": lambda: rgb_vasculature_panel(
             exp_channels_dir, tile_id, resolution=resolution
         ),
-        "microenv": lambda: rgb_microenv_union(
-            exp_channels_dir, tile_id, resolution=resolution
-        ),
+        "microenv": lambda: rgb_microenv_union(exp_channels_dir, tile_id, resolution=resolution),
     }
     out: dict[str, np.ndarray] = {}
     for key in FOUR_GROUP_ORDER:

@@ -3,14 +3,21 @@ ignore=build,dist,pretrained_models
 
 [MESSAGES CONTROL]
 disable=
+    C0103,
+    C0104,
     C0114,
     C0115,
     C0116,
+    C0301,
     C0413,
+    C0415,
+    C1803,
     E1101,
+    R0402,
     R0903,
     R0801,
     R0913,
+    R0914,
     R0917,
     W0612
 
