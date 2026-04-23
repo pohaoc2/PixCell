@@ -1,0 +1,1 @@
+"""Visibility map task package."""
