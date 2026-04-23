@@ -11,11 +11,11 @@ Two latent streams are active throughout the system:
    - Inference: starts from random Gaussian noise `x_T`.
 2. **Conditioning latent stream**: the latent passed as `conditioning` to ControlNet.
    - Official PixCell ControlNet: VAE-encoded cell-mask latent only.
-   - This repo (`zero_mask_latent=True`): mask latent is **zeroed** before the TME module; conditioning = TME residuals only. Cell-type/state channels fully encode cell layout, making the mask VAE latent redundant.
+   - This repo (`zero_mask_latent=True`): mask latent is passed to TME module as spatial Q tokens, then **subtracted post-TME** — `fused = tme(mask_latent) - mask_latent = Σ(Δ_group)`. Only TME residuals reach the ControlNet; the mask latent itself does not bypass through.
 
 > **Why `zero_mask_latent=True`?**
 > With the mask latent active, the pretrained ControlNet produces plausible H&E from mask_latent alone (bypass path), so `∂loss/∂proj ≈ 0` — the TME proj layers never escape near-zero (observed: `proj_wmax ≈ 4e-4` after 30 epochs at `tme_lr=1e-5`).
-> Zeroing the mask latent closes the bypass path. Since `controlnet_blocks` (ControlNet output projections) hold non-zero pretrained weights, `∂loss/∂fused_cond ≠ 0` from step 1, and `∂loss/∂proj` is immediately non-zero, breaking the starvation.
+> Post-TME subtraction closes the bypass path while keeping mask_latent as spatial Q for cross-attention — the spatial structure informs attention but does not pass through to ControlNet. Since `controlnet_blocks` hold non-zero pretrained weights, `∂loss/∂fused_cond ≠ 0` from step 1, breaking the starvation.
 
 ---
 
@@ -220,61 +220,69 @@ With `zero_mask_latent=True`:
 
 ## Component 3 — Multi-Group TME Module (Trainable)
 
-The core architectural innovation: each biology channel group gets its own encoder and cross-attention module, producing additive residuals over the mask latent.
+The core architectural innovation: each biology channel group gets its own CNN encoder and cross-attention module, producing additive residuals over the mask latent.
 
-With `zero_mask_latent=True`, the mask latent is zeroed before this module, so `fused = 0 + Σ(Δ_g)`. Q tokens derive from zeros → uniform attention weights → cross-attention output ≈ mean(V) × proj. Since proj is zero-init, residuals start near zero but grad is non-zero from the first step.
+**How CNN output combines with mask latent (per group):**
+1. CNN encoder: `tme_channels [B, n_ch, 256, 256]` → `group_latent [B, 16, 32, 32]`
+2. Flatten + LayerNorm → **KV tokens** `[B, 1024, 16]`
+3. Cross-attention: **Q = mask_latent tokens** (shared, from LayerNorm), **KV = CNN output tokens** → `delta [B, 1024, 16]`
+4. Reshape delta → `Δ_group [B, 16, 32, 32]`
+
+The CNN does **not** add directly to mask_latent. Instead, cross-attention lets each spatial position (Q from mask) attend to the group's CNN features (KV). The output Δ_group is a spatially-weighted blend of CNN features shaped by mask structure.
+
+With `zero_mask_latent=True`, mask latent feeds Q tokens normally, then is subtracted post-module:
+`fused = tme(mask_latent) - mask_latent = Σ(Δ_g)`. Mask shapes attention but does not bypass to ControlNet.
 
 ```
 Cell mask latent  [B, 16, 32, 32]
-  (zeroed when zero_mask_latent=True)
         │
         ▼
-  LayerNorm  ──►  Q tokens  [B, 1024, 16]
+  LayerNorm  ──►  Q tokens  [B, 1024, 16]  (shared across all groups)
         │
-        │    TME Channel Groups (per group, independently):
+        │    Per-group (_GroupBlock), independently:
         │
-        │    ┌─────────────────────────────────────────────────────────┐
-        │    │  GROUP: cell_types   [B, 3, 256, 256]                │
-        │    │  (cell_type_healthy, cell_type_cancer, cell_type_immune) │
-        │    │          │                                               │
-        │    │          ▼                                               │
-        │    │    TMEEncoder (CNN)  ──►  [B, 16, 32, 32]               │
-        │    │          │                                               │
-        │    │          ▼                                               │
-        │    │    K, V tokens  [B, 1024, 16]                           │
-        │    │          │                                               │
-        │    │          ▼                                               │
-        │    │  CrossAttentionWithWeights                               │
-        │    │    Q (mask) × K,V (group)  ──►  delta [B, 1024, 16]    │
-        │    │                                                          │
-        │    │  Δ_cell_types  [B, 16, 32, 32]                       │
-        │    └─────────────────────────────────────────────────────────┘
+        │    ┌──────────────────────────────────────────────────────────────┐
+        │    │  GROUP: cell_types   [B, 3, 256, 256]                        │
+        │    │  (cell_type_healthy, cell_type_cancer, cell_type_immune)      │
+        │    │          │                                                    │
+        │    │          ▼                                                    │
+        │    │    TMEEncoder (CNN)  ──►  group_latent [B, 16, 32, 32]       │
+        │    │          │                                                    │
+        │    │          ▼                                                    │
+        │    │    LayerNorm + flatten  ──►  KV tokens [B, 1024, 16]         │
+        │    │          │                                                    │
+        │    │          ▼                                                    │
+        │    │  CrossAttentionWithWeights                                    │
+        │    │    Q (mask spatial) × KV (CNN features)                      │
+        │    │    ──►  delta tokens [B, 1024, 16]  ──►  Δ_cell_types        │
+        │    │         [B, 16, 32, 32]                                       │
+        │    └──────────────────────────────────────────────────────────────┘
         │
         │    ┌─────────────────────────────────────────────────────────┐
         │    │  GROUP: cell_state   [B, 3, 256, 256]                   │
         │    │  (prolif, nonprolif, dead)                               │
-        │    │          ▼                                               │
-        │    │    TMEEncoder  ──►  CrossAttention  ──►  Δ_cell_state   │
+        │    │    CNN ──► KV  ──►  CrossAttn(Q=mask, KV=CNN) ──► Δ_cell_state  │
         │    └─────────────────────────────────────────────────────────┘
         │
         │    ┌────────────────────────────────────────────────────────┐
         │    │  GROUP: vasculature  [B, 1, 256, 256]  (CD31)          │
-        │    │          ▼                                              │
-        │    │    TMEEncoder  ──►  CrossAttention  ──►  Δ_vasculature │
+        │    │    CNN ──► KV  ──►  CrossAttn(Q=mask, KV=CNN) ──► Δ_vasculature │
         │    └────────────────────────────────────────────────────────┘
         │
         │    ┌────────────────────────────────────────────────────────┐
         │    │  GROUP: microenv  [B, 2, 256, 256]  (oxygen, glucose)  │
-        │    │          ▼                                              │
-        │    │    TMEEncoder  ──►  CrossAttention  ──►  Δ_microenv    │
+        │    │    CNN ──► KV  ──►  CrossAttn(Q=mask, KV=CNN) ──► Δ_microenv    │
         │    └────────────────────────────────────────────────────────┘
         │
         ▼
   Fusion:
-  mask_latent  +  Σ(Δ_g for active groups g)
+  fused = mask_latent + Σ(Δ_g for active groups g)
+
+  If zero_mask_latent=True (post-module, in training loop):
+  ctrl_latent = fused - mask_latent = Σ(Δ_g)
         │
         ▼
-  Fused conditioning  [B, 16, 32, 32]
+  Conditioning  [B, 16, 32, 32]
   ──► ControlNet conditioning input
 
 Group dropout during training (prevents collapse):
@@ -335,7 +343,7 @@ Cell Mask [256, 256, 1]
 | Signal | Dims | Role | During Inference |
 |--------|------|------|-----------------|
 | Denoising latent | [B, 16, 32, 32] | Current diffusion state passed as `hidden_states` | Starts from random Gaussian `x_T` |
-| Cell mask VAE latent | [B, 16, 32, 32] | Spatial cell layout → ControlNet base | **Zeroed** when `zero_mask_latent=True` (cell type/state channels make it redundant; zeroing closes the bypass path that starved TME gradients) |
+| Cell mask VAE latent | [B, 16, 32, 32] | Spatial Q tokens for TME cross-attention | Used as Q inside TME module; **subtracted post-TME** when `zero_mask_latent=True` so only residuals `Σ(Δ_g)` reach ControlNet (closes bypass path) |
 | TME channels | [B, 9, 256, 256] | Biology groups → TME Module residuals | Required in this repo, absent in official PixCell ControlNet |
 | UNI-2h embedding | [B, 1536] | H&E style / morphology → transformer cross-attn | Usually from a reference H&E image; can be zeroed for unconditional / TME-only runs |
 | Timestep | scalar | Diffusion schedule modulation | Required |
