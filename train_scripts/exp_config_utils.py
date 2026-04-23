@@ -1,14 +1,20 @@
 """Helpers for resolving paired experimental dataset config."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-
 DEFAULT_ACTIVE_CHANNELS: list[str] = [
     "cell_masks",
-    "cell_type_healthy", "cell_type_cancer", "cell_type_immune",
-    "cell_state_prolif", "cell_state_nonprolif", "cell_state_dead",
-    "vasculature", "oxygen", "glucose",
+    "cell_type_healthy",
+    "cell_type_cancer",
+    "cell_type_immune",
+    "cell_state_prolif",
+    "cell_state_nonprolif",
+    "cell_state_dead",
+    "vasculature",
+    "oxygen",
+    "glucose",
 ]
 
 DEFAULT_DATASET_KWARGS: dict[str, str] = {

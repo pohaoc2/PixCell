@@ -1,6 +1,7 @@
 [run]
 source =
     tools
+    train_scripts
 omit =
     tests/*
     tools/color_constants.py

@@ -43,6 +43,37 @@ jobs:
             --cov-config=.coveragerc --cov-report=xml --cov-report=term-missing \
             --cov-fail-under=90
 
+      - name: Check formatting (black) — expanded files
+        run: |
+          black --check \
+            train_scripts/exp_config_utils.py \
+            tools/stage3/common.py \
+            tools/stage3/ablation_vis_utils.py \
+            tests/test_stage3_common.py \
+            tests/test_exp_config_utils.py \
+            tests/test_stage3_ablation_vis_utils.py
+
+      - name: Lint (pylint) — expanded files
+        run: |
+          export PYTHONPATH="${PYTHONPATH}:."
+          pylint --rcfile=.pylintrc \
+            train_scripts/exp_config_utils.py \
+            tools/stage3/common.py \
+            tools/stage3/ablation_vis_utils.py \
+            tests/test_stage3_common.py \
+            tests/test_exp_config_utils.py \
+            tests/test_stage3_ablation_vis_utils.py
+
+      - name: Run expanded tests with coverage
+        run: |
+          export PYTHONPATH="${PYTHONPATH}:."
+          pytest tests/test_exp_config_utils.py tests/test_stage3_common.py tests/test_stage3_ablation_vis_utils.py \
+            --cov=train_scripts.exp_config_utils \
+            --cov=tools.stage3.common \
+            --cov=tools.stage3.ablation_vis_utils \
+            --cov-config=.coveragerc --cov-report=term-missing \
+            --cov-fail-under=70
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
