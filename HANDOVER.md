@@ -57,6 +57,9 @@ This handover reflects the live state on the current GPU host, not the earlier p
   - Produced:
     - `raw_cnn_embeddings.npy`
     - `virchow_embeddings.npy`
+    - `ctranspath_embeddings.npy`
+    - `virchow2_linear_probe_results.csv`
+    - `ctranspath_linear_probe_results.csv`
     - `encoder_comparison.csv`
   - Virchow note:
     - The local Virchow2 package is a Hugging Face / timm layout (`config.json` + state dict), not a serialized Torch module.
@@ -67,8 +70,12 @@ This handover reflects the live state on the current GPU host, not the earlier p
       - `pretrained_models/ctranspath/config.json`
       - `pretrained_models/ctranspath/model.safetensors`
     - GPU visibility was confirmed outside the sandbox; inside the sandbox `torch.cuda.is_available()` may report `False`.
-    - Real CTransPath extraction was attempted multiple times and the loader was partially adapted for current `timm`, but the extraction is not complete and no `ctranspath_embeddings.npy` or `ctranspath_linear_probe_results.csv` exists yet.
-    - Last known state before stopping: checkpoint download/cache worked, weights loaded after key normalization, and the process reached active GPU execution, but the forward path still required compatibility fixes for current `timm` / stem behavior.
+    - Real CTransPath extraction is now complete.
+    - Final artifact status:
+      - `src/a1_probe_encoders/out/ctranspath_embeddings.npy` exists with shape `(10379, 768)` and dtype `float32`
+      - `src/a1_probe_encoders/out/ctranspath_linear_probe_results.csv` exists
+    - Implementation note:
+      - The extractor needed compatibility fixes for current `timm` plus pooled spatial averaging so the final embeddings are `768`-dimensional instead of flattened spatial maps.
   - Notable outcome from `encoder_comparison.csv`:
     - Virchow beats UNI on `cell_density`.
     - UNI remains stronger on the other listed T1 targets.
@@ -163,11 +170,15 @@ conda run -n he-multiplex pytest -q \
 
 ## Recommended next steps
 
-1. Review `t2_*` and `t3_*` summaries under `src/a1_codex_targets/probe_out` and compare MLP vs linear performance.
-2. Review the completed sweep summary artifacts in `src/a3_combinatorial_sweep/out`.
+1. Review the updated `figures/pngs/07_inverse_decoding.png` now that it includes CTransPath alongside UNI-2h and Virchow2.
+2. Compare encoder-level T1 results across:
+   - `src/a1_probe_linear/out/linear_probe_results.csv`
+   - `src/a1_probe_encoders/out/virchow2_linear_probe_results.csv`
+   - `src/a1_probe_encoders/out/ctranspath_linear_probe_results.csv`
 3. If more reporting is needed, consolidate the key results from:
    - `src/a1_probe_mlp/out/comparison_vs_linear.csv`
    - `src/a1_probe_encoders/out/encoder_comparison.csv`
+   - `src/a1_probe_encoders/out/ctranspath_linear_probe_results.csv`
    - `src/a1_generated_probe/out/real_vs_generated_r2.csv`
    - `src/a2_decomposition/out/mode_summary.csv`
    - `src/a3_combinatorial_sweep/out/morphological_signatures.csv`
@@ -179,7 +190,7 @@ conda run -n he-multiplex pytest -q \
 - All sweep generation and summary work is complete.
 - All section-11 tasks relevant to this run are materially complete on this host.
 - Figure 4 follow-up:
-  - `07_inverse_decoding.png` exists, but it currently reflects UNI / Virchow / T2 inputs only and does not yet include CTransPath results.
-  - If resumed, the next concrete target is finishing CTransPath extraction, then writing:
+  - `07_inverse_decoding.png` has been rebuilt and now includes CTransPath results.
+  - Supporting artifacts are present:
     - `src/a1_probe_encoders/out/ctranspath_embeddings.npy`
     - `src/a1_probe_encoders/out/ctranspath_linear_probe_results.csv`

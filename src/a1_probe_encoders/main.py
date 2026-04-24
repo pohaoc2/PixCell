@@ -556,6 +556,11 @@ class _TorchModuleExtractor:
             class_token = outputs[:, 0]
             patch_tokens = outputs[:, 5:]
             outputs = torch.cat([class_token, patch_tokens.mean(dim=1)], dim=-1)
+        elif outputs.ndim == 4:
+            if outputs.shape[1] <= 64 and outputs.shape[2] <= 64:
+                outputs = outputs.mean(dim=(1, 2))
+            else:
+                outputs = outputs.mean(dim=(2, 3))
         elif outputs.ndim > 2:
             outputs = outputs.flatten(1)
         return outputs.detach().cpu().numpy().astype(np.float32, copy=False)
