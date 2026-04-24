@@ -106,8 +106,8 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         caption,
         ha="center",
         va="top",
-        fontsize=8.1,
-        fontweight="bold",
+        fontsize=10,
+        fontweight="normal",
         color=INK,
         family="DejaVu Serif",
     )
@@ -134,14 +134,14 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
 
     ax.plot([0.0, 1.0], [top_line_y, top_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
     ax.plot([0.0, 1.0], [header_bottom_y, header_bottom_y], color=INK, linewidth=0.8, transform=ax.transAxes, clip_on=False)
-    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=6.8, color=INK, family="DejaVu Serif")
+    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=8, color=INK, family="DejaVu Serif")
     ax.text(
         x_cond,
         header_y,
         "CT/CS/VAS/ENV",
         ha="center",
         va="center",
-        fontsize=6.5,
+        fontsize=7.5,
         color=INK,
         family="DejaVu Serif",
     )
@@ -151,7 +151,7 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         "Mean" if metric_key == "fud" else "Mean ± SD",
         ha="right",
         va="center",
-        fontsize=6.8,
+        fontsize=8,
         color=INK,
         family="DejaVu Serif",
     )
@@ -164,23 +164,23 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
             sep_y = header_bottom_y - index * row_h
             ax.plot([0.0, 1.0], [sep_y, sep_y], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
             ax.plot([0.0, 1.0], [sep_y - row_h, sep_y - row_h], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
-            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=7.4, color=INK, family="DejaVu Serif")
+            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=8.5, color=INK, family="DejaVu Serif")
             continue
 
         condition, mean_value, sd_value = entry
-        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=7.1, color="#555555", family="DejaVu Serif")
+        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=8.5, color="#555555", family="DejaVu Serif")
         _render_condition_glyph_axes(ax, condition, center_x=x_cond, center_y=y, dx=0.055)
         value_text = f"{float(mean_value):.3f}" if metric_key == "fud" else _format_mean_sd(mean_value, sd_value)
-        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=7.0, color=INK, family="DejaVu Serif")
+        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=8, color=INK, family="DejaVu Serif")
 
     ax.plot([0.0, 1.0], [bottom_line_y, bottom_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
 
 
 def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     metrics = metric_tradeoff_keys(summaries)
-    n_cols = 3
-    n_rows = max(1, int(np.ceil(len(metrics) / n_cols)))
-    fig = plt.figure(figsize=(15.6, 10.9 if n_rows > 2 else 7.7))
+    n_cols = 5
+    n_rows = 1
+    fig = plt.figure(figsize=(20.0, 5.5))
     outer = fig.add_gridspec(n_rows, n_cols, wspace=0.22, hspace=0.28)
 
     from tools.stage3.ablation_vis_utils import condition_metric_key, ordered_subset_condition_tuples
@@ -202,7 +202,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     x_offsets = {"paired": -0.12, "unpaired": 0.12}
 
     for index, metric_key in enumerate(metrics):
-        row, col = divmod(index, 3)
+        row, col = divmod(index, n_cols)
         subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
         ax = fig.add_subplot(subgrid[0, 0])
         dot_ax = fig.add_subplot(subgrid[1, 0], sharex=ax)
@@ -259,10 +259,10 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         higher_is_better = spec.higher_is_better if spec is not None else TRADEOFF_HIGHER_IS_BETTER.get(metric_key, True)
         arrow = "↑" if higher_is_better else "↓"
         ax.set_title(
-            f"{METRIC_LABELS.get(metric_key, metric_key)} {arrow}",
+            f"{METRIC_LABELS.get(metric_key, metric_key)} ({arrow})",
             color=INK,
-            fontweight="bold",
-            pad=16,
+            fontweight="normal",
+            pad=4,
         )
         for _, _, end_idx in spans[:-1]:
             ax.axvline(end_idx + 0.5, color="#BEBEBE", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
@@ -314,7 +314,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         ax.spines["bottom"].set_color(INK)
         ax.spines["left"].set_color(INK)
         ax.tick_params(axis="x", length=0)
-        ax.tick_params(axis="y", colors=INK, labelsize=8.6)
+        ax.tick_params(axis="y", colors=INK, labelsize=9)
         ax.set_axisbelow(True)
         dot_ax.set_facecolor("white")
         for x_value, cond in zip(x_positions, condition_tuples, strict=True):
@@ -346,12 +346,12 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                     transform=dot_ax.transAxes,
                     ha="right",
                     va="center",
-                    fontsize=7.0,
+                    fontsize=8.5,
                     color=INK,
                 )
 
     for index in range(len(metrics), n_rows * n_cols):
-        row, col = divmod(index, 3)
+        row, col = divmod(index, n_cols)
         subgrid = outer[row, col].subgridspec(2, 1, height_ratios=[7.0, 2.0], hspace=0.02)
         fig.add_subplot(subgrid[0, 0]).axis("off")
         fig.add_subplot(subgrid[1, 0]).axis("off")
@@ -373,9 +373,8 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="Benchmark band (mean ± SD)"),
         Line2D([0], [0], color="#8A8A8A", linestyle=(0, (5, 2.5)), linewidth=1.1, label="Benchmark line"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 0.972), fontsize=9.6)
-    fig.suptitle("Metric tradeoffs across all 15 channel-group combinations", y=0.992, fontsize=14.0, fontweight="bold")
-    fig.subplots_adjust(left=0.055, right=0.99, bottom=0.06, top=0.90 if n_rows > 2 else 0.885)
+    fig.legend(handles=handles, loc="lower right", ncol=4, frameon=False, bbox_to_anchor=(0.99, 0.04), fontsize=9.0)
+    fig.subplots_adjust(left=0.055, right=0.99, bottom=0.14, top=0.95)
     return fig
 
 
@@ -450,7 +449,7 @@ def _metric_label_with_arrow(metric_key: str) -> str:
     spec = METRIC_SPEC_BY_KEY.get(metric_key)
     if spec is not None:
         arrow = "↑" if spec.higher_is_better else "↓"
-        return f"{label} {arrow}"
+        return f"{label} ({arrow})"
     return label
 
 
@@ -467,11 +466,12 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         normalized_matrix = _normalize_heatmap_matrix(raw_matrix, shared_metric_keys, metric_scales)
         masked = np.ma.masked_invalid(normalized_matrix)
         im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
-        ax.set_ylabel(summary.title, fontsize=10.5, fontweight="normal", color=INK, labelpad=8)
         ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
         ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
         ax.set_xticks(range(len(shared_metric_keys)))
-        if row == len(summaries) - 1:
+        if row == 0:
+            ax.xaxis.tick_top()
+            ax.xaxis.set_label_position("top")
             ax.set_xticklabels(
                 [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
                 rotation=0,
@@ -494,7 +494,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
                 ax.text(
                     c,
                     r,
-                    f"{display_value:+.3f}\n±{raw_std:.3f}",
+                    f"{display_value:+.2f}\n±{raw_std:.2f}",
                     ha="center",
                     va="center",
                     fontsize=9.0,
@@ -515,17 +515,10 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, 0, 1])
     cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=8.0)
-    cbar.set_label(
-        "Within-column rank\n(each metric scaled separately;\nnumerals: raw Δ ± SD)",
-        color=INK,
-        fontsize=8.0,
-        labelpad=8,
-    )
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     cbar.outline.set_edgecolor(INK)
     cbar.outline.set_linewidth(1.0)
-    fig.suptitle("Channel group contributions to image quality metrics", y=0.985, fontsize=11.5, fontweight="normal")
-    fig.subplots_adjust(left=0.13, right=0.84, top=0.88, bottom=0.10)
+    fig.subplots_adjust(left=0.13, right=0.84, top=0.96, bottom=0.10)
     return fig
 
 
@@ -537,14 +530,14 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         "paired": {"offset": -width / 2, "facecolor": "white", "alpha": 1.0, "hatch": None},
         "unpaired": {"offset": width / 2, "facecolor": "white", "alpha": 1.0, "hatch": "//"},
     }
-    x_tick_labels = ["Cell\ntypes", "Cell\nstate", "Vasc.", "Env."]
+    x_tick_labels = ["Cell\ntypes", "Cell\nstate", "Vasc.", "Nutrient"]
 
     values_for_range: list[float] = []
     for group_index, group in enumerate(FOUR_GROUP_ORDER):
         for summary in summaries:
             style = styles[summary.slug]
-            value = float(summary.loo_summary.get(group, {}).get("mean_diff", 0.0))
-            std_value = float(summary.loo_stats.get(group, {}).get("mean_diff", (value, 0.0))[1])
+            value = float(summary.loo_summary.get(group, {}).get("mean_diff", 0.0)) / 255.0
+            std_value = float(summary.loo_stats.get(group, {}).get("mean_diff", (0.0, 0.0))[1]) / 255.0
             values_for_range.extend([value - std_value, value + std_value])
             bar_ax.bar(
                 group_index + style["offset"],
@@ -559,7 +552,6 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                 capsize=3,
                 error_kw={"ecolor": INK, "elinewidth": 1.0, "capthick": 1.0},
             )
-    bar_ax.set_title(r"Mean normalized $|\Delta \mathrm{pixel}|$", fontweight="bold", fontsize=11.0, pad=7)
     bar_ax.set_xticks(x)
     bar_ax.set_xticklabels(x_tick_labels)
     for tick in bar_ax.get_xticklabels():
@@ -572,13 +564,13 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     bar_ax.spines["right"].set_visible(False)
     bar_ax.tick_params(axis="y", labelsize=9.5)
     bar_ax.set_axisbelow(True)
+    bar_ax.set_ylabel("Mean |\u0394 pixel| (normalized [0, 1])", fontsize=10.0, color=INK)
 
     handles = [
         Patch(facecolor="white", edgecolor=INK, label="Paired"),
         Patch(facecolor="white", edgecolor=INK, hatch="//", label="Unpaired"),
     ]
     fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01), fontsize=10.0)
-    fig.suptitle("Representative leave-one-out channel impact", y=1.03, fontsize=13.5, fontweight="bold")
     fig.subplots_adjust(left=0.10, right=0.985, bottom=0.19, top=0.77)
     return fig
 
@@ -605,8 +597,8 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
             summary.title.upper(),
             ha="left",
             va="center",
-            fontsize=9.4,
-            fontweight="bold",
+            fontsize=11,
+            fontweight="normal",
             color=INK,
             family="DejaVu Serif",
             transform=label_ax.transAxes,
@@ -619,8 +611,7 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
             ax = fig.add_subplot(metric_grid[0, col_index])
             _draw_comparison_metric_panel(ax, summary, metric_key)
 
-    fig.suptitle("Paired vs Unpaired Ranked Conditions", y=0.995, fontsize=13.5, fontweight="bold")
-    fig.subplots_adjust(left=0.028, right=0.992, bottom=0.05, top=0.92)
+    fig.subplots_adjust(left=0.028, right=0.992, bottom=0.05, top=0.97)
     return fig
 
 

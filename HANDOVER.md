@@ -2,118 +2,171 @@
 
 Date: 2026-04-23
 
-## Current status
+## Current state
 
-The section 11 task-source layout under `src/` is in place and implemented to the level supported by this machine.
+This handover reflects the live state on the current GPU host, not the earlier planner-only snapshot.
 
-- CPU-complete and tested:
-  - `a0_visibility_map`
-  - `a0_tradeoff_scatter`
-  - `a1_mask_targets`
-  - `a1_probe_linear`
-  - `a1_probe_mlp`
-  - `a1_codex_targets`
-- Planner-only and tested on this machine; actual generation/training still needs a GPU machine:
-  - `a1_probe_encoders`
-  - `a1_generated_probe`
-  - `a2_decomposition`
-  - `a3_combinatorial_sweep`
+### Environments
 
-The most recent task-level documentation is in `README_TASKS.md`, which now lists the runnable CLI for every task package.
+- `he-multiplex`: use for sklearn-based probe tasks and focused pytest runs.
+- `pixcell`: use for diffusers / stage3 / GPU generation tasks.
 
-## What was completed
+### Key runtime paths
 
-- Updated `docs/paper_action_plan_2026-04-22.md` to serve as the central spec for section 11 task layout and implementation status.
-- Added isolated task packages under `src/<task_name>/`.
-- Implemented shared task helpers under `src/_tasklib/`.
-- Added a CLI for `src.a1_codex_targets.probe` so all task packages now have a documented command entrypoint.
-- Added focused tests for the new task packages and the CODEX probe CLI.
-- Added `README_TASKS.md` with copy-paste commands, expected outputs, and CPU vs GPU notes.
+- Experimental data root: `data/orion-crc33`
+- CODEX root on this host: `/home/ec2-user/he-feature-visualizer/data`
+- Stage3 checkpoint dir: `checkpoints/pixcell_controlnet_exp/npy_inputs`
+- Virchow2 local weights: `pretrained_models/Virchow2/`
 
-## Validated state
+## Task-by-task status
 
-Focused task-suite validation has passed.
+### Completed tasks
 
-Most recent targeted command:
+- `a0_visibility_map`
+  - Output dir: `src/a0_visibility_map/out`
+  - Status: complete
+
+- `a0_tradeoff_scatter`
+  - Output dir: `src/a0_tradeoff_scatter/out`
+  - Status: complete
+
+- `a1_mask_targets`
+  - Output dir: `src/a1_mask_targets/out`
+  - Status: complete
+  - Produced T1 targets, tile IDs, and target names used by downstream probe tasks.
+
+- `a1_probe_linear`
+  - Output dir: `src/a1_probe_linear/out`
+  - Status: complete
+  - Manifest reports `10379` tiles, `1536` feature dimensions, and `10` T1 targets.
+
+- `a1_probe_mlp`
+  - Output dir: `src/a1_probe_mlp/out`
+  - Status: complete
+  - Main result files:
+    - `mlp_probe_results.json`
+    - `mlp_probe_results.csv`
+    - `comparison_vs_linear.csv`
+  - Notable outcome from `comparison_vs_linear.csv`:
+    - MLP slightly improved `immune_frac`, `dead_frac`, and `vasculature_frac`.
+    - Linear remained stronger on most other T1 targets, especially `oxygen_mean` and `glucose_mean`.
+
+- `a1_probe_encoders`
+  - Output dir: `src/a1_probe_encoders/out`
+  - Status: complete
+  - Produced:
+    - `raw_cnn_embeddings.npy`
+    - `virchow_embeddings.npy`
+    - `encoder_comparison.csv`
+  - Virchow note:
+    - The local Virchow2 package is a Hugging Face / timm layout (`config.json` + state dict), not a serialized Torch module.
+    - The loader in `src/a1_probe_encoders/main.py` was updated earlier in this session to construct from config and load the state dict.
+  - Notable outcome from `encoder_comparison.csv`:
+    - Virchow beats UNI on `cell_density`.
+    - UNI remains stronger on the other listed T1 targets.
+
+- `a1_generated_probe`
+  - Output dir: `src/a1_generated_probe/out`
+  - Status: complete
+  - Produced:
+    - `generated_uni_embeddings.npy`
+    - `generated_tile_ids.txt`
+    - `generated_probe_manifest.json`
+    - `generated_probe_results.json`
+    - `generated_probe_results.csv`
+    - `real_vs_generated_r2.csv`
+
+- `a2_decomposition`
+  - Output dir: `src/a2_decomposition/out`
+  - Status: complete
+  - Full decomposition sweep is finished: `500` tiles × `4` modes = `2000` generated images.
+  - Validation summary:
+    - `mode_metrics.csv` contains `2000` rows across `500` tiles.
+    - `mode_summary.csv` contains `4` mode rows with `n_tiles=500` and `reference_count=500` for each mode.
+  - Runtime note:
+    - Backfilling from the earlier `N=2` snapshot to the full `N=500` set completed on this T4 host in approximately `65` minutes.
+  - Produced generated examples plus:
+    - `mode_metrics.csv`
+    - `mode_summary.csv`
+
+- `a3_combinatorial_sweep`
+  - Output dir: `src/a3_combinatorial_sweep/out`
+  - Status: complete
+  - Full K=20 sweep is finished: `20` anchor tiles × `27` conditions = `540` generated tiles.
+  - Anchor list used for the completed sweep:
+    - `src/a3_combinatorial_sweep/anchors_k20_t1_medoid.txt`
+  - Validation summary:
+    - `morphological_signatures.csv` contains `540` rows across `20` anchors.
+    - `additive_model_residuals.csv` contains `27` condition rows with `n_anchors=20`.
+  - Runtime note:
+    - Full generation plus summary completed on this T4 host in approximately `29.3` minutes.
+  - Summary outputs are now present:
+    - `morphological_signatures.csv`
+    - `additive_model_residuals.csv`
+    - `interaction_heatmap.png`
+
+### Completed CODEX tasks
+
+- `a1_codex_targets.build`
+  - Output dir: `src/a1_codex_targets/out`
+  - Status: complete
+  - Produced T2 and T3 target bundles plus marker / feature-name metadata.
+
+- `a1_codex_targets.probe`
+  - Output dir: `src/a1_codex_targets/probe_out`
+  - Status: complete
+  - Final stage status:
+    - `t2_linear`: complete
+    - `t2_mlp`: complete
+    - `t3_linear`: complete
+    - `t3_mlp`: complete
+  - Final run completed on this host at approximately `2026-04-23 17:28 PDT`.
+  - All four stage output folders are populated.
+  - Important collaboration note:
+    - The user is currently modifying CODEX-related code. Do not make further CODEX code edits unless the user explicitly asks.
+
+## Tests and validation already completed
+
+- Worker-focused suite passed earlier:
 
 ```bash
-pytest -q tests/test_task_a1_codex_targets.py tests/test_task_a1_codex_probe_cli.py
+conda run -n he-multiplex pytest -q \
+  tests/test_a1_generated_probe_worker.py \
+  tests/test_task_a1_probe_encoders.py \
+  tests/test_a2_decomposition_worker.py \
+  tests/test_a3_combinatorial_sweep_worker.py
 ```
 
-Result:
-
-```text
-3 passed in 0.11s
-```
-
-Previously validated focused suite:
+- Later focused probe tests passed after the shared probe parallelism update:
 
 ```bash
-pytest -q \
-  tests/test_task_a0_visibility_map.py \
-  tests/test_task_a0_tradeoff_scatter.py \
-  tests/test_task_a1_mask_targets.py \
-  tests/test_task_a1_probe_linear.py \
+/home/ec2-user/miniconda3/envs/he-multiplex/bin/python -m pytest \
   tests/test_task_a1_probe_mlp.py \
-  tests/test_task_a1_codex_targets.py \
-  tests/test_task_gpu_wrappers.py
+  tests/test_task_a1_codex_targets.py -q
 ```
 
-That suite passed earlier in this session.
+## Important implementation notes
 
-## Machine and data constraints
+- `a1_probe_linear.main` now supports target-level parallel CV execution via `--n-jobs`.
+- `a1_probe_mlp.main` threads the same `--n-jobs` option through to the shared CV helper.
+- `a1_codex_targets.probe` also accepts `--n-jobs`, but the user is actively modifying CODEX now, so avoid further edits there unless requested.
+- `a1_probe_mlp` does not checkpoint mid-stage; it writes outputs only after the full run completes.
+- `a1_codex_targets.probe` runs stages sequentially in order: `t2_linear -> t2_mlp -> t3_linear -> t3_mlp`.
 
-- This machine has no GPU.
-- `torch` is present, but CUDA is unavailable.
-- `h5py` is not available here, so lightweight task code avoids importing heavier dataset modules just to reuse helpers.
-- Raw CRC33 CODEX data root:
-  - `/home/pohaoc2/UW/bagherilab/he-feature-visualizer/data`
-- Paired experimental PixCell root:
-  - `data/orion-crc33`
-- Inference outputs live under:
-  - `inference_output/`
+## Recommended next steps
 
-## Important outputs and entry points
+1. Review `t2_*` and `t3_*` summaries under `src/a1_codex_targets/probe_out` and compare MLP vs linear performance.
+2. Review the completed sweep summary artifacts in `src/a3_combinatorial_sweep/out`.
+3. If more reporting is needed, consolidate the key results from:
+   - `src/a1_probe_mlp/out/comparison_vs_linear.csv`
+   - `src/a1_probe_encoders/out/encoder_comparison.csv`
+   - `src/a1_generated_probe/out/real_vs_generated_r2.csv`
+   - `src/a2_decomposition/out/mode_summary.csv`
+   - `src/a3_combinatorial_sweep/out/morphological_signatures.csv`
+4. Keep CODEX source edits user-driven for now; do not modify CODEX code again unless explicitly requested.
 
-- Task CLI summary:
-  - `README_TASKS.md`
-- Central planning/spec document:
-  - `docs/paper_action_plan_2026-04-22.md`
-- Shared task helpers:
-  - `src/_tasklib/io.py`
-  - `src/_tasklib/runtime.py`
-  - `src/_tasklib/tile_ids.py`
-- New CODEX probe CLI entrypoint:
-  - `src/a1_codex_targets/probe.py`
+## Summary of what still needs active attention
 
-## Open tasks
-
-### High priority
-
-- Run the CPU-safe tasks end-to-end on real data and materialize their outputs in the task `out/` folders.
-- Move the planner-only GPU tasks onto a GPU machine and implement or connect the actual worker execution path behind the generated `plan.json` files.
-- Decide whether to standardize task entrypoints to a single naming convention such as `python -m src.<task>.run`.
-
-### GPU follow-up
-
-- `a1_probe_encoders`: implement and run the actual Virchow/raw-CNN embedding and probe jobs on a GPU machine.
-- `a1_generated_probe`: implement and run generated-H&E embedding plus downstream probe execution.
-- `a2_decomposition`: implement and run the 2x2 UNI/TME generation workers and summary outputs.
-- `a3_combinatorial_sweep`: implement and run the 27-condition generation workers plus downstream interaction analysis.
-
-### Documentation and cleanup
-
-- Keep `README_TASKS.md` and `docs/paper_action_plan_2026-04-22.md` synchronized as task CLIs evolve.
-- Review section 11 details in `docs/paper_action_plan_2026-04-22.md` for stale implementation specifics now that the code is live.
-- Fine-grained `cell_types` remains intentionally parked as TODO and should stay out of the active task list for now.
-
-## Recommended next actions
-
-1. Run the CPU-runnable tasks from `README_TASKS.md` against the real CRC33/PixCell data roots and capture their first real outputs.
-2. Copy the needed inputs plus generated `plan.json` files to a GPU machine.
-3. Implement the worker side for the planner-only GPU tasks, then add behavior tests around those execution paths.
-
-## Git / branch state at handoff
-
-- Current branch: `main`
-- Remote: `origin git@github.com:pohaoc2/PixCell.git`
+- No major section-11 runtime tasks remain active on this host.
+- All sweep generation and summary work is complete.
+- All section-11 tasks relevant to this run are materially complete on this host.

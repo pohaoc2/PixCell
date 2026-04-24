@@ -17,6 +17,11 @@ from sklearn.preprocessing import StandardScaler
 from src._tasklib.io import ensure_directory, write_json
 from src._tasklib.tile_ids import parse_tile_id, tile_ids_sha1
 
+try:
+    from joblib import Parallel, delayed
+except ModuleNotFoundError:  # pragma: no cover
+    Parallel = None
+    delayed = None
 
 def load_tile_ids(tile_ids_path: str | Path) -> list[str]:
     """Load newline-delimited tile IDs."""
@@ -95,12 +100,41 @@ def make_linear_probe(alpha: float = 1.0) -> Pipeline:
     )
 
 
+def _fit_regression_target(
+    X: np.ndarray,
+    Y: np.ndarray,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    target_idx: int,
+    *,
+    estimator_factory,
+) -> tuple[int, np.ndarray | None, np.ndarray | None, float, np.ndarray | None]:
+    y_train = Y[train_idx, target_idx]
+    y_test = Y[test_idx, target_idx]
+    train_mask = np.isfinite(y_train)
+    test_mask = np.isfinite(y_test)
+    if train_mask.sum() == 0 or test_mask.sum() == 0:
+        return target_idx, None, None, float("nan"), None
+
+    model = estimator_factory()
+    model.fit(X[train_idx][train_mask], y_train[train_mask])
+    preds = np.asarray(model.predict(X[test_idx][test_mask]), dtype=np.float32)
+    score = float(r2_score(y_test[test_mask], preds))
+
+    ridge = getattr(model, "named_steps", {}).get("ridge")
+    coef = None
+    if ridge is not None and getattr(ridge, "coef_", None) is not None:
+        coef = np.asarray(ridge.coef_, dtype=np.float64)
+    return target_idx, test_idx[test_mask], preds, score, coef
+
+
 def run_cv_regression(
     X: np.ndarray,
     Y: np.ndarray,
     splits: list[dict[str, list[int]]],
     *,
     estimator_factory=make_linear_probe,
+    n_jobs: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run per-target CV regression and return scores, OOF predictions, and mean coefficients."""
     n_targets = Y.shape[1]
@@ -113,22 +147,38 @@ def run_cv_regression(
     for fold_idx, split in enumerate(splits):
         train_idx = np.asarray(split["train_idx"], dtype=np.int64)
         test_idx = np.asarray(split["test_idx"], dtype=np.int64)
-        for target_idx in range(n_targets):
-            y_train = Y[train_idx, target_idx]
-            y_test = Y[test_idx, target_idx]
-            train_mask = np.isfinite(y_train)
-            test_mask = np.isfinite(y_test)
-            if train_mask.sum() == 0 or test_mask.sum() == 0:
-                continue
-            model = estimator_factory()
-            model.fit(X[train_idx][train_mask], y_train[train_mask])
-            preds = np.asarray(model.predict(X[test_idx][test_mask]), dtype=np.float32)
-            oof_predictions[test_idx[test_mask], target_idx] = preds
-            fold_scores[fold_idx, target_idx] = float(r2_score(y_test[test_mask], preds))
+        if n_jobs == 1 or Parallel is None or delayed is None or n_targets == 1:
+            results = [
+                _fit_regression_target(
+                    X,
+                    Y,
+                    train_idx,
+                    test_idx,
+                    target_idx,
+                    estimator_factory=estimator_factory,
+                )
+                for target_idx in range(n_targets)
+            ]
+        else:
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(_fit_regression_target)(
+                    X,
+                    Y,
+                    train_idx,
+                    test_idx,
+                    target_idx,
+                    estimator_factory=estimator_factory,
+                )
+                for target_idx in range(n_targets)
+            )
 
-            ridge = getattr(model, "named_steps", {}).get("ridge")
-            if ridge is not None and getattr(ridge, "coef_", None) is not None:
-                coef_sum[target_idx] += np.asarray(ridge.coef_, dtype=np.float64)
+        for target_idx, target_test_idx, preds, score, coef in results:
+            if target_test_idx is None or preds is None:
+                continue
+            oof_predictions[target_test_idx, target_idx] = preds
+            fold_scores[fold_idx, target_idx] = score
+            if coef is not None:
+                coef_sum[target_idx] += coef
                 coef_count[target_idx] += 1
 
     coef_mean = np.divide(
@@ -198,6 +248,8 @@ def run_task(
     n_splits: int = 5,
     block_size_px: int = 2048,
     alpha: float = 1.0,
+    n_jobs: int = 1,
+    preloaded_X: np.ndarray | None = None,
 ) -> dict[str, Path]:
     """Run the full linear-probe workflow and persist all outputs."""
     output_dir = ensure_directory(out_dir)
@@ -207,7 +259,7 @@ def run_task(
         if target_names_path is not None
         else [f"target_{index}" for index in range(np.load(targets_path).shape[1])]
     )
-    X = load_feature_matrix(features_dir, tile_ids)
+    X = preloaded_X if preloaded_X is not None else load_feature_matrix(features_dir, tile_ids)
     Y = np.load(targets_path).astype(np.float32)
     if Y.shape[0] != len(tile_ids):
         raise ValueError("target matrix row count does not match tile_ids.txt")
@@ -224,6 +276,7 @@ def run_task(
         Y,
         splits,
         estimator_factory=lambda: make_linear_probe(alpha=alpha),
+        n_jobs=n_jobs,
     )
     np.save(output_dir / "linear_probe_fold_scores.npy", fold_scores)
     np.save(output_dir / "linear_probe_oof_predictions.npy", oof_predictions)
@@ -265,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--block-size-px", type=int, default=2048)
     parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--n-jobs", type=int, default=1)
     args = parser.parse_args(argv)
 
     run_task(
@@ -277,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         n_splits=args.n_splits,
         block_size_px=args.block_size_px,
         alpha=args.alpha,
+        n_jobs=args.n_jobs,
     )
     return 0
 

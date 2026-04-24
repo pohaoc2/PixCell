@@ -47,14 +47,14 @@ def test_build_codex_targets_assigns_cells_to_tiles(tmp_path: Path):
 def test_run_probe_tasks_uses_supplied_runners(tmp_path: Path):
     from src.a1_codex_targets.probe import run_probe_tasks
 
-    calls: list[tuple[str, Path]] = []
+    calls: list[tuple[str, Path, int | None]] = []
 
     def fake_runner(*args, **kwargs):
         out_dir = Path(args[3])
         out_dir.mkdir(parents=True, exist_ok=True)
         result_path = out_dir / "result.json"
         result_path.write_text("{}", encoding="utf-8")
-        calls.append((str(args[1]), out_dir))
+        calls.append((str(args[1]), out_dir, kwargs.get("n_jobs")))
         return {"json": result_path}
 
     outputs = run_probe_tasks(
@@ -66,7 +66,10 @@ def test_run_probe_tasks_uses_supplied_runners(tmp_path: Path):
         out_dir=tmp_path / "out",
         linear_runner=fake_runner,
         mlp_runner=fake_runner,
+        n_jobs=4,
+        preloaded_X=np.zeros((1, 4), dtype=np.float32),
     )
 
     assert set(outputs.keys()) == {"t2_linear", "t2_mlp"}
     assert len(calls) == 2
+    assert all(call[2] == 4 for call in calls)

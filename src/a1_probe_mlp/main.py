@@ -88,6 +88,8 @@ def run_task(
     n_splits: int = 5,
     block_size_px: int = 2048,
     random_state: int = 42,
+    n_jobs: int = 1,
+    preloaded_X: np.ndarray | None = None,
 ) -> dict[str, Path]:
     """Run the full MLP-probe workflow and persist all outputs."""
     output_dir = ensure_directory(out_dir)
@@ -97,7 +99,7 @@ def run_task(
         if target_names_path is not None
         else [f"target_{index}" for index in range(np.load(targets_path).shape[1])]
     )
-    X = load_feature_matrix(features_dir, tile_ids)
+    X = preloaded_X if preloaded_X is not None else load_feature_matrix(features_dir, tile_ids)
     Y = np.load(targets_path).astype(np.float32)
     if Y.shape[0] != len(tile_ids):
         raise ValueError("target matrix row count does not match tile_ids.txt")
@@ -114,6 +116,7 @@ def run_task(
         Y,
         splits,
         estimator_factory=lambda: make_mlp_probe(random_state=random_state),
+        n_jobs=n_jobs,
     )
     np.save(output_dir / "mlp_probe_fold_scores.npy", fold_scores)
     np.save(output_dir / "mlp_probe_oof_predictions.npy", oof_predictions)
@@ -162,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--block-size-px", type=int, default=2048)
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--n-jobs", type=int, default=1)
     args = parser.parse_args(argv)
 
     run_task(
@@ -175,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         n_splits=args.n_splits,
         block_size_px=args.block_size_px,
         random_state=args.random_state,
+        n_jobs=args.n_jobs,
     )
     return 0
 
