@@ -28,10 +28,13 @@ from tools.stage3.hed_utils import tissue_mask_from_rgb
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ORION_ROOT = ROOT / "data" / "orion-crc33"
 DEFAULT_OUT_PNG = ROOT / "figures" / "pngs" / "08_uni_tme_decomposition.png"
-MODE_GRID = (
-    ("uni_plus_tme", "uni_only"),
-    ("tme_only", "neither"),
-)
+_GENERATED_GRID: list[tuple[str, bool]] = [
+    ("uni_plus_tme", True),
+    ("uni_only", False),
+    ("tme_only", False),
+    ("neither", False),
+]
+_GENERATED_POSITIONS: list[tuple[int, int]] = [(1, 0), (1, 1), (2, 0), (2, 1)]
 MODE_USE_UNI = {"uni_plus_tme": True, "uni_only": True, "tme_only": False, "neither": False}
 MODE_USE_TME = {"uni_plus_tme": True, "uni_only": False, "tme_only": True, "neither": False}
 DISPLAY_METRICS = ("fud", "lpips", "pq", "dice", "style_hed")
@@ -112,15 +115,35 @@ def _panel_label(ax: plt.Axes, label: str) -> None:
     )
 
 
-def _render_image_cell(ax: plt.Axes, image: Image.Image, title: str) -> None:
+def _render_image_cell(ax: plt.Axes, image: Image.Image, title: str, *, border_color: str = "#333333") -> None:
     ax.imshow(image)
-    ax.set_title(title, fontsize=9, pad=3)
+    ax.set_title(title, fontsize=7, pad=2)
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_linewidth(0.8)
-        spine.set_color("#333333")
+        spine.set_color(border_color)
+
+
+def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) -> None:
+    """Draw UNI/TME ●/○ dots at bottom-right corner of an image axes."""
+    for x_ax, label, active in [
+        (0.80, "UNI", MODE_USE_UNI[mode_key]),
+        (0.91, "TME", MODE_USE_TME[mode_key]),
+    ]:
+        ax.scatter(
+            [x_ax], [0.06],
+            s=16,
+            facecolors=INK if active else "white",
+            edgecolors=INK,
+            linewidths=0.8,
+            transform=ax.transAxes,
+            clip_on=False,
+            zorder=5,
+        )
+        if show_labels:
+            ax.text(x_ax, 0.20, label, transform=ax.transAxes, ha="center", fontsize=5.5, color=INK)
 
 
 def _render_panel_a(
@@ -134,56 +157,24 @@ def _render_panel_a(
     outer_ax = fig.add_subplot(subgrid)
     outer_ax.axis("off")
     _panel_label(outer_ax, "A")
-    outer_ax.text(0.02, 1.03, f"Representative tile {tile_id}", transform=outer_ax.transAxes, fontsize=9, color=INK)
 
-    grid = subgrid.subgridspec(2, 4, width_ratios=[1, 1, 0.78, 0.78], wspace=0.08, hspace=0.16)
+    grid = subgrid.subgridspec(3, 2, wspace=0.05, hspace=0.10)
     sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
     size = sample.size
 
-    for row_idx, row in enumerate(MODE_GRID):
-        for col_idx, mode_key in enumerate(row):
-            ax = fig.add_subplot(grid[row_idx, col_idx])
-            image = _load_rgb(generated_root / tile_id / f"{mode_key}.png", size=size)
-            _render_image_cell(ax, image, MODE_LABELS[mode_key])
-            if col_idx == 0:
-                ax.set_ylabel("UNI on" if row_idx == 0 else "UNI off", fontsize=9)
-            if row_idx == 1:
-                ax.set_xlabel("TME on" if col_idx == 0 else "TME off", fontsize=9)
-
-    ref_ax = fig.add_subplot(grid[0, 2])
+    ref_ax = fig.add_subplot(grid[0, 0])
     ref_path = orion_root / "he" / f"{tile_id}.png"
     ref_img = _load_rgb(ref_path, size=size) if ref_path.is_file() else _blank_image(size=size)
-    _render_image_cell(ref_ax, ref_img, "Real H&E")
+    _render_image_cell(ref_ax, ref_img, "Real H&E", border_color="#5a9a5a")
 
-    tme_ax = fig.add_subplot(grid[1, 2])
-    _render_image_cell(tme_ax, _load_tme_thumbnail(orion_root, tile_id, size=size), "TME layout")
+    tme_ax = fig.add_subplot(grid[0, 1])
+    _render_image_cell(tme_ax, _load_tme_thumbnail(orion_root, tile_id, size=size), "TME layout", border_color="#b89a70")
 
-    legend_ax = fig.add_subplot(grid[:, 3])
-    legend_ax.axis("off")
-    y0 = 0.75
-    for idx, mode_key in enumerate(MODE_KEYS):
-        y = y0 - idx * 0.17
-        legend_ax.text(0.0, y, MODE_LABELS[mode_key], transform=legend_ax.transAxes, fontsize=8.5, color=INK)
-        legend_ax.scatter(
-            [0.70],
-            [y + 0.01],
-            s=30,
-            facecolors=INK if MODE_USE_UNI[mode_key] else "white",
-            edgecolors=INK,
-            transform=legend_ax.transAxes,
-            clip_on=False,
-        )
-        legend_ax.scatter(
-            [0.86],
-            [y + 0.01],
-            s=30,
-            facecolors=INK if MODE_USE_TME[mode_key] else "white",
-            edgecolors=INK,
-            transform=legend_ax.transAxes,
-            clip_on=False,
-        )
-    legend_ax.text(0.70, y0 + 0.12, "UNI", transform=legend_ax.transAxes, ha="center", fontsize=8, color=INK)
-    legend_ax.text(0.86, y0 + 0.12, "TME", transform=legend_ax.transAxes, ha="center", fontsize=8, color=INK)
+    for (mode_key, show_text), (row, col) in zip(_GENERATED_GRID, _GENERATED_POSITIONS, strict=True):
+        ax = fig.add_subplot(grid[row, col])
+        image = _load_rgb(generated_root / tile_id / f"{mode_key}.png", size=size)
+        _render_image_cell(ax, image, MODE_LABELS[mode_key])
+        _render_mode_indicator(ax, mode_key, show_labels=show_text)
 
 
 def _values_for_metric(summary: dict[str, dict], metric_key: str) -> tuple[list[float], list[float | None]]:
