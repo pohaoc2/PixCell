@@ -61,6 +61,14 @@ This handover reflects the live state on the current GPU host, not the earlier p
   - Virchow note:
     - The local Virchow2 package is a Hugging Face / timm layout (`config.json` + state dict), not a serialized Torch module.
     - The loader in `src/a1_probe_encoders/main.py` was updated earlier in this session to construct from config and load the state dict.
+  - CTransPath note:
+    - Figure-4-related code was extended to support a `ctranspath` worker and local CTransPath weights under `pretrained_models/ctranspath/`.
+    - The local files now exist:
+      - `pretrained_models/ctranspath/config.json`
+      - `pretrained_models/ctranspath/model.safetensors`
+    - GPU visibility was confirmed outside the sandbox; inside the sandbox `torch.cuda.is_available()` may report `False`.
+    - Real CTransPath extraction was attempted multiple times and the loader was partially adapted for current `timm`, but the extraction is not complete and no `ctranspath_embeddings.npy` or `ctranspath_linear_probe_results.csv` exists yet.
+    - Last known state before stopping: checkpoint download/cache worked, weights loaded after key normalization, and the process reached active GPU execution, but the forward path still required compatibility fixes for current `timm` / stem behavior.
   - Notable outcome from `encoder_comparison.csv`:
     - Virchow beats UNI on `cell_density`.
     - UNI remains stronger on the other listed T1 targets.
@@ -170,3 +178,8 @@ conda run -n he-multiplex pytest -q \
 - No major section-11 runtime tasks remain active on this host.
 - All sweep generation and summary work is complete.
 - All section-11 tasks relevant to this run are materially complete on this host.
+- Figure 4 follow-up:
+  - `07_inverse_decoding.png` exists, but it currently reflects UNI / Virchow / T2 inputs only and does not yet include CTransPath results.
+  - If resumed, the next concrete target is finishing CTransPath extraction, then writing:
+    - `src/a1_probe_encoders/out/ctranspath_embeddings.npy`
+    - `src/a1_probe_encoders/out/ctranspath_linear_probe_results.csv`

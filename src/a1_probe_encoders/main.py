@@ -23,6 +23,10 @@ _RAW_CNN_EPOCHS = 12
 _RAW_CNN_IMAGE_SIZE = 64
 _RAW_CNN_LEARNING_RATE = 1e-3
 _VIRCHOW_BATCH_SIZE = 16
+_CTRANSPATH_BATCH_SIZE = 64
+_CTRANSPATH_LOCAL_DIR = Path(__file__).resolve().parents[2] / "pretrained_models" / "ctranspath"
+_CTRANSPATH_DEFAULT_MODEL = "hf-hub:1aurent/swin_tiny_patch4_window7_224.CTransPath"
+_RESNET50_BATCH_SIZE = 64
 _COMPARISON_FIELDNAMES = ("target", "uni_r2", "virchow_r2", "cnn_r2")
 _RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR
 
@@ -151,6 +155,48 @@ def summarize_probe_results(
         return rows
 
 
+def run_encoder_probe_to_csv(
+    embeddings_path: str | Path,
+    *,
+    targets_path: str | Path,
+    tile_ids_path: str | Path,
+    cv_splits_path: str | Path,
+    output_csv_path: str | Path,
+) -> Path:
+    """Run the shared CV probe on a 2D embeddings array and persist the summary CSV."""
+    tile_ids = load_tile_ids(tile_ids_path)
+    targets = _load_targets(targets_path)
+    if targets.shape[0] != len(tile_ids):
+        raise ValueError("targets row count does not match tile_ids count")
+
+    target_names = _load_target_names(targets_path, cv_splits_path)
+    embeddings = np.asarray(np.load(embeddings_path), dtype=np.float32)
+    if embeddings.ndim != 2 or embeddings.shape[0] != len(tile_ids):
+        raise ValueError(
+            f"embeddings shape {embeddings.shape} incompatible with {len(tile_ids)} tiles"
+        )
+
+    splits = load_cv_splits(tile_ids, cv_splits_path)
+    fold_scores, _, _ = run_cv_regression(embeddings, targets, splits)
+    rows = summarize_probe_results(fold_scores, target_names)
+
+    out_path = Path(output_csv_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["target", "r2_mean", "r2_sd", "n_valid_folds"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "target": row["target"],
+                    "r2_mean": float(row["r2_mean"]),
+                    "r2_sd": float(row["r2_sd"]),
+                    "n_valid_folds": int(row["n_valid_folds"]),
+                }
+            )
+    return out_path
+
+
 @dataclass(frozen=True)
 class ProbeEncodersConfig:
     """Inputs required to plan the encoder-comparison task."""
@@ -161,6 +207,7 @@ class ProbeEncodersConfig:
     cv_splits_path: Path
     out_dir: Path
     virchow_weights: Path | None = None
+    ctranspath_model: str | None = None
     device: str = "cuda"
     skip_existing: bool = True
 
@@ -191,6 +238,8 @@ def _worker_command(config: ProbeEncodersConfig, worker: str) -> CommandSpec:
     ]
     if config.virchow_weights is not None:
         argv.extend(["--virchow-weights", str(config.virchow_weights)])
+    if config.ctranspath_model:
+        argv.extend(["--ctranspath-model", str(config.ctranspath_model)])
     return CommandSpec(argv=tuple(argv), cwd=Path(__file__).resolve().parents[2])
 
 
@@ -682,6 +731,256 @@ def run_virchow_worker(config: ProbeEncodersConfig) -> Path:
     return output_path
 
 
+def _load_checkpoint_state_dict(weights_file: Path) -> dict[str, Any]:
+    import torch
+
+    if weights_file.suffix == ".safetensors":
+        from safetensors.torch import load_file
+
+        payload = load_file(str(weights_file), device="cpu")
+    else:
+        payload = torch.load(str(weights_file), map_location="cpu", weights_only=False)
+
+    if isinstance(payload, dict) and isinstance(payload.get("model"), dict):
+        return dict(payload["model"])
+    if isinstance(payload, dict) and isinstance(payload.get("state_dict"), dict):
+        return dict(payload["state_dict"])
+    if isinstance(payload, dict):
+        return dict(payload)
+    raise RuntimeError(f"unsupported checkpoint payload type for {weights_file}")
+
+
+def _resolve_ctranspath_checkpoint(model_name: str) -> Path:
+    from huggingface_hub import snapshot_download
+
+    def _pick_from_dir(base_dir: Path) -> Path:
+        candidates = (
+            "ctranspath.pth",
+            "model.safetensors",
+            "pytorch_model.bin",
+            "model.bin",
+            "weights.bin",
+        )
+        for name in candidates:
+            candidate = base_dir / name
+            if candidate.is_file():
+                return candidate
+        matches = sorted(
+            path
+            for pattern in ("*.safetensors", "*.pth", "*.pt", "*.bin")
+            for path in base_dir.glob(pattern)
+            if path.is_file()
+        )
+        if matches:
+            return matches[0]
+        raise FileNotFoundError(f"no checkpoint file found under {base_dir}")
+
+    if model_name.startswith("hf-hub:"):
+        repo_id = model_name.split(":", 1)[1]
+        snapshot_dir = Path(
+            snapshot_download(
+                repo_id=repo_id,
+                allow_patterns=["*.safetensors", "*.pth", "*.pt", "*.bin", "*.json"],
+            )
+        )
+        return _pick_from_dir(snapshot_dir)
+
+    model_path = Path(model_name)
+    if model_path.is_file():
+        return model_path
+    if model_path.is_dir():
+        return _pick_from_dir(model_path)
+    raise FileNotFoundError(f"CTransPath model source not found: {model_name}")
+
+
+def _default_ctranspath_model_source() -> str:
+    return str(_CTRANSPATH_LOCAL_DIR) if _CTRANSPATH_LOCAL_DIR.is_dir() else _CTRANSPATH_DEFAULT_MODEL
+
+
+def _normalize_ctranspath_state_dict(state_dict: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, value in state_dict.items():
+        if key.startswith("head."):
+            continue
+        if key.endswith("attn.relative_position_index") or key.endswith(".attn_mask"):
+            continue
+        if key.startswith("layers.0.downsample."):
+            key = key.replace("layers.0.downsample.", "layers.1.downsample.", 1)
+        elif key.startswith("layers.1.downsample."):
+            key = key.replace("layers.1.downsample.", "layers.2.downsample.", 1)
+        elif key.startswith("layers.2.downsample."):
+            key = key.replace("layers.2.downsample.", "layers.3.downsample.", 1)
+        normalized[key] = value
+    return normalized
+
+
+def _build_ctranspath_extractor(model_name: str, *, device: str) -> Any:
+    import torch
+    import torch.nn as nn
+    import timm
+    from torchvision import transforms
+
+    try:
+        from timm.layers import to_2tuple
+    except ImportError:
+        from timm.models.layers.helpers import to_2tuple
+
+    class ConvStem(nn.Module):
+        def __init__(
+            self,
+            img_size: int = 224,
+            patch_size: int = 4,
+            in_chans: int = 3,
+            embed_dim: int = 768,
+            norm_layer: Any | None = None,
+            flatten: bool = False,
+            output_fmt: str | None = None,
+            **_: Any,
+        ) -> None:
+            super().__init__()
+            assert patch_size == 4
+            assert embed_dim % 8 == 0
+            img_size = to_2tuple(img_size)
+            patch_size = to_2tuple(patch_size)
+            self.img_size = img_size
+            self.patch_size = patch_size
+            self.grid_size = (img_size[0] // patch_size[0], img_size[1] // patch_size[1])
+            self.num_patches = self.grid_size[0] * self.grid_size[1]
+            self.flatten = flatten
+            self.output_fmt = output_fmt
+
+            stem = []
+            input_dim = in_chans
+            output_dim = embed_dim // 8
+            for _ in range(2):
+                stem.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=2, padding=1, bias=False))
+                stem.append(nn.BatchNorm2d(output_dim))
+                stem.append(nn.ReLU(inplace=True))
+                input_dim = output_dim
+                output_dim *= 2
+            stem.append(nn.Conv2d(input_dim, embed_dim, kernel_size=1))
+            self.proj = nn.Sequential(*stem)
+            self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+        def forward(self, inputs: Any) -> Any:
+            x = self.proj(inputs)
+            if self.output_fmt == "NHWC":
+                x = x.permute(0, 2, 3, 1)
+            elif self.flatten:
+                x = x.flatten(2).transpose(1, 2)
+            return self.norm(x)
+
+    resolved_device = _resolve_device(device)
+    model = timm.create_model("swin_tiny_patch4_window7_224", embed_layer=ConvStem, pretrained=False)
+    model.head = nn.Identity()
+    checkpoint_path = _resolve_ctranspath_checkpoint(model_name)
+    state_dict = _normalize_ctranspath_state_dict(_load_checkpoint_state_dict(checkpoint_path))
+    load_result = model.load_state_dict(state_dict, strict=False)
+    missing_keys = list(getattr(load_result, "missing_keys", ()))
+    unexpected_keys = list(getattr(load_result, "unexpected_keys", ()))
+    if missing_keys or unexpected_keys:
+        raise RuntimeError(
+            f"failed to load CTransPath checkpoint cleanly: missing={missing_keys[:5]} unexpected={unexpected_keys[:5]}"
+        )
+    if hasattr(model, "to"):
+        model = model.to(resolved_device)
+    model.eval()
+    transform = transforms.Compose(
+        [
+            transforms.Resize(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ]
+    )
+    return _TorchModuleExtractor(
+        model,
+        device=resolved_device,
+        transform=transform,
+        autocast_dtype=getattr(torch, "float16", None),
+    )
+
+
+def extract_ctranspath_embeddings(
+    he_dir: str | Path,
+    tile_ids: list[str],
+    *,
+    device: str = "cuda",
+    batch_size: int = _CTRANSPATH_BATCH_SIZE,
+    model_name: str = _CTRANSPATH_DEFAULT_MODEL,
+) -> np.ndarray:
+    """Extract CTransPath embeddings in tile order."""
+    if not tile_ids:
+        raise ValueError("tile_ids.txt is empty")
+
+    extractor = _build_ctranspath_extractor(model_name, device=device)
+    outputs: list[np.ndarray] = []
+    for batch_tile_ids in _iter_batches(list(tile_ids), max(1, batch_size)):
+        images = [_load_rgb_image(_find_tile_image_path(he_dir, tile_id)) for tile_id in batch_tile_ids]
+        batch_embeddings = np.asarray(extractor.extract_batch(images), dtype=np.float32)
+        if batch_embeddings.ndim == 1:
+            batch_embeddings = batch_embeddings[np.newaxis, :]
+        outputs.append(batch_embeddings)
+    return np.concatenate(outputs, axis=0)
+
+
+def run_ctranspath_worker(config: ProbeEncodersConfig) -> Path:
+    output_dir = ensure_directory(config.out_dir)
+    tile_ids = load_tile_ids(config.tile_ids_path)
+    embeddings = extract_ctranspath_embeddings(
+        config.he_dir,
+        tile_ids,
+        device=config.device,
+        model_name=config.ctranspath_model or _default_ctranspath_model_source(),
+    )
+    output_path = output_dir / "ctranspath_embeddings.npy"
+    np.save(output_path, embeddings.astype(np.float32, copy=False))
+    return output_path
+
+
+def extract_resnet50_embeddings(
+    he_dir: str | Path,
+    tile_ids: list[str],
+    *,
+    device: str = "cuda",
+    batch_size: int = _RESNET50_BATCH_SIZE,
+) -> np.ndarray:
+    """Extract ResNet-50 pooled embeddings in tile order."""
+    import torch
+    import torchvision.models as tv_models
+
+    if not tile_ids:
+        raise ValueError("tile_ids.txt is empty")
+
+    resolved_device = _resolve_device(device)
+    weights = tv_models.ResNet50_Weights.IMAGENET1K_V2
+    transform = weights.transforms()
+    backbone = tv_models.resnet50(weights=weights)
+    encoder = torch.nn.Sequential(*list(backbone.children())[:-1]).to(resolved_device)
+    encoder.eval()
+
+    outputs: list[np.ndarray] = []
+    for batch_tile_ids in _iter_batches(list(tile_ids), max(1, batch_size)):
+        images = [_load_rgb_image(_find_tile_image_path(he_dir, tile_id)) for tile_id in batch_tile_ids]
+        batch = torch.stack([transform(image) for image in images], dim=0).to(resolved_device)
+        with torch.inference_mode():
+            embeddings = encoder(batch).flatten(1)
+        outputs.append(embeddings.detach().cpu().numpy().astype(np.float32, copy=False))
+    return np.concatenate(outputs, axis=0)
+
+
+def run_resnet50_worker(config: ProbeEncodersConfig) -> Path:
+    output_dir = ensure_directory(config.out_dir)
+    tile_ids = load_tile_ids(config.tile_ids_path)
+    embeddings = extract_resnet50_embeddings(
+        config.he_dir,
+        tile_ids,
+        device=config.device,
+    )
+    output_path = output_dir / "resnet50_embeddings.npy"
+    np.save(output_path, embeddings.astype(np.float32, copy=False))
+    return output_path
+
+
 def run_compare_worker(config: ProbeEncodersConfig) -> Path:
     output_dir = ensure_directory(config.out_dir)
     cnn_embeddings_path = output_dir / "raw_cnn_embeddings.npy"
@@ -812,8 +1111,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cv-splits-path", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--virchow-weights", default=None)
+    parser.add_argument("--ctranspath-model", default=None)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--worker", choices=("raw_cnn", "virchow", "compare"), default=None)
+    parser.add_argument("--worker", choices=("raw_cnn", "virchow", "compare", "ctranspath", "resnet50"), default=None)
     args = parser.parse_args(argv)
 
     config = ProbeEncodersConfig(
@@ -823,6 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
         cv_splits_path=Path(args.cv_splits_path),
         out_dir=Path(args.out_dir),
         virchow_weights=Path(args.virchow_weights) if args.virchow_weights else None,
+        ctranspath_model=args.ctranspath_model,
         device=args.device,
     )
 
@@ -831,6 +1132,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.worker == "virchow":
         run_virchow_worker(config)
+        return 0
+    if args.worker == "ctranspath":
+        run_ctranspath_worker(config)
+        return 0
+    if args.worker == "resnet50":
+        run_resnet50_worker(config)
         return 0
     if args.worker == "compare":
         run_compare_worker(config)
