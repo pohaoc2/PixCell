@@ -465,23 +465,42 @@ def _train_raw_cnn_embeddings(
 
 
 class _TorchModuleExtractor:
-    def __init__(self, model: Any, *, device: str, image_size: int = 224) -> None:
+    def __init__(
+        self,
+        model: Any,
+        *,
+        device: str,
+        image_size: int = 224,
+        transform: Any | None = None,
+        autocast_dtype: Any | None = None,
+    ) -> None:
         self.model = model
         self.device = device
         self.image_size = image_size
+        self.transform = transform
+        self.autocast_dtype = autocast_dtype
+
+    def _image_to_tensor(self, image: Image.Image) -> Any:
+        import torch
+
+        if self.transform is not None:
+            return self.transform(image.convert("RGB"))
+
+        resized = image.convert("RGB").resize((self.image_size, self.image_size), _RESAMPLE_BILINEAR)
+        array = np.asarray(resized, dtype=np.float32)
+        return torch.from_numpy(np.transpose(array / 255.0, (2, 0, 1)))
 
     def extract_batch(self, images: list[Image.Image]) -> np.ndarray:
         import torch
 
-        tensors = []
-        for image in images:
-            resized = image.convert("RGB").resize((self.image_size, self.image_size), _RESAMPLE_BILINEAR)
-            array = np.asarray(resized, dtype=np.float32)
-            tensor = torch.from_numpy(np.transpose(array / 255.0, (2, 0, 1)))
-            tensors.append(tensor)
+        tensors = [self._image_to_tensor(image) for image in images]
         batch = torch.stack(tensors, dim=0).to(self.device)
         with torch.inference_mode():
-            outputs = self.model(batch)
+            if self.autocast_dtype is not None and self.device.startswith("cuda") and hasattr(torch, "autocast"):
+                with torch.autocast(device_type="cuda", dtype=self.autocast_dtype):
+                    outputs = self.model(batch)
+            else:
+                outputs = self.model(batch)
         if isinstance(outputs, (tuple, list)):
             outputs = outputs[0]
         if outputs.ndim == 3 and outputs.shape[1] >= 6:
@@ -493,12 +512,99 @@ class _TorchModuleExtractor:
         return outputs.detach().cpu().numpy().astype(np.float32, copy=False)
 
 
+def _load_virchow_state_dict(weights_file: Path) -> dict[str, Any]:
+    import torch
+
+    if weights_file.suffix == ".safetensors":
+        try:
+            from safetensors.torch import load_file
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Virchow safetensors weights require the safetensors package; use pytorch_model.bin or install safetensors"
+            ) from exc
+        payload = load_file(str(weights_file), device="cpu")
+    else:
+        payload = torch.load(str(weights_file), map_location="cpu", weights_only=False)
+
+    if isinstance(payload, dict) and isinstance(payload.get("model"), dict):
+        return dict(payload["model"])
+    if isinstance(payload, dict) and isinstance(payload.get("state_dict"), dict):
+        return dict(payload["state_dict"])
+    if isinstance(payload, dict):
+        return dict(payload)
+    raise RuntimeError("Virchow checkpoint did not contain a state dict")
+
+
+def _build_virchow_hf_extractor(weights_file: Path, *, device: str) -> Any | None:
+    import torch
+
+    config_path = weights_file.with_name("config.json")
+    if not config_path.is_file():
+        return None
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    architecture = payload.get("architecture")
+    model_args = payload.get("model_args")
+    pretrained_cfg = payload.get("pretrained_cfg")
+    if not isinstance(architecture, str) or not isinstance(model_args, dict):
+        return None
+    if pretrained_cfg is not None and not isinstance(pretrained_cfg, dict):
+        raise RuntimeError(f"invalid Virchow config at {config_path}: pretrained_cfg must be a JSON object")
+
+    try:
+        import timm
+        from timm.data import resolve_data_config
+        from timm.data.transforms_factory import create_transform
+        from timm.layers import SwiGLUPacked
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Virchow Hugging Face weights require timm in the selected environment"
+        ) from exc
+
+    model = timm.create_model(
+        architecture,
+        pretrained=False,
+        pretrained_cfg=pretrained_cfg,
+        mlp_layer=SwiGLUPacked,
+        act_layer=torch.nn.SiLU,
+        **dict(model_args),
+    )
+    state_dict = _load_virchow_state_dict(weights_file)
+    try:
+        load_result = model.load_state_dict(state_dict, strict=True)
+    except RuntimeError as exc:
+        raise RuntimeError(f"failed to load Virchow state dict from {weights_file}: {exc}") from exc
+
+    missing_keys = list(getattr(load_result, "missing_keys", ()))
+    unexpected_keys = list(getattr(load_result, "unexpected_keys", ()))
+    if missing_keys or unexpected_keys:
+        raise RuntimeError(
+            "failed to load Virchow state dict: "
+            f"missing_keys={missing_keys[:5]} unexpected_keys={unexpected_keys[:5]}"
+        )
+
+    if hasattr(model, "to"):
+        model = model.to(device)
+    model.eval()
+    transform = create_transform(**resolve_data_config(pretrained_cfg or getattr(model, "pretrained_cfg", {}), model=model))
+    return _TorchModuleExtractor(
+        model,
+        device=device,
+        transform=transform,
+        autocast_dtype=getattr(torch, "float16", None),
+    )
+
+
 def _build_virchow_extractor(weights_path: str | Path, *, device: str) -> Any:
     import torch
 
     resolved_device = _resolve_device(device)
-    model = None
     weights_file = Path(weights_path)
+    hf_extractor = _build_virchow_hf_extractor(weights_file, device=resolved_device)
+    if hf_extractor is not None:
+        return hf_extractor
+
+    model = None
     try:
         model = torch.jit.load(str(weights_file), map_location=resolved_device)
     except Exception:
@@ -509,7 +615,7 @@ def _build_virchow_extractor(weights_path: str | Path, *, device: str) -> Any:
             model = payload["model"]
     if model is None or not hasattr(model, "eval"):
         raise RuntimeError(
-            "Virchow weights must be a TorchScript module, a serialized torch.nn.Module, or a checkpoint dict with a 'model' entry"
+            "Virchow weights must be a TorchScript module, a serialized torch.nn.Module, a checkpoint dict with a 'model' entry, or a local Hugging Face Virchow package"
         )
     if hasattr(model, "to"):
         model = model.to(resolved_device)

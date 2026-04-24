@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -191,6 +192,96 @@ def test_virchow_worker_writes_skip_marker_without_weights(tmp_path: Path) -> No
     skip_path = paths["out_dir"] / "virchow_SKIPPED.txt"
     assert skip_path.is_file()
     assert "virchow skipped" in skip_path.read_text(encoding="utf-8").lower()
+
+
+def test_build_virchow_extractor_supports_local_hf_package(monkeypatch, tmp_path: Path) -> None:
+    import src.a1_probe_encoders.main as probe_encoders
+
+    weights_dir = tmp_path / "Virchow2"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    weights_path = weights_dir / "pytorch_model.bin"
+    weights_path.write_bytes(b"weights")
+    (weights_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "architecture": "vit_huge_patch14_224",
+                "model_args": {"img_size": 224, "num_classes": 0, "reg_tokens": 4},
+                "pretrained_cfg": {"input_size": [3, 224, 224], "mean": [0.1, 0.2, 0.3], "std": [0.4, 0.5, 0.6]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded_state: dict[str, object] = {}
+    captured: dict[str, object] = {}
+    fake_transform = object()
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.device = None
+            self.eval_calls = 0
+            self.pretrained_cfg = {"input_size": [3, 224, 224]}
+
+        def load_state_dict(self, state_dict, strict=True):
+            loaded_state["state_dict"] = state_dict
+            loaded_state["strict"] = strict
+            return types.SimpleNamespace(missing_keys=[], unexpected_keys=[])
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            self.eval_calls += 1
+            return self
+
+        def __call__(self, inputs):
+            return inputs
+
+    fake_model = FakeModel()
+
+    def fake_create_model(architecture, pretrained=False, pretrained_cfg=None, mlp_layer=None, act_layer=None, **kwargs):
+        captured["architecture"] = architecture
+        captured["pretrained"] = pretrained
+        captured["pretrained_cfg"] = pretrained_cfg
+        captured["mlp_layer"] = mlp_layer
+        captured["act_layer"] = act_layer
+        captured["model_args"] = kwargs
+        return fake_model
+
+    fake_torch = types.SimpleNamespace(
+        jit=types.SimpleNamespace(load=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("not torchscript"))),
+        load=lambda *args, **kwargs: {"encoder.weight": np.array([1.0], dtype=np.float32)},
+        nn=types.SimpleNamespace(SiLU=type("FakeSiLU", (), {})),
+        float16="float16",
+    )
+    fake_timm = types.SimpleNamespace(create_model=fake_create_model)
+    fake_timm_data = types.SimpleNamespace(
+        resolve_data_config=lambda pretrained_cfg, model=None: {"input_size": [3, 224, 224], "mean": [0.1, 0.2, 0.3], "std": [0.4, 0.5, 0.6]}
+    )
+    fake_timm_transforms = types.SimpleNamespace(create_transform=lambda **kwargs: fake_transform)
+    fake_timm_layers = types.SimpleNamespace(SwiGLUPacked=type("FakeSwiGLUPacked", (), {}))
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "timm", fake_timm)
+    monkeypatch.setitem(sys.modules, "timm.data", fake_timm_data)
+    monkeypatch.setitem(sys.modules, "timm.data.transforms_factory", fake_timm_transforms)
+    monkeypatch.setitem(sys.modules, "timm.layers", fake_timm_layers)
+
+    extractor = probe_encoders._build_virchow_extractor(weights_path, device="cpu")
+
+    assert extractor.model is fake_model
+    assert extractor.device == "cpu"
+    assert extractor.transform is fake_transform
+    assert captured["architecture"] == "vit_huge_patch14_224"
+    assert captured["pretrained"] is False
+    assert captured["pretrained_cfg"] == {"input_size": [3, 224, 224], "mean": [0.1, 0.2, 0.3], "std": [0.4, 0.5, 0.6]}
+    assert captured["model_args"] == {"img_size": 224, "num_classes": 0, "reg_tokens": 4}
+    assert loaded_state["strict"] is True
+    assert isinstance(loaded_state["state_dict"], dict)
+    assert fake_model.device == "cpu"
+    assert fake_model.eval_calls == 1
 
 
 def test_workers_write_embeddings_and_encoder_comparison(monkeypatch, tmp_path: Path) -> None:

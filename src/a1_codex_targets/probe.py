@@ -21,6 +21,8 @@ def run_probe_tasks(
     quantile_names_path: str | Path | None = None,
     linear_runner: Callable[..., dict[str, Path]] | None = None,
     mlp_runner: Callable[..., dict[str, Path]] | None = None,
+    n_jobs: int = 1,
+    preloaded_X=None,
 ) -> dict[str, dict[str, Path]]:
     """Run linear and MLP probes for T2 and optionally T3."""
     if linear_runner is None:
@@ -30,6 +32,11 @@ def run_probe_tasks(
 
     output_dir = ensure_directory(out_dir)
     results: dict[str, dict[str, Path]] = {}
+    if preloaded_X is None:
+        from src.a1_probe_linear.main import load_feature_matrix, load_tile_ids
+
+        tile_ids = load_tile_ids(tile_ids_path)
+        preloaded_X = load_feature_matrix(features_dir, tile_ids)
 
     t2_linear_dir = output_dir / "t2_linear"
     results["t2_linear"] = linear_runner(
@@ -39,6 +46,8 @@ def run_probe_tasks(
         t2_linear_dir,
         target_names_path=marker_names_path,
         cv_splits_path=cv_splits_path,
+        n_jobs=n_jobs,
+        preloaded_X=preloaded_X,
     )
     results["t2_mlp"] = mlp_runner(
         features_dir,
@@ -48,6 +57,8 @@ def run_probe_tasks(
         target_names_path=marker_names_path,
         cv_splits_path=cv_splits_path,
         linear_results_json=results["t2_linear"]["json"],
+        n_jobs=n_jobs,
+        preloaded_X=preloaded_X,
     )
 
     if t3_targets_path is not None and quantile_names_path is not None:
@@ -59,6 +70,8 @@ def run_probe_tasks(
             t3_linear_dir,
             target_names_path=quantile_names_path,
             cv_splits_path=cv_splits_path,
+            n_jobs=n_jobs,
+            preloaded_X=preloaded_X,
         )
         results["t3_mlp"] = mlp_runner(
             features_dir,
@@ -68,6 +81,8 @@ def run_probe_tasks(
             target_names_path=quantile_names_path,
             cv_splits_path=cv_splits_path,
             linear_results_json=results["t3_linear"]["json"],
+            n_jobs=n_jobs,
+            preloaded_X=preloaded_X,
         )
     return results
 
@@ -83,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--t3-targets-path", default=None)
     parser.add_argument("--quantile-names-path", default=None)
+    parser.add_argument("--n-jobs", type=int, default=1)
     args = parser.parse_args(argv)
 
     run_probe_tasks(
@@ -94,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=args.out_dir,
         t3_targets_path=args.t3_targets_path,
         quantile_names_path=args.quantile_names_path,
+        n_jobs=args.n_jobs,
     )
     return 0
 

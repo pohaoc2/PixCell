@@ -62,3 +62,22 @@ def test_mlp_probe_reuses_linear_splits_and_writes_comparison(tmp_path: Path):
     assert mlp_outputs["json"].is_file()
     assert mlp_outputs["csv"].is_file()
     assert mlp_outputs["comparison"].is_file()
+
+
+def test_run_cv_regression_parallel_matches_serial() -> None:
+    from src.a1_probe_linear.main import run_cv_regression
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(24, 6)).astype(np.float32)
+    weights = rng.normal(size=(6, 3)).astype(np.float32)
+    Y = (X @ weights).astype(np.float32)
+    splits = [
+        {"train_idx": list(range(0, 12)), "test_idx": list(range(12, 24))},
+        {"train_idx": list(range(12, 24)), "test_idx": list(range(0, 12))},
+    ]
+
+    serial = run_cv_regression(X, Y, splits, n_jobs=1)
+    parallel = run_cv_regression(X, Y, splits, n_jobs=2)
+
+    for serial_array, parallel_array in zip(serial, parallel):
+        assert np.allclose(serial_array, parallel_array, equal_nan=True)

@@ -43,7 +43,7 @@ GROUP_LABELS = {
     "cell_types": "Cell types",
     "cell_state": "Cell state",
     "vasculature": "Vasculature",
-    "microenv": "Microenv",
+    "microenv": "Nutrient",
 }
 METRIC_LABELS = {
     "lpips": "LPIPS",
@@ -196,7 +196,7 @@ def _format_mean_sd(mean: float, sd: float) -> str:
 def _metric_caption(metric_key: str) -> str:
     spec = METRIC_SPEC_BY_KEY[metric_key]
     arrow = "↑" if spec.higher_is_better else "↓"
-    return f"{humanize_token(metric_key)} {arrow}"
+    return f"{humanize_token(metric_key)} ({arrow})"
 
 
 def _ranked_labels(total: int, count: int, *, tail: bool = False) -> list[str]:

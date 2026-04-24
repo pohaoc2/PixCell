@@ -92,6 +92,7 @@ METRIC_BAR_MAX_BY_NAME: dict[str, float] = {
 }
 
 ALL4CH_KEY: str = condition_metric_key(FOUR_GROUP_ORDER)
+_PAPER_GROUP_LABELS: tuple[str, ...] = ("CT", "CS", "Vas", "Nut")
 
 
 def _cardinality_color(n: int) -> str:
@@ -247,6 +248,8 @@ def _load_grid_cosine_scores(
 def _draw_dot_row(
     ax,
     cond: tuple[str, ...],
+    *,
+    show_group_labels: bool = False,
 ) -> None:
     """Draw 4 channel-indicator circles in a transparent overlay row."""
     ax.set_xlim(0.0, 1.0)
@@ -267,6 +270,13 @@ def _draw_dot_row(
             c=[face], edgecolors=[edge], linewidths=0.8,
             zorder=3, clip_on=False,
         )
+    if show_group_labels:
+        for x, label in zip(xs, _PAPER_GROUP_LABELS):
+            ax.text(
+                x, dot_y + 0.48, label,
+                ha="center", va="bottom",
+                fontsize=5.5, color="black",
+            )
 
 
 def _metric_fill_fraction(value: float | None, metric_name: str) -> float | None:
@@ -450,7 +460,8 @@ def _maybe_contour_cell_mask(
             mode="L",
         ).resize((img_w, img_h), Image.BILINEAR)
         cell_mask = np.asarray(resized, dtype=np.float32) / 255.0
-    ax.contour(cell_mask, levels=[0.5], colors=["lime"], linewidths=0.7, alpha=0.85)
+    ax.contour(cell_mask, levels=[0.5], colors=["black"], linewidths=1.4, alpha=0.9)
+    ax.contour(cell_mask, levels=[0.5], colors=["white"], linewidths=0.8, alpha=0.9)
 
 
 def _load_cellvit_contours(image_path: Path) -> list[np.ndarray]:
@@ -542,7 +553,7 @@ def render_ablation_grid_figure(
     height_ratios = [0.10, 1.0, 0.30, 0.08] * 4
 
     grid_hspace = 0.012
-    grid_wspace = 0.010
+    grid_wspace = 0.001
 
     fig = plt.figure(figsize=(8.4, 9.1), facecolor="white", layout="constrained")
     layout_engine = fig.get_layout_engine()
@@ -571,7 +582,7 @@ def render_ablation_grid_figure(
         dot_ax = fig.add_subplot(gs[base, gc])
         dot_ax.set_zorder(3)
         dot_ax.patch.set_alpha(0.0)
-        _draw_dot_row(dot_ax, cond)
+        _draw_dot_row(dot_ax, cond, show_group_labels=(cell_idx == 0))
 
         # H&E image
         if cond == tuple(FOUR_GROUP_ORDER):
