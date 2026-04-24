@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 
 from src.a2_decomposition.metrics import (
@@ -301,18 +302,19 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     vmax = float(np.max(np.abs(finite))) or 1.0
     im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
     ax.set_xticks(range(len(cols)))
-    ax.set_xticklabels([METRIC_LABELS.get(metric, metric) for metric in cols], rotation=35, ha="right", fontsize=8)
+    ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=7)
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels(rows, fontsize=8)
-    ax.set_title("Oriented effects", fontsize=9, pad=4)
+    ax.set_yticklabels(rows, fontsize=7)
     for row_idx in range(len(rows)):
         for col_idx in range(len(cols)):
             value = matrix[row_idx, col_idx]
             if np.isfinite(value):
-                ax.text(col_idx, row_idx, f"{value:.2g}", ha="center", va="center", fontsize=7, color=INK)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
-    cbar.ax.tick_params(labelsize=7)
-    cbar.set_label("Higher is better delta", fontsize=8)
+                ax.text(col_idx, row_idx, f"{value:.2g}", ha="center", va="center", fontsize=6.5, color=INK)
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.06)
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.ax.tick_params(labelsize=6.5)
+    cbar.set_label("Δ (higher-is-better)", fontsize=7)
 
 
 
