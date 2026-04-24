@@ -1,0 +1,387 @@
+"""Figure 5: UNI/TME foundation-model decomposition."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from src.a2_decomposition.metrics import (
+    DECOMPOSITION_METRICS,
+    DEFAULT_GENERATED_ROOT,
+    DEFAULT_METRICS_ROOT,
+    DEFAULT_REPRESENTATIVE_JSON,
+    DEFAULT_SUMMARY_CSV,
+    MODE_KEYS,
+    MODE_LABELS,
+    complete_generated_tile_ids,
+    effect_decomposition,
+    load_summary_csv,
+    select_representative_tile,
+)
+from tools.ablation_report.shared import INK, METRIC_LABELS, OKABE_GRAY, SOFT_GRID, plt
+from tools.stage3.hed_utils import tissue_mask_from_rgb
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ORION_ROOT = ROOT / "data" / "orion-crc33"
+DEFAULT_OUT_PNG = ROOT / "figures" / "pngs" / "08_uni_tme_decomposition.png"
+MODE_GRID = (
+    ("uni_plus_tme", "uni_only"),
+    ("tme_only", "neither"),
+)
+MODE_USE_UNI = {"uni_plus_tme": True, "uni_only": True, "tme_only": False, "neither": False}
+MODE_USE_TME = {"uni_plus_tme": True, "uni_only": False, "tme_only": True, "neither": False}
+DISPLAY_METRICS = ("fud", "lpips", "pq", "dice", "style_hed")
+
+
+def _load_rgb(path: Path, *, size: tuple[int, int] | None = None) -> Image.Image:
+    image = Image.open(path).convert("RGB")
+    if size is not None and image.size != size:
+        image = image.resize(size, Image.BILINEAR)
+    return image
+
+
+def _blank_image(size: tuple[int, int] = (256, 256), value: int = 245) -> Image.Image:
+    return Image.fromarray(np.full((size[1], size[0], 3), value, dtype=np.uint8), mode="RGB")
+
+
+def _resolve_representative_tile(
+    *,
+    generated_root: Path,
+    metrics_root: Path,
+    representative_json: Path,
+) -> str:
+    if representative_json.is_file():
+        payload = json.loads(representative_json.read_text(encoding="utf-8"))
+        tile_id = str(payload.get("tile_id", "")).strip()
+        if tile_id and (generated_root / tile_id).is_dir():
+            return tile_id
+
+    tile_id, _ = select_representative_tile(metrics_root=metrics_root)
+    if tile_id and (generated_root / tile_id).is_dir():
+        return tile_id
+
+    tile_ids = complete_generated_tile_ids(generated_root)
+    if not tile_ids:
+        raise FileNotFoundError(f"no complete decomposition tiles under {generated_root}")
+    return tile_ids[0]
+
+
+def _load_tme_thumbnail(orion_root: Path, tile_id: str, *, size: tuple[int, int]) -> Image.Image:
+    for folder in ("cell_masks", "cell_mask"):
+        channel_dir = orion_root / "exp_channels" / folder
+        if not channel_dir.is_dir():
+            continue
+        for ext in (".npy", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+            path = channel_dir / f"{tile_id}{ext}"
+            if not path.is_file():
+                continue
+            if path.suffix.lower() == ".npy":
+                arr = np.load(path)
+            else:
+                arr = np.asarray(Image.open(path))
+            while arr.ndim > 2 and arr.shape[0] == 1:
+                arr = arr.squeeze(0)
+            if arr.ndim == 3:
+                arr = arr[..., 0]
+            arr = np.asarray(arr, dtype=np.float32)
+            lo = float(np.nanmin(arr)) if arr.size else 0.0
+            hi = float(np.nanmax(arr)) if arr.size else 1.0
+            if hi > lo:
+                arr = (arr - lo) / (hi - lo)
+            arr = (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+            rgb = np.stack([arr, arr, arr], axis=-1)
+            return Image.fromarray(rgb, mode="RGB").resize(size, Image.NEAREST)
+    return _blank_image(size=size, value=230)
+
+
+def _panel_label(ax: plt.Axes, label: str) -> None:
+    ax.text(
+        -0.08,
+        1.05,
+        label,
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=13,
+        fontweight="bold",
+        color=INK,
+    )
+
+
+def _render_image_cell(ax: plt.Axes, image: Image.Image, title: str) -> None:
+    ax.imshow(image)
+    ax.set_title(title, fontsize=9, pad=3)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(0.8)
+        spine.set_color("#333333")
+
+
+def _render_panel_a(
+    fig: plt.Figure,
+    subgrid,
+    *,
+    generated_root: Path,
+    orion_root: Path,
+    tile_id: str,
+) -> None:
+    outer_ax = fig.add_subplot(subgrid)
+    outer_ax.axis("off")
+    _panel_label(outer_ax, "A")
+    outer_ax.text(0.02, 1.03, f"Representative tile {tile_id}", transform=outer_ax.transAxes, fontsize=9, color=INK)
+
+    grid = subgrid.subgridspec(2, 4, width_ratios=[1, 1, 0.78, 0.78], wspace=0.08, hspace=0.16)
+    sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
+    size = sample.size
+
+    for row_idx, row in enumerate(MODE_GRID):
+        for col_idx, mode_key in enumerate(row):
+            ax = fig.add_subplot(grid[row_idx, col_idx])
+            image = _load_rgb(generated_root / tile_id / f"{mode_key}.png", size=size)
+            _render_image_cell(ax, image, MODE_LABELS[mode_key])
+            if col_idx == 0:
+                ax.set_ylabel("UNI on" if row_idx == 0 else "UNI off", fontsize=9)
+            if row_idx == 1:
+                ax.set_xlabel("TME on" if col_idx == 0 else "TME off", fontsize=9)
+
+    ref_ax = fig.add_subplot(grid[0, 2])
+    ref_path = orion_root / "he" / f"{tile_id}.png"
+    ref_img = _load_rgb(ref_path, size=size) if ref_path.is_file() else _blank_image(size=size)
+    _render_image_cell(ref_ax, ref_img, "Real H&E")
+
+    tme_ax = fig.add_subplot(grid[1, 2])
+    _render_image_cell(tme_ax, _load_tme_thumbnail(orion_root, tile_id, size=size), "TME layout")
+
+    legend_ax = fig.add_subplot(grid[:, 3])
+    legend_ax.axis("off")
+    y0 = 0.75
+    for idx, mode_key in enumerate(MODE_KEYS):
+        y = y0 - idx * 0.17
+        legend_ax.text(0.0, y, MODE_LABELS[mode_key], transform=legend_ax.transAxes, fontsize=8.5, color=INK)
+        legend_ax.scatter(
+            [0.70],
+            [y + 0.01],
+            s=30,
+            facecolors=INK if MODE_USE_UNI[mode_key] else "white",
+            edgecolors=INK,
+            transform=legend_ax.transAxes,
+            clip_on=False,
+        )
+        legend_ax.scatter(
+            [0.86],
+            [y + 0.01],
+            s=30,
+            facecolors=INK if MODE_USE_TME[mode_key] else "white",
+            edgecolors=INK,
+            transform=legend_ax.transAxes,
+            clip_on=False,
+        )
+    legend_ax.text(0.70, y0 + 0.12, "UNI", transform=legend_ax.transAxes, ha="center", fontsize=8, color=INK)
+    legend_ax.text(0.86, y0 + 0.12, "TME", transform=legend_ax.transAxes, ha="center", fontsize=8, color=INK)
+
+
+def _values_for_metric(summary: dict[str, dict], metric_key: str) -> tuple[list[float], list[float | None]]:
+    values: list[float] = []
+    errors: list[float | None] = []
+    for mode_key in MODE_KEYS:
+        row = summary.get(mode_key, {}).get(metric_key)
+        if row is None or row.mean is None:
+            values.append(float("nan"))
+            errors.append(None)
+            continue
+        values.append(float(row.mean))
+        if row.ci95_low is not None and row.ci95_high is not None:
+            errors.append(max(row.mean - row.ci95_low, row.ci95_high - row.mean))
+        elif row.sd is not None:
+            errors.append(row.sd)
+        else:
+            errors.append(None)
+    return values, errors
+
+
+def _tight_ylim(values: list[float], errors: list[float | None]) -> tuple[float, float]:
+    finite: list[float] = []
+    for value, err in zip(values, errors, strict=True):
+        if not np.isfinite(value):
+            continue
+        if err is None:
+            finite.append(float(value))
+        else:
+            finite.extend([float(value - err), float(value + err)])
+    if not finite:
+        return 0.0, 1.0
+    lo = min(finite)
+    hi = max(finite)
+    if lo == hi:
+        pad = max(abs(lo) * 0.1, 0.05)
+    else:
+        pad = (hi - lo) * 0.12
+    return lo - pad, hi + pad
+
+
+def _render_mode_dots(dot_ax: plt.Axes) -> None:
+    dot_ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
+    dot_ax.set_ylim(-0.5, 1.5)
+    for x, mode_key in enumerate(MODE_KEYS):
+        dot_ax.scatter(
+            x,
+            1,
+            s=23,
+            facecolors=INK if MODE_USE_UNI[mode_key] else "white",
+            edgecolors=INK,
+            linewidths=0.9,
+        )
+        dot_ax.scatter(
+            x,
+            0,
+            s=23,
+            facecolors=INK if MODE_USE_TME[mode_key] else "white",
+            edgecolors=INK,
+            linewidths=0.9,
+        )
+    dot_ax.text(-0.8, 1, "UNI", ha="right", va="center", fontsize=7.5, color=INK)
+    dot_ax.text(-0.8, 0, "TME", ha="right", va="center", fontsize=7.5, color=INK)
+    dot_ax.axis("off")
+
+
+def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
+    outer_ax = fig.add_subplot(subgrid)
+    outer_ax.axis("off")
+    _panel_label(outer_ax, "B")
+    outer_ax.text(0.01, 1.04, "Consistent metric view", transform=outer_ax.transAxes, fontsize=9, color=INK)
+
+    grid = subgrid.subgridspec(2, len(DISPLAY_METRICS), height_ratios=[6.0, 1.4], wspace=0.36, hspace=0.03)
+    x = np.arange(len(MODE_KEYS), dtype=float)
+    for idx, metric_key in enumerate(DISPLAY_METRICS):
+        ax = fig.add_subplot(grid[0, idx])
+        dot_ax = fig.add_subplot(grid[1, idx], sharex=ax)
+        values, errors = _values_for_metric(summary, metric_key)
+        valid_x = [xv for xv, value in zip(x, values, strict=True) if np.isfinite(value)]
+        valid_y = [value for value in values if np.isfinite(value)]
+        valid_err = [err if err is not None else 0.0 for value, err in zip(values, errors, strict=True) if np.isfinite(value)]
+        if valid_y:
+            ax.errorbar(
+                valid_x,
+                valid_y,
+                yerr=valid_err,
+                color=INK,
+                linestyle="none",
+                marker="o",
+                markerfacecolor=INK,
+                markeredgecolor=INK,
+                markersize=4.8,
+                capsize=2.0,
+                elinewidth=0.9,
+            )
+        label = METRIC_LABELS.get(metric_key, metric_key)
+        direction = summary.get("uni_plus_tme", {}).get(metric_key).direction if summary.get("uni_plus_tme", {}).get(metric_key) else ""
+        ax.set_title(f"{label} ({direction})", fontsize=9, pad=3)
+        ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
+        ax.set_ylim(*_tight_ylim(values, errors))
+        ax.set_xticks([])
+        ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.7)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="y", labelsize=7.5, colors=INK)
+        if idx > 0:
+            ax.set_ylabel("")
+        _render_mode_dots(dot_ax)
+
+
+def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
+    ax = fig.add_subplot(subgrid)
+    _panel_label(ax, "C")
+    effects = effect_decomposition(summary)
+    rows = list(effects)
+    cols = list(DISPLAY_METRICS)
+    matrix = np.full((len(rows), len(cols)), np.nan, dtype=float)
+    for row_idx, row_name in enumerate(rows):
+        for col_idx, metric_key in enumerate(cols):
+            value = effects[row_name].get(metric_key)
+            if value is not None:
+                matrix[row_idx, col_idx] = float(value)
+
+    finite = matrix[np.isfinite(matrix)]
+    if finite.size == 0:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Effect metrics missing", ha="center", va="center", transform=ax.transAxes)
+        return
+
+    vmax = float(np.max(np.abs(finite))) or 1.0
+    im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(cols)))
+    ax.set_xticklabels([METRIC_LABELS.get(metric, metric) for metric in cols], rotation=35, ha="right", fontsize=8)
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels(rows, fontsize=8)
+    ax.set_title("Oriented effects", fontsize=9, pad=4)
+    for row_idx in range(len(rows)):
+        for col_idx in range(len(cols)):
+            value = matrix[row_idx, col_idx]
+            if np.isfinite(value):
+                ax.text(col_idx, row_idx, f"{value:.2g}", ha="center", va="center", fontsize=7, color=INK)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+    cbar.ax.tick_params(labelsize=7)
+    cbar.set_label("Higher is better delta", fontsize=8)
+
+
+
+def build_uni_tme_decomposition_figure(
+    *,
+    generated_root: Path = DEFAULT_GENERATED_ROOT,
+    metrics_root: Path = DEFAULT_METRICS_ROOT,
+    summary_csv: Path = DEFAULT_SUMMARY_CSV,
+    representative_json: Path = DEFAULT_REPRESENTATIVE_JSON,
+    orion_root: Path = DEFAULT_ORION_ROOT,
+) -> plt.Figure:
+    """Build the full Figure 5 panel."""
+    generated_root = Path(generated_root)
+    metrics_root = Path(metrics_root)
+    summary_csv = Path(summary_csv)
+    if not summary_csv.is_file():
+        raise FileNotFoundError(f"missing decomposition summary: {summary_csv}")
+
+    summary = load_summary_csv(summary_csv)
+    tile_id = _resolve_representative_tile(
+        generated_root=generated_root,
+        metrics_root=metrics_root,
+        representative_json=Path(representative_json),
+    )
+
+    fig = plt.figure(figsize=(7.2, 3.95))
+    outer = fig.add_gridspec(1, 2, width_ratios=[0.95, 1.05], wspace=0.08)
+    _render_panel_a(fig, outer[0, 0], generated_root=generated_root, orion_root=Path(orion_root), tile_id=tile_id)
+    right = outer[0, 1].subgridspec(2, 1, height_ratios=[1.15, 1.0], hspace=0.38)
+    _render_panel_b(fig, right[0, 0], summary)
+    _render_panel_c(fig, right[1, 0], summary)
+    fig.subplots_adjust(left=0.02, right=0.96, bottom=0.08, top=0.97)
+    return fig
+
+
+def save_uni_tme_decomposition_figure(
+    *,
+    out_png: Path = DEFAULT_OUT_PNG,
+    generated_root: Path = DEFAULT_GENERATED_ROOT,
+    metrics_root: Path = DEFAULT_METRICS_ROOT,
+    summary_csv: Path = DEFAULT_SUMMARY_CSV,
+    representative_json: Path = DEFAULT_REPRESENTATIVE_JSON,
+    orion_root: Path = DEFAULT_ORION_ROOT,
+    dpi: int = 300,
+) -> Path:
+    fig = build_uni_tme_decomposition_figure(
+        generated_root=generated_root,
+        metrics_root=metrics_root,
+        summary_csv=summary_csv,
+        representative_json=representative_json,
+        orion_root=orion_root,
+    )
+    out_png = Path(out_png)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return out_png
