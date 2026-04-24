@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,10 @@ MORPHOLOGY_METRICS = (
     "nuclear_density",
     "eosin_ratio",
     "hematoxylin_ratio",
+    "hematoxylin_burden",
     "mean_cell_size",
+    "nucleus_area_median",
+    "nucleus_area_iqr",
     "glcm_contrast",
     "glcm_homogeneity",
 )
@@ -458,6 +462,40 @@ def _compute_glcm_features(gray_image, tissue_mask, *, levels: int = 8) -> tuple
     return contrast, homogeneity
 
 
+def _load_cellvit_contours(image_path: Path) -> list[list[tuple[float, float]]]:
+    sidecar_path = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
+    if not sidecar_path.is_file():
+        return []
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    contours: list[list[tuple[float, float]]] = []
+    for cell in payload.get("cells", []):
+        contour_raw = cell.get("contour")
+        if not isinstance(contour_raw, list) or len(contour_raw) < 3:
+            continue
+        contour: list[tuple[float, float]] = []
+        for point in contour_raw:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            contour.append((float(point[0]), float(point[1])))
+        if len(contour) >= 3:
+            contours.append(contour)
+    return contours
+
+
+def _polygon_area(contour: list[tuple[float, float]]) -> float:
+    area_acc = 0.0
+    n = len(contour)
+    for idx in range(n):
+        x1, y1 = contour[idx]
+        x2, y2 = contour[(idx + 1) % n]
+        area_acc += x1 * y2 - x2 * y1
+    return abs(area_acc) * 0.5
+
+
 def _compute_signature(image_path: Path) -> dict[str, float]:
     import numpy as np
     from PIL import Image
@@ -480,13 +518,41 @@ def _compute_signature(image_path: Path) -> dict[str, float]:
     stain_total = h_mean + e_mean
     hematoxylin_ratio = h_mean / stain_total if stain_total > 0.0 else 0.0
     eosin_ratio = e_mean / stain_total if stain_total > 0.0 else 0.0
+    hematoxylin_burden = h_mean
 
     h_threshold = float(masked_h.mean() + 0.5 * masked_h.std()) if masked_h.size else 0.0
     nuclear_mask = tissue_mask & (hematoxylin >= h_threshold)
     component_sizes = _connected_component_sizes(nuclear_mask)
     tissue_area = int(np.count_nonzero(tissue_mask))
-    nuclear_density = float(len(component_sizes) / tissue_area) if tissue_area else 0.0
-    mean_cell_size = float(sum(component_sizes) / len(component_sizes)) if component_sizes else 0.0
+
+    area_samples = [float(size) for size in component_sizes]
+    if area_samples:
+        nuclear_density = float(len(area_samples) / tissue_area) if tissue_area else 0.0
+        mean_cell_size = float(sum(area_samples) / len(area_samples))
+    else:
+        nuclear_density = 0.0
+        mean_cell_size = 0.0
+
+    cellvit_contours = _load_cellvit_contours(image_path)
+    if cellvit_contours:
+        cellvit_areas = [
+            _polygon_area(contour)
+            for contour in cellvit_contours
+            if len(contour) >= 3
+        ]
+        cellvit_areas = [area for area in cellvit_areas if area > 0.0]
+        if cellvit_areas:
+            area_samples = cellvit_areas
+            nuclear_density = float(len(area_samples) / tissue_area) if tissue_area else 0.0
+            mean_cell_size = float(sum(area_samples) / len(area_samples))
+
+    if area_samples:
+        area_array = np.asarray(area_samples, dtype=np.float64)
+        nucleus_area_median = float(np.median(area_array))
+        nucleus_area_iqr = float(np.percentile(area_array, 75.0) - np.percentile(area_array, 25.0))
+    else:
+        nucleus_area_median = 0.0
+        nucleus_area_iqr = 0.0
 
     gray = np.clip(np.dot(rgb[..., :3], (0.299, 0.587, 0.114)), 0.0, 1.0)
     glcm_contrast, glcm_homogeneity = _compute_glcm_features(gray, tissue_mask)
@@ -494,7 +560,10 @@ def _compute_signature(image_path: Path) -> dict[str, float]:
         "nuclear_density": nuclear_density,
         "eosin_ratio": eosin_ratio,
         "hematoxylin_ratio": hematoxylin_ratio,
+        "hematoxylin_burden": hematoxylin_burden,
         "mean_cell_size": mean_cell_size,
+        "nucleus_area_median": nucleus_area_median,
+        "nucleus_area_iqr": nucleus_area_iqr,
         "glcm_contrast": glcm_contrast,
         "glcm_homogeneity": glcm_homogeneity,
     }

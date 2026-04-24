@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,33 @@ def _run_cv_regression_fallback(
         X_train_scaled = (X_train - x_mean) / x_std
         X_test_scaled = (X_test - x_mean) / x_std
 
+        if np.isfinite(Y[train_idx]).all() and np.isfinite(Y[test_idx]).all():
+            y_train = np.asarray(Y[train_idx], dtype=np.float64)
+            y_test = np.asarray(Y[test_idx], dtype=np.float64)
+            y_mean = np.mean(y_train, axis=0, dtype=np.float64)
+            centered = y_train - y_mean
+            if n_features <= X_train_scaled.shape[0]:
+                eye = np.eye(n_features, dtype=np.float64)
+                coef_matrix = np.linalg.solve(
+                    X_train_scaled.T @ X_train_scaled + alpha * eye,
+                    X_train_scaled.T @ centered,
+                )
+            else:
+                eye = np.eye(X_train_scaled.shape[0], dtype=np.float64)
+                dual = np.linalg.solve(X_train_scaled @ X_train_scaled.T + alpha * eye, centered)
+                coef_matrix = X_train_scaled.T @ dual
+            preds = X_test_scaled @ coef_matrix + y_mean
+            oof_predictions[test_idx, :] = preds.astype(np.float32, copy=False)
+            for target_idx in range(n_targets):
+                fold_scores[fold_idx, target_idx] = float(_r2_score(y_test[:, target_idx], preds[:, target_idx]))
+            coef_mean += coef_matrix.T.astype(np.float32, copy=False)
+            continue
+
+        # Precompute gram matrix for the full training set (reused for all-finite targets).
+        gram_full = X_train_scaled.T @ X_train_scaled + alpha * np.eye(n_features, dtype=np.float64)
+
+        target_meta: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, float]] = {}
+        mask_groups: dict[bytes, tuple[np.ndarray, list[int]]] = {}
         for target_idx in range(n_targets):
             y_train = np.asarray(Y[train_idx, target_idx], dtype=np.float64)
             y_test = np.asarray(Y[test_idx, target_idx], dtype=np.float64)
@@ -103,15 +131,43 @@ def _run_cv_regression_fallback(
             y_train_valid = y_train[train_mask]
             y_mean = float(np.mean(y_train_valid, dtype=np.float64))
             centered = y_train_valid - y_mean
-            X_valid = X_train_scaled[train_mask]
-            eye = np.eye(X_valid.shape[1], dtype=np.float64)
-            coef = np.linalg.solve(X_valid.T @ X_valid + alpha * eye, X_valid.T @ centered)
-            coef_mean[target_idx] += coef.astype(np.float32, copy=False)
+            target_meta[target_idx] = (train_mask, test_mask, y_test, y_mean)
 
-            preds = X_test_scaled[test_mask] @ coef + y_mean
-            preds = preds.astype(np.float32, copy=False)
-            oof_predictions[test_idx[test_mask], target_idx] = preds
-            fold_scores[fold_idx, target_idx] = float(_r2_score(y_test[test_mask], preds))
+            key = train_mask.tobytes()
+            if key in mask_groups:
+                mask_groups[key][1].append(target_idx)
+            else:
+                mask_groups[key] = (train_mask, [target_idx])
+
+        for train_mask, target_indices in mask_groups.values():
+            if train_mask.all():
+                gram = gram_full
+                X_valid = X_train_scaled
+            else:
+                X_valid = X_train_scaled[train_mask]
+                gram = X_valid.T @ X_valid + alpha * np.eye(n_features, dtype=np.float64)
+
+            y_matrix = np.stack(
+                [
+                    np.asarray(Y[train_idx, target_idx], dtype=np.float64)[train_mask]
+                    for target_idx in target_indices
+                ],
+                axis=1,
+            )
+            y_means = np.mean(y_matrix, axis=0, dtype=np.float64)
+            centered_matrix = y_matrix - y_means
+            rhs = X_valid.T @ centered_matrix
+            coef_matrix = np.linalg.solve(gram, rhs)
+
+            for col_idx, target_idx in enumerate(target_indices):
+                _, test_mask, y_test, _ = target_meta[target_idx]
+                coef = coef_matrix[:, col_idx]
+                coef_mean[target_idx] += coef.astype(np.float32, copy=False)
+
+                preds = X_test_scaled[test_mask] @ coef + y_means[col_idx]
+                preds = preds.astype(np.float32, copy=False)
+                oof_predictions[test_idx[test_mask], target_idx] = preds
+                fold_scores[fold_idx, target_idx] = float(_r2_score(y_test[test_mask], preds))
 
     return fold_scores, oof_predictions, coef_mean
 
@@ -124,7 +180,8 @@ def run_cv_regression(
     try:
         from src.a1_probe_linear.main import run_cv_regression as imported_run_cv_regression
 
-        return imported_run_cv_regression(X, Y, splits)
+        # Use all cores for per-target sklearn fits when available.
+        return imported_run_cv_regression(X, Y, splits, n_jobs=-1)
     except Exception:
         return _run_cv_regression_fallback(X, Y, splits)
 
@@ -177,7 +234,17 @@ def run_encoder_probe_to_csv(
         )
 
     splits = load_cv_splits(tile_ids, cv_splits_path)
+    print(
+        f"[probe] scoring {Path(embeddings_path).name} with {len(splits)}-fold ridge CV "
+        f"(n={embeddings.shape[0]}, d={embeddings.shape[1]}, t={targets.shape[1]})",
+        flush=True,
+    )
+    t0 = time.perf_counter()
     fold_scores, _, _ = run_cv_regression(embeddings, targets, splits)
+    print(
+        f"[probe] finished ridge CV for {Path(embeddings_path).name} in {time.perf_counter() - t0:.1f}s",
+        flush=True,
+    )
     rows = summarize_probe_results(fold_scores, target_names)
 
     out_path = Path(output_csv_path)
@@ -194,6 +261,20 @@ def run_encoder_probe_to_csv(
                     "n_valid_folds": int(row["n_valid_folds"]),
                 }
             )
+    json_rows = [
+        {
+            "target": str(row["target"]),
+            "r2_mean": float(row["r2_mean"]),
+            "r2_sd": float(row["r2_sd"]),
+            "r2_folds": [float(value) for value in row["r2_folds"]],
+            "n_valid_folds": int(row["n_valid_folds"]),
+        }
+        for row in rows
+    ]
+    out_path.with_suffix(".json").write_text(
+        json.dumps({"results": json_rows}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return out_path
 
 
@@ -1033,6 +1114,35 @@ def run_compare_worker(config: ProbeEncodersConfig) -> Path:
     )
 
 
+def run_regen_json_worker(config: ProbeEncodersConfig) -> None:
+    """Regenerate JSON sidecars for all cached encoder embeddings."""
+    out_dir = config.out_dir
+    for stem, embeddings_filename in (
+        ("virchow2_linear_probe_results", "virchow_embeddings.npy"),
+        ("ctranspath_linear_probe_results", "ctranspath_embeddings.npy"),
+        ("resnet50_linear_probe_results", "resnet50_embeddings.npy"),
+    ):
+        start = time.perf_counter()
+        embeddings_path = out_dir / embeddings_filename
+        csv_path = out_dir / f"{stem}.csv"
+        if not embeddings_path.is_file():
+            print(f"skipping {stem}: {embeddings_filename} not found")
+            continue
+        print(f"[regen_json] start {stem} from {embeddings_filename}", flush=True)
+        run_encoder_probe_to_csv(
+            embeddings_path,
+            targets_path=config.targets_path,
+            tile_ids_path=config.tile_ids_path,
+            cv_splits_path=config.cv_splits_path,
+            output_csv_path=csv_path,
+        )
+        print(
+            f"[regen_json] wrote {csv_path} and {csv_path.with_suffix('.json')} "
+            f"in {time.perf_counter() - start:.1f}s",
+            flush=True,
+        )
+
+
 def plan_task(config: ProbeEncodersConfig, runtime: RuntimeProbe | None = None) -> TaskPlan:
     """Plan GPU-sensitive encoder jobs without executing them."""
     runtime = runtime or probe_runtime()
@@ -1118,7 +1228,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--virchow-weights", default=None)
     parser.add_argument("--ctranspath-model", default=None)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--worker", choices=("raw_cnn", "virchow", "compare", "ctranspath", "resnet50"), default=None)
+    parser.add_argument(
+        "--worker",
+        choices=("raw_cnn", "virchow", "compare", "ctranspath", "resnet50", "regen_json"),
+        default=None,
+    )
     args = parser.parse_args(argv)
 
     config = ProbeEncodersConfig(
@@ -1146,6 +1260,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.worker == "compare":
         run_compare_worker(config)
+        return 0
+    if args.worker == "regen_json":
+        run_regen_json_worker(config)
         return 0
 
     plan = plan_task(config)

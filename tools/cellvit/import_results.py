@@ -42,6 +42,12 @@ def _select_best_match(matches: list[Path], preferred_exts: list[str]) -> Path:
 class _ResultIndex:
     def __init__(self, results_dir: Path) -> None:
         self.results_dir = results_dir
+        if not results_dir.is_dir():
+            raise FileNotFoundError(
+                f"CellViT results directory does not exist: {results_dir}. "
+                "Replace the placeholder path with the folder containing the exported "
+                "CellViT JSON outputs."
+            )
         self._by_name: dict[str, list[Path]] = {}
         self._all_files: list[tuple[PurePosixPath, Path]] = []
         self._pattern_cache: dict[str, list[Path]] = {}

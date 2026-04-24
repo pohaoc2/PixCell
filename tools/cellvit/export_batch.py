@@ -27,6 +27,22 @@ def _flat_name(tile_id: str, rel_image_path: str) -> str:
 
 
 def _iter_manifest_png_entries(cache_dir: Path) -> list[dict[str, str]]:
+    # Flat-PNG fallback: no manifest.json -> export every PNG in this dir
+    if not (cache_dir / "manifest.json").is_file():
+        tile_id = cache_dir.name
+        entries: list[dict[str, str]] = []
+        for png in sorted(cache_dir.glob("*.png")):
+            rel = png.name
+            entries.append(
+                {
+                    "tile_id": tile_id,
+                    "rel_image_path": rel,
+                    "source_path": str(png.resolve()),
+                    "flat_name": _flat_name(tile_id, rel),
+                }
+            )
+        return entries
+
     manifest = load_manifest(cache_dir)
     tile_id = str(manifest["tile_id"])
     entries: list[dict[str, str]] = []
@@ -83,7 +99,16 @@ def export_cellvit_batch(
     if is_per_tile_cache_manifest_dir(cache_root):
         cache_dirs = [cache_root]
     else:
-        cache_dirs = [cache_root / tile_id for tile_id in list_cached_tile_ids(cache_root)]
+        tile_ids = list_cached_tile_ids(cache_root)
+        if tile_ids:
+            cache_dirs = [cache_root / tile_id for tile_id in tile_ids]
+        else:
+            # Flat-PNG fallback: no manifests - collect subdirs that have at least one PNG
+            cache_dirs = sorted(
+                p
+                for p in cache_root.iterdir()
+                if p.is_dir() and any(p.glob("*.png"))
+            )
 
     manifest_entries: list[dict[str, str]] = []
     seen_names: set[str] = set()
