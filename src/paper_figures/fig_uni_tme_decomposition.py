@@ -116,25 +116,35 @@ def _panel_label(ax: plt.Axes, label: str) -> None:
     )
 
 
-def _render_image_cell(ax: plt.Axes, image: Image.Image, title: str, *, border_color: str = "#333333") -> None:
+def _render_image_cell(
+    ax: plt.Axes,
+    image: Image.Image,
+    title: str,
+    *,
+    border_color: str = "#333333",
+    border_linestyle: str = "-",
+) -> None:
     ax.imshow(image)
-    ax.set_title(title, fontsize=7, pad=2)
+    if title:
+        ax.set_title(title, fontsize=7, pad=2)
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_linewidth(0.8)
         spine.set_color(border_color)
+        spine.set_linestyle(border_linestyle)
 
 
 def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) -> None:
-    """Draw UNI/TME ●/○ dots at bottom-right corner of an image axes."""
-    for x_ax, label, active in [
-        (0.80, "UNI", MODE_USE_UNI[mode_key]),
-        (0.91, "TME", MODE_USE_TME[mode_key]),
-    ]:
+    """Draw UNI/TME ●/○ dots stacked at bottom-right corner of an image axes."""
+    rows = [
+        (0.88, 0.15, "UNI", MODE_USE_UNI[mode_key]),
+        (0.88, 0.05, "TME", MODE_USE_TME[mode_key]),
+    ]
+    for x_dot, y_dot, label, active in rows:
         ax.scatter(
-            [x_ax], [0.06],
+            [x_dot], [y_dot],
             s=16,
             facecolors=INK if active else "white",
             edgecolors=INK,
@@ -144,7 +154,8 @@ def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) ->
             zorder=5,
         )
         if show_labels:
-            ax.text(x_ax, 0.20, label, transform=ax.transAxes, ha="center", fontsize=5.5, color=INK)
+            ax.text(x_dot - 0.06, y_dot, label, transform=ax.transAxes,
+                    ha="right", va="center", fontsize=5.5, color=INK)
 
 
 def _render_panel_a(
@@ -159,22 +170,25 @@ def _render_panel_a(
     outer_ax.axis("off")
     _panel_label(outer_ax, "A")
 
-    grid = subgrid.subgridspec(3, 2, wspace=0.05, hspace=0.10)
+    grid = subgrid.subgridspec(3, 2, wspace=0.02, hspace=0.04)
     sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
     size = sample.size
 
     ref_ax = fig.add_subplot(grid[0, 0])
     ref_path = orion_root / "he" / f"{tile_id}.png"
     ref_img = _load_rgb(ref_path, size=size) if ref_path.is_file() else _blank_image(size=size)
-    _render_image_cell(ref_ax, ref_img, "Real H&E", border_color="#5a9a5a")
+    _render_image_cell(ref_ax, ref_img, "Real H&E", border_color="#999999", border_linestyle="--")
 
     tme_ax = fig.add_subplot(grid[0, 1])
-    _render_image_cell(tme_ax, _load_tme_thumbnail(orion_root, tile_id, size=size), "TME layout", border_color="#b89a70")
+    _render_image_cell(
+        tme_ax, _load_tme_thumbnail(orion_root, tile_id, size=size),
+        "cell masks", border_color="#999999", border_linestyle="--",
+    )
 
     for (mode_key, show_text), (row, col) in zip(_GENERATED_GRID, _GENERATED_POSITIONS, strict=True):
         ax = fig.add_subplot(grid[row, col])
         image = _load_rgb(generated_root / tile_id / f"{mode_key}.png", size=size)
-        _render_image_cell(ax, image, MODE_LABELS[mode_key])
+        _render_image_cell(ax, image, "")
         _render_mode_indicator(ax, mode_key, show_labels=show_text)
 
 
@@ -263,8 +277,9 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
             )
         label = METRIC_LABELS.get(metric_key, metric_key)
         row = summary.get("uni_plus_tme", {}).get(metric_key)
-        direction = row.direction if row is not None else ""
-        ax.set_title(f"{label} ({direction})", fontsize=7, pad=2)
+        raw_dir = row.direction if row is not None else ""
+        arrow = {"up": "↑", "down": "↓"}.get(raw_dir.lower(), raw_dir)
+        ax.set_title(f"{label} ({arrow})", fontsize=7, pad=2)
         ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
         ax.set_ylim(*_tight_ylim(values, errors))
         ax.set_xticks([])
@@ -272,9 +287,6 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.tick_params(axis="y", labelsize=6.5, colors=INK)
-        if idx > 0:
-            ax.yaxis.set_visible(False)
-            ax.spines["left"].set_visible(False)
 
         key_ax = fig.add_subplot(key_grid[0, idx])
         _render_dot_key_single(key_ax, show_labels=(idx == 0))
@@ -299,8 +311,14 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         ax.text(0.5, 0.5, "Effect metrics missing", ha="center", va="center", transform=ax.transAxes)
         return
 
-    vmax = float(np.max(np.abs(finite))) or 1.0
-    im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    # Normalise per column (metric) so each column maps its extremes to ±1
+    norm_matrix = np.full_like(matrix, np.nan)
+    for col_idx in range(len(cols)):
+        col_vals = matrix[:, col_idx]
+        col_max = float(np.max(np.abs(col_vals[np.isfinite(col_vals)]))) if np.any(np.isfinite(col_vals)) else 1.0
+        norm_matrix[:, col_idx] = col_vals / (col_max or 1.0)
+
+    im = ax.imshow(norm_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
     ax.set_xticks(range(len(cols)))
     ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=7)
     ax.set_yticks(range(len(rows)))
@@ -313,8 +331,9 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.06)
     cbar = fig.colorbar(im, cax=cax)
+    cbar.set_ticks([-1, 0, 1])
+    cbar.set_ticklabels(["most\nneg.", "0", "most\npos."])
     cbar.ax.tick_params(labelsize=6.5)
-    cbar.set_label("Δ (higher-is-better)", fontsize=7)
 
 
 
