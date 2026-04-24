@@ -170,7 +170,7 @@ def _render_panel_a(
     outer_ax.axis("off")
     _panel_label(outer_ax, "A")
 
-    grid = subgrid.subgridspec(3, 2, wspace=0.02, hspace=0.04)
+    grid = subgrid.subgridspec(3, 2, wspace=0.03, hspace=0.03)
     sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
     size = sample.size
 
@@ -244,18 +244,35 @@ def _render_dot_key_single(key_ax: plt.Axes, *, show_labels: bool) -> None:
     key_ax.axis("off")
 
 
-def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
-    outer_ax = fig.add_subplot(subgrid)
-    outer_ax.axis("off")
-    _panel_label(outer_ax, "B")
+def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict], *, label_subgrid=None) -> None:
+    label_ax = fig.add_subplot(label_subgrid if label_subgrid is not None else subgrid)
+    label_ax.axis("off")
+    _panel_label(label_ax, "B")
+
+    _SHARED_METRICS = {"lpips", "pq", "dice", "style_hed"}
+    _SHARED_LIST = [m for m in DISPLAY_METRICS if m in _SHARED_METRICS]
 
     outer_grid = subgrid.subgridspec(2, 1, height_ratios=[5.5, 0.85], hspace=0.05)
-    metric_grid = outer_grid[0, 0].subgridspec(1, len(DISPLAY_METRICS), wspace=0.38)
-    key_grid = outer_grid[1, 0].subgridspec(1, len(DISPLAY_METRICS), wspace=0.38)
+
+    # FUD gets its own cell; LPIPS/PQ/DICE/HED share a tighter sub-grid
+    m_outer = outer_grid[0, 0].subgridspec(1, 2, width_ratios=[1, len(_SHARED_LIST)], wspace=0.25)
+    fud_m = m_outer[0, 0]
+    shared_m = m_outer[0, 1].subgridspec(1, len(_SHARED_LIST), wspace=0.20)
+
+    k_outer = outer_grid[1, 0].subgridspec(1, 2, width_ratios=[1, len(_SHARED_LIST)], wspace=0.25)
+    fud_k = k_outer[0, 0]
+    shared_k = k_outer[0, 1].subgridspec(1, len(_SHARED_LIST), wspace=0.20)
 
     x = np.arange(len(MODE_KEYS), dtype=float)
     for idx, metric_key in enumerate(DISPLAY_METRICS):
-        ax = fig.add_subplot(metric_grid[0, idx])
+        if metric_key == "fud":
+            ax = fig.add_subplot(fud_m)
+            key_ax = fig.add_subplot(fud_k)
+        else:
+            s_idx = _SHARED_LIST.index(metric_key)
+            ax = fig.add_subplot(shared_m[0, s_idx])
+            key_ax = fig.add_subplot(shared_k[0, s_idx])
+
         values, errors = _values_for_metric(summary, metric_key)
         valid_x = [xv for xv, v in zip(x, values, strict=True) if np.isfinite(v)]
         valid_y = [v for v in values if np.isfinite(v)]
@@ -281,21 +298,60 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         arrow = {"up": "↑", "down": "↓"}.get(raw_dir.lower(), raw_dir)
         ax.set_title(f"{label} ({arrow})", fontsize=7, pad=2)
         ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
-        ax.set_ylim(*_tight_ylim(values, errors))
         ax.set_xticks([])
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.7)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.tick_params(axis="y", labelsize=6.5, colors=INK)
+        if metric_key in _SHARED_METRICS:
+            ax.set_ylim(0.0, 1.0)
+            if metric_key == "lpips":
+                ax.tick_params(axis="y", labelsize=6.5, colors=INK)
+            else:
+                ax.tick_params(axis="y", left=True, labelleft=False)
+        else:
+            ax.set_ylim(*_tight_ylim(values, errors))
+            ax.tick_params(axis="y", labelsize=6.5, colors=INK)
 
-        key_ax = fig.add_subplot(key_grid[0, idx])
         _render_dot_key_single(key_ax, show_labels=(idx == 0))
+
+
+_EFFECT_SHORT = {
+    "UNI effect": "UNI eff.",
+    "TME effect": "TME eff.",
+    "Interaction": "Interact.",
+}
+
+
+def _fmt_val(v: float) -> str:
+    a = abs(v)
+    if a >= 10:
+        return f"{v:.0f}"
+    elif a >= 1:
+        return f"{v:.1f}"
+    return f"{v:.2f}"
 
 
 def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     ax = fig.add_subplot(subgrid)
     _panel_label(ax, "C")
-    effects = effect_decomposition(summary)
+    # Raw (non-oriented) differences so annotations match intuition per metric
+    effect_names = ["UNI effect", "TME effect", "Interaction"]
+    effects: dict[str, dict[str, float | None]] = {n: {} for n in effect_names}
+    for metric_key in DISPLAY_METRICS:
+        raw: dict[str, float] = {}
+        for mode_key in MODE_KEYS:
+            record = summary.get(mode_key, {}).get(metric_key)
+            if record is not None and record.mean is not None:
+                raw[mode_key] = float(record.mean)
+        if set(MODE_KEYS).issubset(raw):
+            effects["UNI effect"][metric_key] = raw["uni_plus_tme"] - raw["tme_only"]
+            effects["TME effect"][metric_key] = raw["uni_plus_tme"] - raw["uni_only"]
+            effects["Interaction"][metric_key] = (
+                raw["uni_plus_tme"] - raw["uni_only"] - raw["tme_only"] + raw["neither"]
+            )
+        else:
+            for n in effect_names:
+                effects[n][metric_key] = None
     rows = list(effects)
     cols = list(DISPLAY_METRICS)
     matrix = np.full((len(rows), len(cols)), np.nan, dtype=float)
@@ -311,23 +367,37 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         ax.text(0.5, 0.5, "Effect metrics missing", ha="center", va="center", transform=ax.transAxes)
         return
 
-    # Normalise per column (metric) so each column maps its extremes to ±1
-    norm_matrix = np.full_like(matrix, np.nan)
+    # Oriented color matrix: flip sign for lower-is-better metrics so red=good, blue=bad
+    color_matrix = np.full_like(matrix, np.nan)
+    for col_idx, metric_key in enumerate(cols):
+        direction = "up"
+        for mode_key in MODE_KEYS:
+            rec = summary.get(mode_key, {}).get(metric_key)
+            if rec is not None:
+                direction = rec.direction
+                break
+        sign = 1.0 if direction == "up" else -1.0
+        color_matrix[:, col_idx] = matrix[:, col_idx] * sign
+
+    # Per-column normalise the oriented color matrix so each metric's extreme maps to ±1
+    norm_matrix = np.full_like(color_matrix, np.nan)
     for col_idx in range(len(cols)):
-        col_vals = matrix[:, col_idx]
-        col_max = float(np.max(np.abs(col_vals[np.isfinite(col_vals)]))) if np.any(np.isfinite(col_vals)) else 1.0
+        col_vals = color_matrix[:, col_idx]
+        col_finite = col_vals[np.isfinite(col_vals)]
+        col_max = float(np.max(np.abs(col_finite))) if col_finite.size else 1.0
         norm_matrix[:, col_idx] = col_vals / (col_max or 1.0)
 
     im = ax.imshow(norm_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
     ax.set_xticks(range(len(cols)))
     ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=7)
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels(rows, fontsize=7)
+    ax.set_yticklabels([_EFFECT_SHORT.get(r, r) for r in rows], fontsize=7)
     for row_idx in range(len(rows)):
         for col_idx in range(len(cols)):
             value = matrix[row_idx, col_idx]
             if np.isfinite(value):
-                ax.text(col_idx, row_idx, f"{value:.2g}", ha="center", va="center", fontsize=6.5, color=INK)
+                text_color = "white" if abs(norm_matrix[row_idx, col_idx]) > 0.6 else INK
+                ax.text(col_idx, row_idx, _fmt_val(value), ha="center", va="center", fontsize=6.5, color=text_color)
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.06)
     cbar = fig.colorbar(im, cax=cax)
@@ -360,10 +430,10 @@ def build_uni_tme_decomposition_figure(
     )
 
     fig = plt.figure(figsize=(7.2, 3.95))
-    outer = fig.add_gridspec(1, 2, width_ratios=[0.95, 1.05], wspace=0.08)
+    outer = fig.add_gridspec(1, 2, width_ratios=[0.78, 1.22], wspace=0.22)
     _render_panel_a(fig, outer[0, 0], generated_root=generated_root, orion_root=Path(orion_root), tile_id=tile_id)
     right = outer[0, 1].subgridspec(2, 1, height_ratios=[1.15, 1.0], hspace=0.38)
-    _render_panel_b(fig, right[0, 0], summary)
+    _render_panel_b(fig, right[0, 0], summary, label_subgrid=outer[0, 1])
     _render_panel_c(fig, right[1, 0], summary)
     fig.subplots_adjust(left=0.02, right=0.96, bottom=0.08, top=0.97)
     return fig

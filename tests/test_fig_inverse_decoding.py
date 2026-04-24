@@ -111,3 +111,26 @@ def test_t1_panel_sorted_by_uni_r2_descending(tmp_path: Path) -> None:
     targets = load_t1_data({"UNI-2h": uni_csv})
     values = [row["encoders"]["UNI-2h"]["r2_mean"] for row in targets]
     assert values == sorted(values, reverse=True)
+
+
+def test_panel_a_uses_box_plot_when_folds_available(tmp_path: Path) -> None:
+    import json
+    from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
+
+    uni_csv = tmp_path / "uni.csv"
+    t2_csv = tmp_path / "t2.csv"
+    _write_t1_csv(uni_csv, _T1_ROWS)
+    _write_t2_csv(t2_csv, _T2_ROWS)
+
+    # Write companion JSON with fold data
+    folds_payload = {
+        "results": [
+            {"target": target, "r2_mean": r2_mean, "r2_sd": r2_sd, "r2_folds": [r2_mean + (i - 2) * 0.01 for i in range(5)], "n_valid_folds": 5}
+            for target, r2_mean, r2_sd in _T1_ROWS
+        ]
+    }
+    (tmp_path / "uni.json").write_text(json.dumps(folds_payload), encoding="utf-8")
+
+    fig = build_inverse_decoding_figure(uni_t1_csv=uni_csv, t2_mlp_csv=t2_csv)
+    assert isinstance(fig, plt.Figure)
+    plt.close(fig)

@@ -69,7 +69,7 @@ class UNI2hExtractor:
                     'dynamic_img_size': True
                 }
         #uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
-        self.model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
+        self.model = timm.create_model("vit_giant_patch14_224", pretrained=False, **timm_kwargs)
         
         # Load pretrained weights
         model_path = Path(model_path)
