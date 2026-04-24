@@ -216,46 +216,35 @@ def _tight_ylim(values: list[float], errors: list[float | None]) -> tuple[float,
     return lo - pad, hi + pad
 
 
-def _render_mode_dots(dot_ax: plt.Axes) -> None:
-    dot_ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
-    dot_ax.set_ylim(-0.5, 1.5)
+def _render_dot_key_single(key_ax: plt.Axes, *, show_labels: bool) -> None:
+    """One column of the dot-key strip. show_labels=True only for the leftmost column."""
+    key_ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
+    key_ax.set_ylim(-0.5, 1.5)
     for x, mode_key in enumerate(MODE_KEYS):
-        dot_ax.scatter(
-            x,
-            1,
-            s=23,
-            facecolors=INK if MODE_USE_UNI[mode_key] else "white",
-            edgecolors=INK,
-            linewidths=0.9,
-        )
-        dot_ax.scatter(
-            x,
-            0,
-            s=23,
-            facecolors=INK if MODE_USE_TME[mode_key] else "white",
-            edgecolors=INK,
-            linewidths=0.9,
-        )
-    dot_ax.text(-0.8, 1, "UNI", ha="right", va="center", fontsize=7.5, color=INK)
-    dot_ax.text(-0.8, 0, "TME", ha="right", va="center", fontsize=7.5, color=INK)
-    dot_ax.axis("off")
+        key_ax.scatter(x, 1, s=20, facecolors=INK if MODE_USE_UNI[mode_key] else "white", edgecolors=INK, linewidths=0.8)
+        key_ax.scatter(x, 0, s=20, facecolors=INK if MODE_USE_TME[mode_key] else "white", edgecolors=INK, linewidths=0.8)
+    if show_labels:
+        key_ax.text(-0.8, 1, "UNI", ha="right", va="center", fontsize=6.5, color=INK)
+        key_ax.text(-0.8, 0, "TME", ha="right", va="center", fontsize=6.5, color=INK)
+    key_ax.axis("off")
 
 
 def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     outer_ax = fig.add_subplot(subgrid)
     outer_ax.axis("off")
     _panel_label(outer_ax, "B")
-    outer_ax.text(0.01, 1.04, "Consistent metric view", transform=outer_ax.transAxes, fontsize=9, color=INK)
 
-    grid = subgrid.subgridspec(2, len(DISPLAY_METRICS), height_ratios=[6.0, 1.4], wspace=0.36, hspace=0.03)
+    outer_grid = subgrid.subgridspec(2, 1, height_ratios=[5.5, 0.85], hspace=0.05)
+    metric_grid = outer_grid[0, 0].subgridspec(1, len(DISPLAY_METRICS), wspace=0.38)
+    key_grid = outer_grid[1, 0].subgridspec(1, len(DISPLAY_METRICS), wspace=0.38)
+
     x = np.arange(len(MODE_KEYS), dtype=float)
     for idx, metric_key in enumerate(DISPLAY_METRICS):
-        ax = fig.add_subplot(grid[0, idx])
-        dot_ax = fig.add_subplot(grid[1, idx], sharex=ax)
+        ax = fig.add_subplot(metric_grid[0, idx])
         values, errors = _values_for_metric(summary, metric_key)
-        valid_x = [xv for xv, value in zip(x, values, strict=True) if np.isfinite(value)]
-        valid_y = [value for value in values if np.isfinite(value)]
-        valid_err = [err if err is not None else 0.0 for value, err in zip(values, errors, strict=True) if np.isfinite(value)]
+        valid_x = [xv for xv, v in zip(x, values, strict=True) if np.isfinite(v)]
+        valid_y = [v for v in values if np.isfinite(v)]
+        valid_err = [e if e is not None else 0.0 for v, e in zip(values, errors, strict=True) if np.isfinite(v)]
         if valid_y:
             ax.errorbar(
                 valid_x,
@@ -264,25 +253,30 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
                 color=INK,
                 linestyle="none",
                 marker="o",
-                markerfacecolor=INK,
+                markerfacecolor="white",
                 markeredgecolor=INK,
-                markersize=4.8,
+                markersize=4.5,
                 capsize=2.0,
                 elinewidth=0.9,
+                markeredgewidth=0.9,
             )
         label = METRIC_LABELS.get(metric_key, metric_key)
-        direction = summary.get("uni_plus_tme", {}).get(metric_key).direction if summary.get("uni_plus_tme", {}).get(metric_key) else ""
-        ax.set_title(f"{label} ({direction})", fontsize=9, pad=3)
+        row = summary.get("uni_plus_tme", {}).get(metric_key)
+        direction = row.direction if row is not None else ""
+        ax.set_title(f"{label} ({direction})", fontsize=7, pad=2)
         ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
         ax.set_ylim(*_tight_ylim(values, errors))
         ax.set_xticks([])
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.7)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.tick_params(axis="y", labelsize=7.5, colors=INK)
+        ax.tick_params(axis="y", labelsize=6.5, colors=INK)
         if idx > 0:
-            ax.set_ylabel("")
-        _render_mode_dots(dot_ax)
+            ax.yaxis.set_visible(False)
+            ax.spines["left"].set_visible(False)
+
+        key_ax = fig.add_subplot(key_grid[0, idx])
+        _render_dot_key_single(key_ax, show_labels=(idx == 0))
 
 
 def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
