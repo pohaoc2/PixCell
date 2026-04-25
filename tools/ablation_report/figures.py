@@ -455,13 +455,13 @@ def _metric_label_with_arrow(metric_key: str) -> str:
 
 def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     shared_metric_keys = _shared_heatmap_metric_keys(summaries)
-    fig = plt.figure(figsize=(7.9, 3.35 * len(summaries)))
-    grid = fig.add_gridspec(len(summaries), 2, width_ratios=[1, 0.04], wspace=0.05, hspace=0.16)
+    fig = plt.figure(figsize=(7.9 * len(summaries), 3.35))
+    grid = fig.add_gridspec(1, len(summaries) + 1, width_ratios=[1] * len(summaries) + [0.04], wspace=0.05)
     metric_scales = _heatmap_metric_scales(summaries)
     im = None
 
-    for row, summary in enumerate(summaries):
-        ax = fig.add_subplot(grid[row, 0])
+    for col, summary in enumerate(summaries):
+        ax = fig.add_subplot(grid[0, col])
         raw_matrix, stds = _heatmap_matrix(summary, summary.added_effect_stats, shared_metric_keys)
         normalized_matrix = _normalize_heatmap_matrix(raw_matrix, shared_metric_keys, metric_scales)
         masked = np.ma.masked_invalid(normalized_matrix)
@@ -469,18 +469,19 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
         ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
         ax.set_xticks(range(len(shared_metric_keys)))
-        if row == 0:
-            ax.xaxis.tick_top()
-            ax.xaxis.set_label_position("top")
-            ax.set_xticklabels(
-                [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
-                rotation=0,
-                ha="center",
-                fontsize=9.4,
-                color=INK,
-            )
-        else:
+        ax.xaxis.tick_top()
+        ax.xaxis.set_label_position("top")
+        ax.set_xticklabels(
+            [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
+            rotation=0,
+            ha="center",
+            fontsize=9.4,
+            color=INK,
+        )
+        if col > 0:
             ax.set_xticklabels([])
+        if col > 0:
+            ax.set_yticklabels([])
         for r in range(raw_matrix.shape[0]):
             for c in range(raw_matrix.shape[1]):
                 value = raw_matrix[r, c]
@@ -511,14 +512,14 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         ax.tick_params(axis="x", length=0, pad=6)
         ax.tick_params(axis="y", length=0)
 
-    cax = fig.add_subplot(grid[:, 1])
+    cax = fig.add_subplot(grid[0, len(summaries)])
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, 0, 1])
     cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=8.0)
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     cbar.outline.set_edgecolor(INK)
     cbar.outline.set_linewidth(1.0)
-    fig.subplots_adjust(left=0.13, right=0.84, top=0.96, bottom=0.10)
+    fig.subplots_adjust(left=0.13, right=0.93, top=0.96, bottom=0.10)
     return fig
 
 

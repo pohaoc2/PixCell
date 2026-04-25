@@ -202,12 +202,7 @@ def _values_for_metric(summary: dict[str, dict], metric_key: str) -> tuple[list[
             errors.append(None)
             continue
         values.append(float(row.mean))
-        if row.ci95_low is not None and row.ci95_high is not None:
-            errors.append(max(row.mean - row.ci95_low, row.ci95_high - row.mean))
-        elif row.sd is not None:
-            errors.append(row.sd)
-        else:
-            errors.append(None)
+        errors.append(float(row.sd) if row.sd is not None else None)
     return values, errors
 
 
@@ -337,12 +332,16 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     # Raw (non-oriented) differences so annotations match intuition per metric
     effect_names = ["UNI effect", "TME effect", "Interaction"]
     effects: dict[str, dict[str, float | None]] = {n: {} for n in effect_names}
+    effect_sds: dict[str, dict[str, float | None]] = {n: {} for n in effect_names}
     for metric_key in DISPLAY_METRICS:
         raw: dict[str, float] = {}
+        sds: dict[str, float] = {}
         for mode_key in MODE_KEYS:
             record = summary.get(mode_key, {}).get(metric_key)
             if record is not None and record.mean is not None:
                 raw[mode_key] = float(record.mean)
+            if record is not None and record.sd is not None:
+                sds[mode_key] = float(record.sd)
         if set(MODE_KEYS).issubset(raw):
             effects["UNI effect"][metric_key] = raw["uni_plus_tme"] - raw["tme_only"]
             effects["TME effect"][metric_key] = raw["uni_plus_tme"] - raw["uni_only"]
@@ -352,6 +351,15 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         else:
             for n in effect_names:
                 effects[n][metric_key] = None
+        if set(MODE_KEYS).issubset(sds):
+            effect_sds["UNI effect"][metric_key] = float(np.sqrt(sds["uni_plus_tme"] ** 2 + sds["tme_only"] ** 2))
+            effect_sds["TME effect"][metric_key] = float(np.sqrt(sds["uni_plus_tme"] ** 2 + sds["uni_only"] ** 2))
+            effect_sds["Interaction"][metric_key] = float(np.sqrt(
+                sds["uni_plus_tme"] ** 2 + sds["uni_only"] ** 2 + sds["tme_only"] ** 2 + sds["neither"] ** 2
+            ))
+        else:
+            for n in effect_names:
+                effect_sds[n][metric_key] = None
     rows = list(effects)
     cols = list(DISPLAY_METRICS)
     matrix = np.full((len(rows), len(cols)), np.nan, dtype=float)
@@ -397,7 +405,9 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
             value = matrix[row_idx, col_idx]
             if np.isfinite(value):
                 text_color = "white" if abs(norm_matrix[row_idx, col_idx]) > 0.6 else INK
-                ax.text(col_idx, row_idx, _fmt_val(value), ha="center", va="center", fontsize=6.5, color=text_color)
+                sd = effect_sds[rows[row_idx]].get(cols[col_idx])
+                label = _fmt_val(value) if sd is None else f"{_fmt_val(value)}\n±{_fmt_val(sd)}"
+                ax.text(col_idx, row_idx, label, ha="center", va="center", fontsize=6.5, color=text_color)
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.06)
     cbar = fig.colorbar(im, cax=cax)

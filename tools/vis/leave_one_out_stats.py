@@ -26,9 +26,23 @@ if str(ROOT) not in sys.path:
 
 from tools.stage3.ablation_vis_utils import FOUR_GROUP_ORDER, _fmt, _mean
 
-STAT_KEYS: tuple[str, ...] = ("mean_diff", "max_diff", "pct_pixels_above_10")
+STAT_KEYS: tuple[str, ...] = (
+    "mean_diff",
+    "max_diff",
+    "pct_pixels_above_10",
+    "delta_e_mean",
+    "delta_e_p99",
+    "ssim_loss_mean",
+    "ssim_loss_p99",
+    "causal_inside_mean_dE",
+    "causal_outside_mean_dE",
+    "causal_ratio",
+    "uni_cosine_drop",
+)
 REPRESENTATIVE_KEYS: tuple[str, ...] = ("mean_diff", "pct_pixels_above_10")
 STATS_FILENAME = "leave_one_out_diff_stats.json"
+
+
 def _pstdev(values: list[float]) -> float:
     if len(values) <= 1:
         return 0.0
@@ -45,12 +59,12 @@ def _metric_label(metric_key: str) -> str:
     return metric_key
 
 
-def load_stats_payload(stats_path: Path) -> dict[str, dict[str, float]]:
+def load_stats_payload(stats_path: Path) -> dict[str, dict[str, float | None]]:
     payload = json.loads(Path(stats_path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"{stats_path} did not contain a JSON object")
 
-    stats: dict[str, dict[str, float]] = {}
+    stats: dict[str, dict[str, float | None]] = {}
     for group in FOUR_GROUP_ORDER:
         record = payload.get(group)
         if not isinstance(record, dict):
@@ -59,6 +73,8 @@ def load_stats_payload(stats_path: Path) -> dict[str, dict[str, float]]:
         for key in STAT_KEYS:
             value = record.get(key)
             if value is None:
+                if key == "uni_cosine_drop":
+                    stats[group][key] = None
                 continue
             stats[group][key] = float(value)
     if not stats:
@@ -233,13 +249,17 @@ def render_single_stats(
     output_format: str,
 ) -> str:
     ordered_groups = _sort_groups(payload, metric_key)
-    headers = ["group", "mean", "max", "pct>10"]
+    headers = ["group", "mean", "max", "pct>10", "dE_mean", "dE_p99", "SSIM_loss", "causal"]
     rows = [
         [
             group,
             _fmt(payload[group].get("mean_diff")),
             _fmt(payload[group].get("max_diff")),
             _fmt(payload[group].get("pct_pixels_above_10")),
+            _fmt(payload[group].get("delta_e_mean")),
+            _fmt(payload[group].get("delta_e_p99")),
+            _fmt(payload[group].get("ssim_loss_mean")),
+            _fmt(payload[group].get("causal_ratio")),
         ]
         for group in ordered_groups
     ]
@@ -273,7 +293,10 @@ def render_batch_summary(
     top_tiles = summary["top_tiles"]
     ordered_groups = _sort_groups(means, metric_key)
     top_metric_label = f"top_{_metric_label(metric_key)}"
-    headers = ["group", "mean_avg", "mean_sd", "max_avg", "max_sd", "pct>10_avg", "pct>10_sd", "top_tile", top_metric_label]
+    headers = [
+        "group", "mean_avg", "mean_sd", "max_avg", "max_sd", "pct>10_avg", "pct>10_sd",
+        "dE_avg", "SSIM_avg", "causal_avg", "top_tile", top_metric_label,
+    ]
     rows: list[list[str]] = []
     for group in ordered_groups:
         top_metric = top_tiles.get(group, {}).get(metric_key, {})
@@ -286,6 +309,9 @@ def render_batch_summary(
                 _fmt(stds[group].get("max_diff")),
                 _fmt(means[group].get("pct_pixels_above_10")),
                 _fmt(stds[group].get("pct_pixels_above_10")),
+                _fmt(means[group].get("delta_e_mean")),
+                _fmt(means[group].get("ssim_loss_mean")),
+                _fmt(means[group].get("causal_ratio")),
                 str(top_metric.get("tile_id", "-")),
                 _fmt(top_metric.get("value") if isinstance(top_metric, dict) else None),
             ]
