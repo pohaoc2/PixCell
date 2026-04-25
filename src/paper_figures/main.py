@@ -79,6 +79,7 @@ def main() -> None:
         dataset_root=PAIRED_DATASET_ROOT,
         orion_root=PAIRED_REFERENCE_ROOT,
         out_png=PNG_DIR / "05_paired_ablation_grid.png",
+        tile_id="10752_13824",
     )
 
     build_representative_ablation_grid(
@@ -86,6 +87,7 @@ def main() -> None:
         dataset_root=UNPAIRED_DATASET_ROOT,
         orion_root=UNPAIRED_REFERENCE_ROOT,
         out_png=PNG_DIR / "06_unpaired_ablation_grid.png",
+        tile_id="15360_15872",
     )
 
     if T2_MLP_CSV.is_file():

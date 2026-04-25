@@ -113,6 +113,34 @@ def test_render_single_stats_sorts_groups_by_requested_metric(tmp_path: Path) ->
     assert rendered.index("microenv") < rendered.index("vasculature")
 
 
+def test_load_stats_payload_preserves_new_optional_fields(tmp_path: Path) -> None:
+    stats_path = _write_stats(
+        tmp_path / "tile_new",
+        {
+            "cell_types": {
+                "mean_diff": 1.0,
+                "max_diff": 11.0,
+                "pct_pixels_above_10": 2.0,
+                "delta_e_mean": 3.5,
+                "delta_e_p99": 9.5,
+                "ssim_loss_mean": 0.012,
+                "ssim_loss_p99": 0.09,
+                "causal_inside_mean_dE": 4.0,
+                "causal_outside_mean_dE": 2.0,
+                "causal_ratio": 2.0,
+                "uni_cosine_drop": None,
+            }
+        },
+    )
+
+    payload = load_stats_payload(stats_path)
+
+    assert payload["cell_types"]["delta_e_mean"] == 3.5
+    assert payload["cell_types"]["ssim_loss_mean"] == 0.012
+    assert payload["cell_types"]["causal_ratio"] == 2.0
+    assert payload["cell_types"]["uni_cosine_drop"] is None
+
+
 def test_render_batch_summary_json_contains_top_tiles(tmp_path: Path) -> None:
     root = tmp_path / "ablation_results"
     stats_paths = [

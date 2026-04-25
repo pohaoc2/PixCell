@@ -110,6 +110,53 @@ def test_compute_loo_diffs_global_normalization(tmp_path):
     assert all_vals.max() > 0.0
 
 
+def test_delta_e_lab_map_constant_lightness_shift() -> None:
+    from tools.vis.leave_one_out_diff import delta_e_lab_map
+
+    img_a = np.full((2, 2, 3), 128, dtype=np.uint8)
+    img_b = np.full((2, 2, 3), 158, dtype=np.uint8)
+
+    result = delta_e_lab_map(img_a, img_b)
+
+    assert result.shape == (2, 2)
+    assert result.dtype == np.float32
+    assert float(result.mean()) > 8.0
+    assert float(result.std()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_causal_score_signal_inside_mask() -> None:
+    from tools.vis.leave_one_out_diff import causal_score
+
+    diff = np.ones((4, 4), dtype=np.float32)
+    diff[1:3, 1:3] = 8.0
+    channel_mask = np.zeros((4, 4), dtype=np.float32)
+    channel_mask[1:3, 1:3] = 1.0
+    cell_mask = np.ones((4, 4), dtype=np.float32)
+
+    score = causal_score(diff, channel_mask, cell_mask)
+
+    assert score["inside_mean"] == pytest.approx(8.0)
+    assert score["outside_mean"] == pytest.approx(1.0)
+    assert score["causal_ratio"] == pytest.approx(8.0)
+    assert score["n_inside_pixels"] == 4
+
+
+def test_causal_score_signal_outside_mask() -> None:
+    from tools.vis.leave_one_out_diff import causal_score
+
+    diff = np.full((4, 4), 8.0, dtype=np.float32)
+    diff[1:3, 1:3] = 1.0
+    channel_mask = np.zeros((4, 4), dtype=np.float32)
+    channel_mask[1:3, 1:3] = 1.0
+    cell_mask = np.ones((4, 4), dtype=np.float32)
+
+    score = causal_score(diff, channel_mask, cell_mask)
+
+    assert score["inside_mean"] == pytest.approx(1.0)
+    assert score["outside_mean"] == pytest.approx(8.0)
+    assert score["causal_ratio"] < 1.0
+
+
 def test_relative_diff_maps_global_normalization() -> None:
     from tools.vis.leave_one_out_diff import _compute_relative_diff_maps
 
@@ -361,6 +408,30 @@ def test_render_loo_figure_no_mask_fallback_produces_png(tmp_path) -> None:
 
     assert fig_path.is_file()
     assert fig_path.stat().st_size > 0
+
+
+def test_render_loo_figure_new_layout_shape(tmp_path) -> None:
+    from tools.vis.leave_one_out_diff import compute_loo_diffs, render_loo_diff_figure
+
+    cache = _make_cache_large(tmp_path / "cache", resolution=32)
+    fig_path = tmp_path / "new_layout.png"
+
+    fig = render_loo_diff_figure(
+        compute_loo_diffs(cache),
+        cache,
+        out_path=fig_path,
+        no_causal=True,
+        close=False,
+    )
+
+    try:
+        assert fig_path.is_file()
+        assert len(fig.axes) == 22  # 4x5 panels plus two shared row colorbars
+        assert fig.axes[0].get_subplotspec().get_geometry()[:2] == (4, 5)
+    finally:
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
 
 
 # ── ssim_loss_map ─────────────────────────────────────────────────────────────

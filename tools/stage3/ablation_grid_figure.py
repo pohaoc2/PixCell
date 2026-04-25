@@ -498,6 +498,19 @@ def _maybe_overlay_cellvit_contours(ax, image_path: Path, *, enabled: bool) -> N
         )
 
 
+def _overlay_cellvit_contours_red(ax, image_path: Path) -> None:
+    """Overlay CellViT contours in red on every ablation panel."""
+    for contour in _load_cellvit_contours(image_path):
+        ax.plot(
+            contour[:, 0],
+            contour[:, 1],
+            color="red",
+            linewidth=0.6,
+            alpha=0.85,
+            zorder=4,
+        )
+
+
 def render_ablation_grid_figure(
     cache_dir: Path,
     *,
@@ -555,10 +568,10 @@ def render_ablation_grid_figure(
     grid_hspace = 0.012
     grid_wspace = 0.001
 
-    fig = plt.figure(figsize=(8.4, 9.1), facecolor="white", layout="constrained")
+    fig = plt.figure(figsize=(7.2, 9.1), facecolor="white", layout="constrained")
     layout_engine = fig.get_layout_engine()
     if layout_engine is not None:
-        layout_engine.set(hspace=grid_hspace, wspace=grid_wspace, h_pad=0.006, w_pad=0.006)
+        layout_engine.set(hspace=grid_hspace, wspace=grid_wspace, h_pad=0.006, w_pad=0.001)
     gs = gridspec.GridSpec(
         NROWS_PER_CELL * 4, 4,
         figure=fig,
@@ -602,6 +615,7 @@ def render_ablation_grid_figure(
         image_ax.imshow(img_arr)
         _maybe_contour_cell_mask(image_ax, cell_mask, (img_arr.shape[0], img_arr.shape[1]))
         _maybe_overlay_cellvit_contours(image_ax, img_path, enabled=debug_cellvit_overlay)
+        _overlay_cellvit_contours_red(image_ax, img_path)
         image_ax.set_xticks([])
         image_ax.set_yticks([])
         draw_image_border(image_ax, COLOR_ACTIVE)

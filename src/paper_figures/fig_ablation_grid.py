@@ -22,6 +22,7 @@ def build_representative_ablation_grid(
     out_png: Path,
     dpi: int = 300,
     style_mapping_json: Path | None = None,
+    tile_id: str | None = None,
 ) -> Path | None:
     """Find the representative tile and render its ablation grid.
 
@@ -32,7 +33,10 @@ def build_representative_ablation_grid(
     orion_root = Path(orion_root)
 
     loo_root = resolve_loo_root(metrics_root, dataset_root)
-    _, _, representative_tile = load_leave_one_out_summary_stats(loo_root)
+    if tile_id is not None:
+        representative_tile = tile_id
+    else:
+        _, _, representative_tile = load_leave_one_out_summary_stats(loo_root)
     if representative_tile is None:
         print(f"No representative tile found under {loo_root}")
         return None
