@@ -520,7 +520,7 @@ def render_ablation_grid_figure(
     out_png: Path,
     dpi: int = 300,
     auto_cosine: bool = True,
-    sort_by: str = "cosine",
+    sort_by: str = "pq",
     metric_bars: tuple[str, ...] = METRIC_BAR_PRESETS["paired"],
     debug_cellvit_overlay: bool = False,
     uni_model: Path | None = None,
@@ -584,7 +584,7 @@ def render_ablation_grid_figure(
 
     # --- Draw 15 sorted conditions in cells [0,0] → [3,2] ---
     for cell_idx, cond in enumerate(sorted_conds):
-        gr, gc = divmod(cell_idx, 4)  # grid row (0-3), grid col (0-3)
+        gr, gc = divmod(cell_idx + 1, 4)  # offset by 1: [0,0] reserved for reference
         k = condition_metric_key(cond)
         metric_record = metrics.get(k, {})
         is_best = (k == best_key)
@@ -633,8 +633,8 @@ def render_ablation_grid_figure(
         label_ax.axis("off")
         aux_axes_by_image.append((image_ax, [dot_ax, bar_ax, label_ax]))
 
-    # --- Real H&E at cell [3, 3] ---
-    gr, gc = 3, 3
+    # --- Real H&E at cell [0, 0] ---
+    gr, gc = 0, 0
     base = gr * NROWS_PER_CELL
 
     # Dot row: empty spacer

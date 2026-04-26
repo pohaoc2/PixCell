@@ -130,7 +130,7 @@ def condition_order_label() -> str:
 
 
 def compact_condition_order_label() -> str:
-    return "CT/CS/VAS/ENV"
+    return "CT/CS/VAS/NUC"
 
 
 def condition_indicator_text(condition: object) -> str:
