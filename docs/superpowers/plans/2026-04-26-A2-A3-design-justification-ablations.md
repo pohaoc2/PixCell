@@ -4,9 +4,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-26-A2-A3-design-justification-ablations-design.md`
 
-**Goal:** Build code + configs needed to run the A2 (`zero_mask_latent`) bypass probe and A3 (`zero_init_conv_out`) stability ablations and produce two SI figures.
+**Goal:** Build code + configs needed to run the A2 (`zero_mask_latent`) bypass probe and A3 (`zero_init_conv_out`) stability ablations and produce two SI figures. Training is performed on Colab via `notebook/multichannel_controlnet.ipynb`; inference and CellViT also run on Colab; final figure rendering runs locally on EC2 after S3 sync.
 
-**Architecture:** Two new training configs (False variants) reuse the existing paired-exp training loop. New inference wrappers cover the bypass probe (load False checkpoint, zero TME at forward) and the off-the-shelf PixCell ControlNet reference (mask-only inference, no fine-tune). New aggregation script reads training logs across seeds for A3 stability metrics. Two new figure builders consume metric JSONs + per-tile PNGs and emit `SI_A2_bypass_probe.png` / `SI_A3_zero_init.png`. Existing CellViT pipeline reused unchanged.
+**Architecture:** Two new training configs (False variants) reuse the existing paired-exp training loop, which gains a `--seed` CLI flag and a JSONL training-log emitter. New inference wrappers cover the bypass probe (load False checkpoint, zero TME at forward) and the off-the-shelf PixCell ControlNet reference (mask-only inference, no fine-tune). New aggregation script reads training logs across seeds for A3 stability metrics. Two new figure builders consume metric JSONs + per-tile PNGs and emit `SI_A2_bypass_probe.png` / `SI_A3_zero_init.png`. Existing CellViT pipeline reused unchanged. S3 is the artifact-transfer layer between Colab and EC2.
 
 **Tech Stack:** Python 3.13 + PyTorch + matplotlib; existing `train_controlnet_exp.py`, `tools/cellvit/`, `tools/ablation_report/`, `src/paper_figures/`.
 
@@ -31,10 +31,135 @@
 
 **Modified files:**
 - `src/paper_figures/main.py` — register two new SI figure builders, save to both `pngs/` and `pngs_updated/`.
+- `train_scripts/initialize_models_utils.py` — add `--seed` CLI flag (Task 1).
+- `train_scripts/train_controlnet_exp.py` — apply CLI seed override and emit JSONL training log (Tasks 1 + 2).
 
 ---
 
-## Task 1: A2 variant config
+## Task 1: Add `--seed` CLI flag to training entrypoint
+
+Operator runs each seed as a separate Colab notebook execution; the cleanest override is a CLI flag rather than per-seed config files.
+
+**Files:**
+- Modify: `train_scripts/initialize_models_utils.py`
+- Modify: `train_scripts/train_controlnet_exp.py`
+
+- [ ] **Step 1: Add the `--seed` argument**
+
+In `train_scripts/initialize_models_utils.py`, inside `parse_args`, add:
+
+```python
+parser.add_argument("--seed", type=int, default=None,
+                    help="Override config seed (per-run reproducibility for ablations).")
+```
+
+- [ ] **Step 2: Apply the override in train loop**
+
+In `train_scripts/train_controlnet_exp.py`, inside `main()` after `args = init_data['args']` (around line 415) and before any seed-dependent setup, add:
+
+```python
+if args.seed is not None:
+    config.seed = args.seed
+```
+
+The existing seed-handling code (which calls `set_seed(config.seed)` somewhere downstream) will then pick up the override.
+
+- [ ] **Step 3: Smoke-check**
+
+```bash
+conda run -n pixcell python stage2_train.py configs/config_controlnet_exp.py --seed 7 --debug 2>&1 | head -5
+```
+
+Expected: training starts (or fails on missing GPU/data — that's fine). Just verify the flag parses without error.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add train_scripts/initialize_models_utils.py train_scripts/train_controlnet_exp.py
+git commit -m "feat(train): --seed CLI flag for per-run ablation reproducibility"
+```
+
+---
+
+## Task 2: Emit JSONL training log
+
+The A3 stability aggregator (later task) reads `<work_dir>/train_log.jsonl` with one record per logged step containing `step`, `loss`, and `grad_norm`. Tensorboard logs are not parseable by that path. Add a sibling JSONL writer at the existing log-interval site.
+
+**Files:**
+- Modify: `train_scripts/train_controlnet_exp.py`
+
+- [ ] **Step 1: Locate the existing log-interval block**
+
+```bash
+grep -n "log_interval\|logger.info\|loss_meter\|losses_recorder" train_scripts/train_controlnet_exp.py | head -10
+```
+
+The block emits per-step loss to tensorboard around the existing `if step % config.log_interval == 0` site. Insert the JSONL append at the same site.
+
+- [ ] **Step 2: Add the JSONL writer**
+
+Near the top of `main()` after `work_dir = args.work_dir or config.work_dir` (or wherever the work_dir is finalized), add:
+
+```python
+import json
+from pathlib import Path
+
+_train_log_path = Path(work_dir) / "train_log.jsonl"
+_train_log_path.parent.mkdir(parents=True, exist_ok=True)
+_train_log_fh = _train_log_path.open("a", buffering=1)  # line-buffered
+```
+
+At the existing log-interval site (where loss is reported), add a JSONL append. The exact gradient-norm source is the variable already used by the existing `clip_grad_norm_` block; reuse it via a captured value:
+
+```python
+# Capture grad norm before stepping (the clip_grad_norm_ call returns it)
+_grad_norm = accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
+```
+
+If the existing call already discards the return value, change it to capture. Then at the log site:
+
+```python
+if accelerator.is_main_process and (global_step % config.log_interval == 0):
+    _train_log_fh.write(json.dumps({
+        "step": int(global_step),
+        "loss": float(loss.detach().item()),
+        "grad_norm": float(_grad_norm) if _grad_norm is not None else None,
+    }) + "\n")
+```
+
+At the end of `main()`, ensure the file is closed:
+
+```python
+_train_log_fh.close()
+```
+
+- [ ] **Step 3: Smoke-check the writer**
+
+```bash
+conda run -n pixcell python -c "
+import json
+from pathlib import Path
+p = Path('/tmp/test_train_log.jsonl')
+p.unlink(missing_ok=True)
+fh = p.open('a', buffering=1)
+fh.write(json.dumps({'step': 1, 'loss': 0.5, 'grad_norm': 0.1}) + chr(10))
+fh.close()
+print(p.read_text())
+"
+```
+
+Expected: `{"step": 1, "loss": 0.5, "grad_norm": 0.1}` printed.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add train_scripts/train_controlnet_exp.py
+git commit -m "feat(train): JSONL train log for A3 stability aggregation"
+```
+
+---
+
+## Task 3: A2 variant config
 
 **Files:**
 - Create: `configs/config_controlnet_exp_a2_bypass.py`
@@ -77,7 +202,7 @@ git commit -m "feat(A2): config for zero_mask_latent=False bypass variant"
 
 ---
 
-## Task 2: A3 variant config
+## Task 4: A3 variant config
 
 **Files:**
 - Create: `configs/config_controlnet_exp_a3_no_zero_init.py`
@@ -127,7 +252,7 @@ git commit -m "feat(A3): config for zero_init_conv_out=False stability variant"
 
 ---
 
-## Task 3: Off-the-shelf PixCell ControlNet inference wrapper
+## Task 5: Off-the-shelf PixCell ControlNet inference wrapper
 
 **Files:**
 - Create: `tools/baselines/__init__.py` (empty)
@@ -332,7 +457,7 @@ git commit -m "feat(A2): off-the-shelf PixCell ControlNet inference wrapper"
 
 ---
 
-## Task 4: Bypass-probe inference script
+## Task 6: Bypass-probe inference script
 
 **Files:**
 - Create: `tools/ablation_a2/__init__.py` (empty)
@@ -477,7 +602,7 @@ git commit -m "feat(A2): bypass-probe inference script (zero-TME at inference)"
 
 ---
 
-## Task 5: A3 stability aggregator
+## Task 7: A3 stability aggregator
 
 **Files:**
 - Create: `tools/ablation_a3/__init__.py` (empty)
@@ -732,7 +857,7 @@ git commit -m "feat(A3): stability aggregator for per-seed training logs"
 
 ---
 
-## Task 6: SI A2 figure builder
+## Task 8: SI A2 figure builder
 
 **Files:**
 - Create: `src/paper_figures/fig_si_a2_bypass.py`
@@ -849,7 +974,7 @@ git commit -m "feat(A2): SI bypass-probe figure builder (table + qual grid)"
 
 ---
 
-## Task 7: SI A3 figure builder
+## Task 9: SI A3 figure builder
 
 **Files:**
 - Create: `src/paper_figures/fig_si_a3_zero_init.py`
@@ -1009,7 +1134,7 @@ git commit -m "feat(A3): SI zero-init stability figure builder"
 
 ---
 
-## Task 8: Register SI builders in main.py
+## Task 10: Register SI builders in main.py
 
 **Files:**
 - Modify: `src/paper_figures/main.py`
@@ -1100,117 +1225,200 @@ git commit -m "feat(A2/A3): wire SI design-justification figures into main"
 
 ---
 
-## Task 9: Operator runbook (training + inference + CellViT)
+## Task 11: Operator runbook (Colab training + Colab/local inference + local figures)
 
-This task is **operator-executed**, not agent-executed. Document the steps in `docs/runbooks/A2_A3_design_justification.md` so they can be reproduced.
+This task is **operator-executed**, not agent-executed. Training runs on Colab via `notebook/multichannel_controlnet.ipynb`; inference, CellViT, and metric aggregation run on Colab; final figure rendering runs locally on EC2 after S3 sync.
 
 **Files:**
 - Create: `docs/runbooks/A2_A3_design_justification.md`
 
+S3 conventions used throughout:
+- Logs: `s3://bagherilab-working/pohao/share_space/a2_a3/<variant>/<seed>/train_log.jsonl`
+- Checkpoints: `s3://bagherilab-working/pohao/share_space/a2_a3/<variant>/<seed>/checkpoint/`
+- Generated tiles: `s3://bagherilab-working/pohao/share_space/a2_a3/<variant>/inference/<tile_id>.png`
+- Summary JSONs: `s3://bagherilab-working/pohao/share_space/a2_a3/<variant>/metrics_summary.json`
+  and `.../a3_zero_init/stability_{true,false}.json`
+
 - [ ] **Step 1: Write the runbook**
 
 ```markdown
-# A2 / A3 Runbook
+# A2 / A3 Runbook (Colab + local)
 
-## Short-proxy length
+## 0. Prereq — short-proxy length
 
-Run a single seed of `config_controlnet_exp.py` with `num_epochs` reduced to 25% (≈5 epochs / ≈940 steps) and confirm paired-test FID ranking against the production run matches at full schedule on a single reference seed. Lock that step count as `--proxy_steps` for all subsequent A2/A3 short-proxy runs.
+Run a single seed of `config_controlnet_exp.py` with `num_epochs` reduced to 25% (≈5 epochs / ≈940 steps). Confirm paired-test FID ranking against the production run matches at full schedule on a single reference seed. Lock that step count as the proxy length for all A2/A3 short-proxy runs and record it in the spec results.
 
-## A2 training (zero_mask_latent=False)
+## 1. Colab — per-seed training
 
-5 seeds (short proxy) + 1 full-headline:
+Open `notebook/multichannel_controlnet.ipynb`. The setup cells (clone, install, AWS creds, data download, stage0/stage1, dependencies) are unchanged. After those, replace the single training cell with the following per-seed cell pattern. Re-run the cell once per seed with the indicated values.
 
-```bash
-for SEED in 1 2 3 4 5; do
-  python -m accelerate.commands.launch train_scripts/train_controlnet_exp.py \
+### A2 short-proxy seeds (1–5)
+
+```python
+%cd /content/PixCell
+!git pull origin main
+
+VARIANT  = "a2_bypass"
+CONFIG   = "configs/config_controlnet_exp_a2_bypass.py"
+SEED     = 1            # ← change to 2, 3, 4, 5 across runs
+EPOCHS   = 5            # short proxy
+WORK_DIR = f"/content/PixCell/checkpoints/pixcell_controlnet_exp_{VARIANT}/seed_{SEED}"
+S3_BASE  = f"s3://bagherilab-working/pohao/share_space/a2_a3/{VARIANT}/seed_{SEED}"
+
+# Override num_epochs by editing the loaded config in-place via env var trick OR
+# by passing --num-epochs once that flag exists. Until then, edit the config file
+# briefly (see Task 1 follow-up) or accept the configured value.
+!accelerate launch stage2_train.py {CONFIG} \
+    --work-dir {WORK_DIR} --seed {SEED}
+
+!aws s3 cp {WORK_DIR}/train_log.jsonl {S3_BASE}/train_log.jsonl
+!aws s3 cp {WORK_DIR}/checkpoints/ {S3_BASE}/checkpoint/ --recursive --quiet
+```
+
+### A2 full-headline seed
+
+Same cell with `EPOCHS` left at the production value (config default) and `SEED = 42`, `WORK_DIR` suffix `full_seed_42`, `S3_BASE` ending in `/full_seed_42`.
+
+### A3 (zero_init=False) seeds 1–5 short-proxy + 1 full-headline
+
+Same pattern, but `CONFIG = "configs/config_controlnet_exp_a3_no_zero_init.py"` and `VARIANT = "a3_no_zero_init"`.
+
+### A3 production-True reference logs
+
+If the existing production True checkpoints lack the JSONL log emitted by Task 2, retrain a single True seed at short-proxy length to provide loss-curve data for the A3 figure. Cell pattern is identical to the above with `CONFIG = "configs/config_controlnet_exp.py"`, `VARIANT = "a3_zero_init_true"`.
+
+## 2. Colab — inference
+
+After all training runs are uploaded, run the inference cells in the same notebook (or a sister notebook):
+
+### Production row (reuse existing outputs if available)
+
+If `inference_output/paired_ablation/production/` already contains the test-tile generations, sync them to S3 under `.../a2_a3/a2_bypass/inference/production/`. Otherwise rerun stage3_inference on the production checkpoint and upload.
+
+### Bypass-probe row (A2-False checkpoint, TME zeroed)
+
+```python
+%cd /content/PixCell
+!git pull origin main
+
+# Pull A2-False headline checkpoint from S3
+!aws s3 cp s3://bagherilab-working/pohao/share_space/a2_a3/a2_bypass/full_seed_42/checkpoint/ \
+    /content/PixCell/checkpoints/pixcell_controlnet_exp_a2_bypass/full_seed_42/checkpoints/ \
+    --recursive --quiet
+
+!python -m tools.ablation_a2.run_bypass_probe \
+    --checkpoint /content/PixCell/checkpoints/pixcell_controlnet_exp_a2_bypass/full_seed_42 \
     --config configs/config_controlnet_exp_a2_bypass.py \
-    --seed $SEED \
-    --work-dir checkpoints/pixcell_controlnet_exp_a2_bypass/seed_${SEED}
-done
+    --tile_ids tools/ablation_report/paired_test_tile_ids.txt \
+    --out_dir inference_output/a2_bypass/bypass
 
-# Full-headline run
-python -m accelerate.commands.launch train_scripts/train_controlnet_exp.py \
-  --config configs/config_controlnet_exp_a2_bypass.py \
-  --seed 42 \
-  --work-dir checkpoints/pixcell_controlnet_exp_a2_bypass/full_seed_42
+!aws s3 cp inference_output/a2_bypass/bypass/ \
+    s3://bagherilab-working/pohao/share_space/a2_a3/a2_bypass/inference/bypass/ \
+    --recursive --quiet
 ```
 
-## A3 training (zero_init_conv_out=False)
+### Off-the-shelf row (original PixCell, no fine-tune)
 
-Same pattern with `config_controlnet_exp_a3_no_zero_init.py`.
+```python
+!python -m tools.baselines.pixcell_offshelf_inference \
+    --controlnet pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors \
+    --base pretrained_models/pixcell-256/transformer \
+    --vae pretrained_models/sd-3.5-vae/vae \
+    --uni pretrained_models/uni-2h \
+    --tile_ids tools/ablation_report/paired_test_tile_ids.txt \
+    --out_dir inference_output/a2_bypass/offshelf
 
-## A2 inference
+!aws s3 cp inference_output/a2_bypass/offshelf/ \
+    s3://bagherilab-working/pohao/share_space/a2_a3/a2_bypass/inference/offshelf/ \
+    --recursive --quiet
+```
 
-1. Production row: reuse existing `inference_output/paired_ablation/production/` (or rerun with current production checkpoint).
-2. Bypass probe row:
-   ```bash
-   python -m tools.ablation_a2.run_bypass_probe \
-     --checkpoint checkpoints/pixcell_controlnet_exp_a2_bypass/full_seed_42 \
-     --config configs/config_controlnet_exp_a2_bypass.py \
-     --tile_ids tools/ablation_report/paired_test_tile_ids.txt \
-     --out_dir inference_output/a2_bypass/bypass
-   ```
-3. Off-the-shelf row:
-   ```bash
-   python -m tools.baselines.pixcell_offshelf_inference \
-     --controlnet pretrained_models/pixcell-256-controlnet/controlnet/diffusion_pytorch_model.safetensors \
-     --base pretrained_models/pixcell-256/transformer \
-     --vae pretrained_models/sd-3.5-vae/vae \
-     --uni pretrained_models/uni-2h \
-     --tile_ids tools/ablation_report/paired_test_tile_ids.txt \
-     --out_dir inference_output/a2_bypass/offshelf
-   ```
+### A3 inference per seed (paired test split)
 
-## CellViT pass
+For each A3 seed (True and False), pull the checkpoint from S3 and run the existing `stage3_inference.py` to populate `inference_output/a3_zero_init/<variant>/seed_<k>/`. Upload to S3.
 
-Run the existing `tools/cellvit/export_batch.py` pointed at each generated-tile directory. Then `tools/cellvit/import_results.py` to merge.
+## 3. Colab — CellViT pass
 
-## Metric aggregation
+The existing CellViT pipeline lives in `tools/cellvit/`. Point `export_batch.py` at each generated-tiles directory:
+
+```python
+!python -m tools.cellvit.export_batch \
+    --input_dir inference_output/a2_bypass/bypass \
+    --output_dir inference_output/a2_bypass/bypass/cellvit
+# Repeat for production, offshelf, and each A3 variant/seed dir.
+```
+
+Then `tools/cellvit/import_results.py` to merge. Upload merged outputs to S3.
+
+## 4. Colab — metric aggregation
+
+A2 metrics:
+
+```python
+!python -m tools.ablation_a2.aggregate_metrics \
+    --variant_dirs inference_output/a2_bypass/production \
+                   inference_output/a2_bypass/bypass \
+                   inference_output/a2_bypass/offshelf \
+    --reference_dir data/orion-crc33 \
+    --out inference_output/a2_bypass/metrics_summary.json
+
+!aws s3 cp inference_output/a2_bypass/metrics_summary.json \
+    s3://bagherilab-working/pohao/share_space/a2_a3/a2_bypass/metrics_summary.json
+```
+
+(`tools/ablation_a2/aggregate_metrics.py` is an operator-side wrapper around the existing metrics tool; emit the schema expected by `fig_si_a2_bypass.py`: `{"rows": [{"variant": str, "fid": ..., "uni_cos": ..., "cellvit_count_r": ..., "cellvit_type_kl": ..., "cellvit_nuc_ks": ...}, ...]}`. If the schema is already produced upstream, this script is a one-liner.)
+
+A3 stability JSONs (per Task 7 aggregator):
+
+```python
+# Pull all seed train_log.jsonl files from S3 first
+!mkdir -p /tmp/a3_logs/true /tmp/a3_logs/false
+!aws s3 sync s3://bagherilab-working/pohao/share_space/a2_a3/a3_zero_init_true/ /tmp/a3_logs/true/
+!aws s3 sync s3://bagherilab-working/pohao/share_space/a2_a3/a3_no_zero_init/ /tmp/a3_logs/false/
+
+!python -m tools.ablation_a3.aggregate_stability \
+    --seed_dirs /tmp/a3_logs/true/seed_1 /tmp/a3_logs/true/seed_2 /tmp/a3_logs/true/seed_3 \
+                /tmp/a3_logs/true/seed_4 /tmp/a3_logs/true/seed_5 \
+    --out inference_output/a3_zero_init/stability_true.json \
+    --fixed_step 10000 --grad_threshold 100.0
+
+!python -m tools.ablation_a3.aggregate_stability \
+    --seed_dirs /tmp/a3_logs/false/seed_1 /tmp/a3_logs/false/seed_2 /tmp/a3_logs/false/seed_3 \
+                /tmp/a3_logs/false/seed_4 /tmp/a3_logs/false/seed_5 \
+    --out inference_output/a3_zero_init/stability_false.json \
+    --fixed_step 10000 --grad_threshold 100.0
+
+!aws s3 cp inference_output/a3_zero_init/stability_true.json  s3://bagherilab-working/pohao/share_space/a2_a3/a3_zero_init/stability_true.json
+!aws s3 cp inference_output/a3_zero_init/stability_false.json s3://bagherilab-working/pohao/share_space/a2_a3/a3_zero_init/stability_false.json
+```
+
+A3 metrics summary: same pattern, populate the schema expected by `fig_si_a3_zero_init.py`.
+
+## 5. Local (EC2) — figure rendering
+
+After all S3 uploads complete:
 
 ```bash
-python -m tools.compute_ablation_metrics \
-  --variant_dirs inference_output/paired_ablation/production \
-                 inference_output/a2_bypass/bypass \
-                 inference_output/a2_bypass/offshelf \
-  --reference_dir data/orion-crc33 \
-  --out inference_output/a2_bypass/metrics_summary.json
+cd /home/ec2-user/PixCell
+
+aws s3 sync s3://bagherilab-working/pohao/share_space/a2_a3/a2_bypass/      inference_output/a2_bypass/
+aws s3 sync s3://bagherilab-working/pohao/share_space/a2_a3/a3_zero_init/   inference_output/a3_zero_init/
+# Pull the per-seed train_log.jsonl files into the local checkpoint tree so
+# figure builders that path-glob can find them.
+aws s3 sync s3://bagherilab-working/pohao/share_space/a2_a3/a3_zero_init_true/ checkpoints/pixcell_controlnet_exp/
+aws s3 sync s3://bagherilab-working/pohao/share_space/a2_a3/a3_no_zero_init/   checkpoints/pixcell_controlnet_exp_a3_no_zero_init/
+
+conda run -n pixcell python -m src.paper_figures.main
 ```
 
-(The above invokes the existing metrics tool; if it does not yet support multi-variant aggregation in this exact form, add a thin wrapper script `tools/ablation_a2/aggregate_metrics.py` that emits the schema expected by `fig_si_a2_bypass.py`: `{"rows": [{"variant": str, "fid": ..., "uni_cos": ..., "cellvit_count_r": ..., "cellvit_type_kl": ..., "cellvit_nuc_ks": ...}, ...]}`.)
-
-## A3 stability aggregation
-
-```bash
-python -m tools.ablation_a3.aggregate_stability \
-  --seed_dirs checkpoints/pixcell_controlnet_exp/seed_1 \
-              checkpoints/pixcell_controlnet_exp/seed_2 \
-              checkpoints/pixcell_controlnet_exp/seed_3 \
-              checkpoints/pixcell_controlnet_exp/seed_4 \
-              checkpoints/pixcell_controlnet_exp/seed_5 \
-  --out inference_output/a3_zero_init/stability_true.json \
-  --fixed_step 10000 --grad_threshold 100.0
-
-python -m tools.ablation_a3.aggregate_stability \
-  --seed_dirs checkpoints/pixcell_controlnet_exp_a3_no_zero_init/seed_1 \
-              ... \
-  --out inference_output/a3_zero_init/stability_false.json \
-  --fixed_step 10000 --grad_threshold 100.0
-```
-
-## Final figure regeneration
-
-```bash
-python -m src.paper_figures.main
-```
-
-Should now produce `figures/pngs/SI_A2_bypass_probe.png` and `figures/pngs/SI_A3_zero_init.png` (and updated copies in `pngs_updated/`).
+Final outputs: `figures/pngs/SI_A2_bypass_probe.png`, `figures/pngs/SI_A3_zero_init.png`, plus updated copies in `figures/pngs_updated/`.
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add docs/runbooks/A2_A3_design_justification.md
-git commit -m "docs(A2/A3): runbook for training, inference, CellViT, and figure regen"
+git commit -m "docs(A2/A3): Colab+S3 runbook for training, inference, CellViT, figures"
 ```
 
 ---
@@ -1218,23 +1426,23 @@ git commit -m "docs(A2/A3): runbook for training, inference, CellViT, and figure
 ## Self-Review Checklist (post-write)
 
 - [x] Spec coverage:
-  - §3 definitions → Tasks 1, 2, 4 (configs + bypass probe + off-the-shelf wrapper).
-  - §5 A2 three-row table + qual grid → Task 6.
-  - §5.4 off-the-shelf reference notes → Task 3.
-  - §6 A3 panels → Task 7.
-  - §6.3 divergence definition → Task 5 (aggregator with NaN/grad thresholds).
-  - §7 metric set → integrated in Tasks 6, 7 via metrics_summary JSON schema.
-  - §9 components map 1:1 to Tasks 1–7.
-  - §10 output artifacts → Task 8 wires them; Task 9 documents how they're produced.
-  - §11 failure modes → addressed in Tasks 3 (mask-format note), 9 (operator can adapt), 5 (divergence handling).
-  - §12 testing → Tasks 3, 4, 5 each ship a test.
+  - §3 definitions → Tasks 3, 4, 6 (configs + bypass probe + off-the-shelf wrapper).
+  - §5 A2 three-row table + qual grid → Task 8.
+  - §5.4 off-the-shelf reference notes → Task 5.
+  - §6 A3 panels → Task 9.
+  - §6.3 divergence definition → Task 7 (aggregator with NaN/grad thresholds).
+  - §7 metric set → integrated in Tasks 8, 9 via metrics_summary JSON schema.
+  - §9 components map 1:1 to Tasks 3–9; Tasks 1, 2 add training-infra prereqs (CLI seed flag, JSONL log).
+  - §10 output artifacts → Task 10 wires them; Task 11 documents how they're produced.
+  - §11 failure modes → addressed in Tasks 5 (mask-format note), 11 (operator can adapt), 7 (divergence handling).
+  - §12 testing → Tasks 5, 6, 7 each ship a test.
   - §13 caption requirements → captioning is part of operator-driven figure usage; not a code task. No code task added — captions live in the paper text. NOTE: if captions need to be embedded in figures, add a follow-up task; currently the figures only carry titles.
-  - §14 open assumptions → Task 9 runbook validates short-proxy length and original-PixCell mask format empirically before full runs.
-  - §15 acceptance criteria → satisfied by Tasks 6–8 outputs once operator completes Task 9.
+  - §14 open assumptions → Task 11 runbook validates short-proxy length and original-PixCell mask format empirically before full runs.
+  - §15 acceptance criteria → satisfied by Tasks 8–10 outputs once operator completes Task 11.
 
-- [x] Placeholder scan: no TBDs, every code step has actual code. The note in Task 4 about `build_inference_pipeline` legitimately requires the implementer to inspect `stage3_inference.py` and adapt — not a placeholder, an explicit instruction.
+- [x] Placeholder scan: no TBDs, every code step has actual code. The note in Task 6 about `build_inference_pipeline` legitimately requires the implementer to inspect `stage3_inference.py` and adapt — not a placeholder, an explicit instruction.
 
-- [x] Type consistency: `compute_bypass_conditioning` signature unchanged across uses. Schema for `metrics_summary.json` (`{"rows": [...]}`) is the same in Tasks 6, 7, and 9 (runbook).
+- [x] Type consistency: `compute_bypass_conditioning` signature unchanged across uses. Schema for `metrics_summary.json` (`{"rows": [...]}`) is the same in Tasks 8, 9, and 11 (runbook).
 
 ---
 
