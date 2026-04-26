@@ -4,12 +4,17 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 
 FONT_FAMILY = "DejaVu Sans"
-FONT_SIZE_BASE = 10
-FONT_SIZE_TITLE = 11
-FONT_SIZE_LABEL = 10
-FONT_SIZE_TICK = 9
-FONT_SIZE_LEGEND = 9
-FONT_SIZE_ANNOTATION = 8
+FONT_SIZE_BASE = 12
+FONT_SIZE_TITLE = 13
+FONT_SIZE_LABEL = 12
+FONT_SIZE_TICK = 11
+FONT_SIZE_LEGEND = 11
+FONT_SIZE_ANNOTATION = 10
+FONT_SIZE_PANEL_LABEL = 11   # bold A/B/C corner labels
+FONT_SIZE_CELL_TEXT = 9      # text inside heatmap/matrix cells
+FONT_SIZE_DENSE_LABEL = 8    # axis labels in dense small-tile grids
+FONT_SIZE_DENSE_TITLE = 8    # subplot titles in dense grids
+FONT_SIZE_INLINE = 10        # inline figure annotations
 
 RC_PARAMS: dict[str, object] = {
     "font.family": FONT_FAMILY,

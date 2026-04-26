@@ -8,6 +8,17 @@ from pathlib import Path
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from src.paper_figures.style import (
+    FONT_SIZE_ANNOTATION,
+    FONT_SIZE_CELL_TEXT,
+    FONT_SIZE_DENSE_LABEL,
+    FONT_SIZE_DENSE_TITLE,
+    FONT_SIZE_LABEL,
+    FONT_SIZE_LEGEND,
+    FONT_SIZE_TICK,
+    FONT_SIZE_TITLE,
+)
+
 from .data import load_rgb_pil_local
 from .shared import (
     CHANNEL_EFFECT_CMAP,
@@ -53,6 +64,12 @@ def save_figure_png(fig: plt.Figure, output_path: Path, *, dpi: int = 220) -> No
     plt.close(fig)
 
 
+def _figsize_with_width(figsize: tuple[float, float], width_inches: float | None) -> tuple[float, float]:
+    if width_inches is None:
+        return figsize
+    return (width_inches, figsize[1] * width_inches / figsize[0])
+
+
 def _comparison_metric_order(summaries: list[DatasetSummary]) -> list[str]:
     metrics = [
         metric
@@ -66,6 +83,10 @@ def _comparison_metric_order(summaries: list[DatasetSummary]) -> list[str]:
         if summary_metrics:
             return summary_metrics
     return []
+
+
+def _scaled(font_size: float, scale: float) -> float:
+    return float(font_size) * float(scale)
 
 
 def _render_condition_glyph_axes(ax: plt.Axes, condition: object, *, center_x: float, center_y: float, dx: float) -> None:
@@ -93,7 +114,7 @@ def _render_condition_glyph_axes(ax: plt.Axes, condition: object, *, center_x: f
     )
 
 
-def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_key: str) -> None:
+def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_key: str, *, font_scale: float = 1.0) -> None:
     best_entries, worst_entries, total = _ranked_best_worst_selection(summary.best_worst.get(metric_key))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -106,14 +127,14 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         caption,
         ha="center",
         va="top",
-        fontsize=10,
+        fontsize=_scaled(FONT_SIZE_LABEL, font_scale),
         fontweight="normal",
         color=INK,
         family="DejaVu Serif",
     )
 
     if not best_entries and not worst_entries:
-        ax.text(0.5, 0.55, "No ranked entries", ha="center", va="center", fontsize=8.0, color=OKABE_GRAY)
+        ax.text(0.5, 0.55, "No ranked entries", ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=OKABE_GRAY)
         return
 
     top_labels = _ranked_labels(total, len(best_entries))
@@ -134,14 +155,14 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
 
     ax.plot([0.0, 1.0], [top_line_y, top_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
     ax.plot([0.0, 1.0], [header_bottom_y, header_bottom_y], color=INK, linewidth=0.8, transform=ax.transAxes, clip_on=False)
-    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=8, color=INK, family="DejaVu Serif")
+    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK, family="DejaVu Serif")
     ax.text(
         x_cond,
         header_y,
         "CT/CS/VAS/NUC",
         ha="center",
         va="center",
-        fontsize=7.5,
+        fontsize=_scaled(FONT_SIZE_CELL_TEXT, font_scale),
         color=INK,
         family="DejaVu Serif",
     )
@@ -151,7 +172,7 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         "Mean" if metric_key == "fud" else "Mean ± SD",
         ha="right",
         va="center",
-        fontsize=8,
+        fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale),
         color=INK,
         family="DejaVu Serif",
     )
@@ -164,23 +185,23 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
             sep_y = header_bottom_y - index * row_h
             ax.plot([0.0, 1.0], [sep_y, sep_y], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
             ax.plot([0.0, 1.0], [sep_y - row_h, sep_y - row_h], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
-            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=8.5, color=INK, family="DejaVu Serif")
+            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK, family="DejaVu Serif")
             continue
 
         condition, mean_value, sd_value = entry
-        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=8.5, color="#555555", family="DejaVu Serif")
+        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color="#555555", family="DejaVu Serif")
         _render_condition_glyph_axes(ax, condition, center_x=x_cond, center_y=y, dx=0.055)
         value_text = f"{float(mean_value):.3f}" if metric_key == "fud" else _format_mean_sd(mean_value, sd_value)
-        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=8, color=INK, family="DejaVu Serif")
+        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK, family="DejaVu Serif")
 
     ax.plot([0.0, 1.0], [bottom_line_y, bottom_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
 
 
-def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+def build_metric_trends_figure(summaries: list[DatasetSummary], width_inches: float | None = None) -> plt.Figure:
     metrics = metric_tradeoff_keys(summaries)
     n_cols = 5
     n_rows = 1
-    fig = plt.figure(figsize=(20.0, 5.5))
+    fig = plt.figure(figsize=_figsize_with_width((20.0, 5.5), width_inches))
     outer = fig.add_gridspec(n_rows, n_cols, wspace=0.22, hspace=0.28)
 
     from tools.stage3.ablation_vis_utils import condition_metric_key, ordered_subset_condition_tuples
@@ -261,7 +282,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         ax.set_title(
             f"{METRIC_LABELS.get(metric_key, metric_key)} ({arrow})",
             color=INK,
-            fontsize=18.5,
+            fontsize=FONT_SIZE_TITLE,
             fontweight="normal",
             pad=4,
         )
@@ -287,7 +308,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                 transform=ax.get_yaxis_transform(),
                 ha="left",
                 va="bottom",
-                fontsize=16.5,
+                fontsize=FONT_SIZE_TITLE,
                 color="#666666",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
                 zorder=5,
@@ -304,7 +325,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                 transform=ax.get_yaxis_transform(),
                 ha="left",
                 va="bottom",
-                fontsize=16.5,
+                fontsize=FONT_SIZE_TITLE,
                 color="#666666",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
                 zorder=5,
@@ -315,7 +336,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         ax.spines["bottom"].set_color(INK)
         ax.spines["left"].set_color(INK)
         ax.tick_params(axis="x", length=0)
-        ax.tick_params(axis="y", colors=INK, labelsize=17.5)
+        ax.tick_params(axis="y", colors=INK, labelsize=FONT_SIZE_TICK)
         ax.set_axisbelow(True)
         dot_ax.set_facecolor("white")
         for x_value, cond in zip(x_positions, condition_tuples, strict=True):
@@ -347,7 +368,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                     transform=dot_ax.transAxes,
                     ha="right",
                     va="center",
-                    fontsize=17.0,
+                    fontsize=FONT_SIZE_LABEL,
                     color=INK,
                 )
 
@@ -363,7 +384,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="Benchmark band (mean ± SD)"),
         Line2D([0], [0], color="#8A8A8A", linestyle=(0, (5, 2.5)), linewidth=1.1, label="Benchmark line"),
     ]
-    fig.legend(handles=handles, loc="lower right", ncol=4, frameon=False, bbox_to_anchor=(0.99, 0.04), fontsize=13.5)
+    fig.legend(handles=handles, loc="lower right", ncol=4, frameon=False, bbox_to_anchor=(0.99, 0.04), fontsize=FONT_SIZE_LEGEND)
     fig.subplots_adjust(left=0.055, right=0.99, bottom=0.14, top=0.95)
     return fig
 
@@ -443,9 +464,15 @@ def _metric_label_with_arrow(metric_key: str) -> str:
     return label
 
 
-def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+def build_channel_effect_heatmaps_figure(
+    summaries: list[DatasetSummary],
+    width_inches: float | None = None,
+    *,
+    font_scale: float = 1.0,
+) -> plt.Figure:
     shared_metric_keys = _shared_heatmap_metric_keys(summaries)
-    fig = plt.figure(figsize=(7.9 * len(summaries), 3.35))
+    base_figsize = (7.9 * len(summaries), 3.35 * max(1.0, font_scale * 0.92))
+    fig = plt.figure(figsize=_figsize_with_width(base_figsize, width_inches))
     grid = fig.add_gridspec(1, len(summaries) + 1, width_ratios=[1] * len(summaries) + [0.04], wspace=0.05)
     metric_scales = _heatmap_metric_scales(summaries)
     im = None
@@ -457,7 +484,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         masked = np.ma.masked_invalid(normalized_matrix)
         im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
         ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
-        ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=11.5, color=INK)
+        ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=_scaled(FONT_SIZE_LABEL, font_scale), color=INK)
         ax.set_xticks(range(len(shared_metric_keys)))
         ax.xaxis.tick_top()
         ax.xaxis.set_label_position("top")
@@ -465,7 +492,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
             [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
             rotation=0,
             ha="center",
-            fontsize=10.9,
+            fontsize=_scaled(FONT_SIZE_LABEL, font_scale),
             color=INK,
         )
         if col > 0:
@@ -486,7 +513,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
                     f"{display_value:+.2f}\n±{raw_std:.2f}",
                     ha="center",
                     va="center",
-                    fontsize=10.5,
+                    fontsize=_scaled(FONT_SIZE_CELL_TEXT, font_scale),
                     color="white" if abs(norm_value) >= 0.55 else "#111111",
                 )
         ax.set_xticks(np.arange(-0.5, len(shared_metric_keys), 1), minor=True)
@@ -499,15 +526,16 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
             spine.set_linewidth(1.0)
         ax.tick_params(axis="x", length=0, pad=6)
         ax.tick_params(axis="y", length=0)
+        ax.set_title(summary.title, fontsize=_scaled(FONT_SIZE_TITLE, font_scale), fontweight="bold", color=INK, pad=8)
 
     cax = fig.add_subplot(grid[0, len(summaries)])
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, 0, 1])
-    cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=9.5)
+    cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=_scaled(FONT_SIZE_TICK, font_scale))
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     cbar.outline.set_edgecolor(INK)
     cbar.outline.set_linewidth(1.0)
-    fig.subplots_adjust(left=0.13, right=0.93, top=0.96, bottom=0.10)
+    fig.subplots_adjust(left=0.13, right=0.93, top=0.90, bottom=0.10)
     return fig
 
 
@@ -545,35 +573,41 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     bar_ax.set_xticklabels(x_tick_labels)
     for tick in bar_ax.get_xticklabels():
         tick.set_color(INK)
-        tick.set_fontsize(9.5)
+        tick.set_fontsize(FONT_SIZE_TICK)
     lo, hi = _tight_range(values_for_range)
     bar_ax.set_ylim(max(0.0, lo), hi)
     bar_ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
     bar_ax.spines["top"].set_visible(False)
     bar_ax.spines["right"].set_visible(False)
-    bar_ax.tick_params(axis="y", labelsize=9.5)
+    bar_ax.tick_params(axis="y", labelsize=FONT_SIZE_TICK)
     bar_ax.set_axisbelow(True)
-    bar_ax.set_ylabel("Mean |\u0394 pixel| (normalized [0, 1])", fontsize=10.0, color=INK)
+    bar_ax.set_ylabel("Mean |\u0394 pixel| (normalized [0, 1])", fontsize=FONT_SIZE_LABEL, color=INK)
 
     handles = [
         Patch(facecolor="white", edgecolor=INK, label="Paired"),
         Patch(facecolor="white", edgecolor=INK, hatch="//", label="Unpaired"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01), fontsize=10.0)
+    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.01), fontsize=FONT_SIZE_LEGEND)
     fig.subplots_adjust(left=0.10, right=0.985, bottom=0.19, top=0.77)
     return fig
 
 
-def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure:
+def build_comparison_table_figure(
+    summaries: list[DatasetSummary],
+    width_inches: float | None = None,
+    *,
+    font_scale: float = 1.0,
+) -> plt.Figure:
     metric_keys = _comparison_metric_order(summaries)
     rendered_summaries = [summary for summary in summaries if any(metric in comparison_metric_keys(summary) for metric in metric_keys)]
     if not rendered_summaries:
-        fig, ax = plt.subplots(figsize=(12.0, 2.4))
+        fig, ax = plt.subplots(figsize=_figsize_with_width((12.0, 2.4), width_inches))
         ax.axis("off")
-        ax.text(0.5, 0.5, "No paired vs unpaired comparison data available.", ha="center", va="center", fontsize=12.0, color=OKABE_GRAY)
+        ax.text(0.5, 0.5, "No paired vs unpaired comparison data available.", ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=OKABE_GRAY)
         return fig
 
-    fig = plt.figure(figsize=(14.2, max(3.0, 1.95 * len(rendered_summaries) + 0.35)))
+    base_figsize = (14.2, max(3.0, (1.95 * font_scale) * len(rendered_summaries) + 0.35))
+    fig = plt.figure(figsize=_figsize_with_width(base_figsize, width_inches))
     outer = fig.add_gridspec(len(rendered_summaries), 1, hspace=0.12)
 
     for row_index, summary in enumerate(rendered_summaries):
@@ -586,7 +620,7 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
             summary.title.upper(),
             ha="left",
             va="center",
-            fontsize=11,
+            fontsize=_scaled(FONT_SIZE_LABEL, font_scale),
             fontweight="normal",
             color=INK,
             family="DejaVu Serif",
@@ -598,14 +632,14 @@ def build_comparison_table_figure(summaries: list[DatasetSummary]) -> plt.Figure
         metric_grid = row_grid[1, 0].subgridspec(1, len(metric_keys), wspace=0.08)
         for col_index, metric_key in enumerate(metric_keys):
             ax = fig.add_subplot(metric_grid[0, col_index])
-            _draw_comparison_metric_panel(ax, summary, metric_key)
+            _draw_comparison_metric_panel(ax, summary, metric_key, font_scale=font_scale)
 
     fig.subplots_adjust(left=0.028, right=0.992, bottom=0.05, top=0.97)
     return fig
 
 
 def draw_evidence_panel(ax: plt.Axes, label: str, path: Path | None) -> None:
-    ax.set_title(label, fontsize=11.5, fontweight="bold", pad=10, color=INK)
+    ax.set_title(label, fontsize=FONT_SIZE_TITLE, fontweight="bold", pad=10, color=INK)
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
@@ -613,7 +647,7 @@ def draw_evidence_panel(ax: plt.Axes, label: str, path: Path | None) -> None:
         spine.set_linewidth(1.0)
     if path is None or not path.is_file():
         ax.set_facecolor("#F6F4EF")
-        ax.text(0.5, 0.5, "Figure not found", ha="center", va="center", color=OKABE_GRAY, fontsize=11.0)
+        ax.text(0.5, 0.5, "Figure not found", ha="center", va="center", color=OKABE_GRAY, fontsize=FONT_SIZE_ANNOTATION)
         return
     ax.imshow(np.asarray(load_rgb_pil_local(path)))
 
@@ -641,20 +675,20 @@ def build_dataset_summary_figure(summary: DatasetSummary) -> plt.Figure:
     ]
     takeaways_text = "\n\n".join(takeaway_blocks) if takeaway_blocks else "Representative findings unavailable."
 
-    text_ax.text(0.0, 0.99, summary.title, fontsize=19, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.99, summary.title, fontsize=FONT_SIZE_TITLE, fontweight="bold", color=INK, va="top")
     text_ax.text(
         0.0,
         0.91,
         f"{summary.tile_count} tiles\nRepresentative tile: {representative}",
-        fontsize=11.0,
+        fontsize=FONT_SIZE_LABEL,
         color=OKABE_GRAY,
         va="top",
         linespacing=1.5,
     )
-    text_ax.text(0.0, 0.77, "Metrics", fontsize=12.5, fontweight="bold", color=INK, va="top")
-    text_ax.text(0.0, 0.72, metrics_text, fontsize=10.8, color=INK, va="top", linespacing=1.4)
-    text_ax.text(0.0, 0.58, "Key takeaways", fontsize=12.5, fontweight="bold", color=INK, va="top")
-    text_ax.text(0.0, 0.53, takeaways_text, fontsize=10.7, color=INK, va="top", linespacing=1.45)
+    text_ax.text(0.0, 0.77, "Metrics", fontsize=FONT_SIZE_TITLE, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.72, metrics_text, fontsize=FONT_SIZE_LABEL, color=INK, va="top", linespacing=1.4)
+    text_ax.text(0.0, 0.58, "Key takeaways", fontsize=FONT_SIZE_TITLE, fontweight="bold", color=INK, va="top")
+    text_ax.text(0.0, 0.53, takeaways_text, fontsize=FONT_SIZE_LABEL, color=INK, va="top", linespacing=1.45)
 
     draw_evidence_panel(fig.add_subplot(grid[0, 1]), "Representative ablation grid", summary.ablation_grid_path)
     draw_evidence_panel(fig.add_subplot(grid[0, 2]), "Representative leave-one-out diff", summary.loo_diff_path)

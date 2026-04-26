@@ -5,6 +5,12 @@ import numpy as np
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+from src.paper_figures.style import (
+    FONT_SIZE_CELL_TEXT,
+    FONT_SIZE_DENSE_LABEL,
+    FONT_SIZE_DENSE_TITLE,
+    FONT_SIZE_LABEL,
+)
 from tools.ablation_report.shared import INK, plt
 
 from . import _shared
@@ -22,7 +28,7 @@ def _panel_label(ax: plt.Axes, label: str) -> None:
         transform=ax.transAxes,
         ha="left",
         va="bottom",
-        fontsize=13,
+        fontsize=FONT_SIZE_LABEL,
         fontweight="bold",
         color=INK,
     )
@@ -63,18 +69,18 @@ def render_panel_b(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
     vmax = max(float(matrix.max()) if matrix.size else 0.0, 1e-6)
     im = ax.imshow(matrix, cmap="magma", vmin=0.0, vmax=vmax, aspect="auto")
     ax.set_yticks(range(len(STATES)))
-    ax.set_yticklabels(STATES, fontsize=6.5, color=INK)
+    ax.set_yticklabels(STATES, fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
     ax.set_xticks(range(matrix.shape[1]))
     ax.set_xticklabels(
         [f"{o}/{g}" for o in LEVELS for g in LEVELS],
         rotation=30,
         ha="right",
-        fontsize=6,
+        fontsize=FONT_SIZE_DENSE_LABEL,
         color=INK,
     )
     ax.set_title(
         "interaction magnitude: residual L2 norm (low=0.50, mid=0.75, high=1.00)",
-        fontsize=7,
+        fontsize=FONT_SIZE_DENSE_TITLE,
         loc="left",
         color=INK,
         pad=4.0,
@@ -86,10 +92,9 @@ def render_panel_b(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
         for j in range(matrix.shape[1]):
             value = matrix[i, j]
             text_color = "white" if value < threshold else "black"
-            ax.text(j, i, f"{value:.2g}", ha="center", va="center", fontsize=6.5, color=text_color)
+            ax.text(j, i, f"{value:.2g}", ha="center", va="center", fontsize=FONT_SIZE_CELL_TEXT, color=text_color)
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="3%", pad=0.08)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.tick_params(labelsize=6, colors=INK)
-
+    cbar.ax.tick_params(labelsize=FONT_SIZE_DENSE_LABEL, colors=INK)

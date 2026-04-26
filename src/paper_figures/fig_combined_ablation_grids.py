@@ -4,8 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
-_LABEL_STRIP_PX = 80
+_LABEL_STRIP_PX = 120
 _SAVE_DPI = 220
+_PANEL_TITLES = {
+    "A": "Paired ablation grid",
+    "B": "Unpaired ablation grid",
+}
 
 
 def _load_rgb(path: Path) -> np.ndarray:
@@ -47,7 +51,19 @@ def build_combined_ablation_grids_figure(path_a: Path, path_b: Path) -> plt.Figu
             0.994,
             label,
             transform=ax.transAxes,
+            # Overlay is drawn on 220 DPI raster panels, so this remains in raster-pixel scale.
             fontsize=28,
+            fontweight="bold",
+            va="top",
+            ha="left",
+            color="black",
+        )
+        ax.text(
+            0.062,
+            0.989,
+            _PANEL_TITLES[label],
+            transform=ax.transAxes,
+            fontsize=18,
             fontweight="bold",
             va="top",
             ha="left",

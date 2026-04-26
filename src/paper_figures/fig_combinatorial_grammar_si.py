@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.paper_figures.style import FONT_SIZE_DENSE_LABEL, FONT_SIZE_DENSE_TITLE, FONT_SIZE_INLINE, FONT_SIZE_LABEL
 from tools.ablation_report.shared import INK, plt
 
 from src.paper_figures.fig_combinatorial_grammar_panels import _shared
@@ -36,7 +37,7 @@ def _draw_anchor_subgrid(
         transform=outer_ax.transAxes,
         ha="left",
         va="bottom",
-        fontsize=8,
+        fontsize=FONT_SIZE_INLINE,
         color=INK,
     )
 
@@ -51,9 +52,9 @@ def _draw_anchor_subgrid(
                 ax.set_xticks([])
                 ax.set_yticks([])
                 if col == 0:
-                    ax.set_ylabel(state, fontsize=6.0, color=INK)
+                    ax.set_ylabel(state, fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
                 if state_idx == 0:
-                    ax.set_title(f"{oxygen_label}/{glucose_label}", fontsize=5.5, pad=1.2, color=INK)
+                    ax.set_title(f"{oxygen_label}/{glucose_label}", fontsize=FONT_SIZE_DENSE_TITLE, pad=1.2, color=INK)
                 for spine in ax.spines.values():
                     spine.set_linewidth(0.25)
                     spine.set_edgecolor("#8A8A8A")
@@ -94,7 +95,7 @@ def build_combinatorial_grammar_si_figure(
         title = f"{role_labels[idx]}: anchor {anchor_id} (sweep magnitude={magnitudes.get(anchor_id, 0.0):.3g})"
         _draw_anchor_subgrid(fig, outer[row, col], anchor_id=anchor_id, generated_root=generated_root, title=title)
 
-    fig.text(0.02, 0.97, "Figure S6", fontsize=10, color=INK, ha="left", va="top", fontweight="bold")
+    fig.text(0.02, 0.97, "Figure S6", fontsize=FONT_SIZE_LABEL, color=INK, ha="left", va="top", fontweight="bold")
     fig.subplots_adjust(left=0.04, right=0.98, bottom=0.04, top=0.94)
     return fig
 
@@ -117,4 +118,3 @@ def save_combinatorial_grammar_si_figure(
     fig.savefig(out_png, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return out_png
-

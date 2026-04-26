@@ -11,6 +11,8 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from src.paper_figures.style import FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_TITLE
+
 
 _NON_TYPING_MARKERS: frozenset[str] = frozenset({"Hoechst", "AF1", "Argo550", "PD-L1"})
 
@@ -35,14 +37,10 @@ _ENCODER_COLORS: dict[str, str] = {
     "ResNet-50": "#A9A9A9",
 }
 _ENCODER_DASHED: frozenset[str] = frozenset({"REMEDIS", "ResNet-50"})
-_BAR_FACE_COLOR = "white"
+_BAR_FACE_COLOR = _ENCODER_COLORS["UNI-2h"]
 _BAR_EDGE_COLOR = "black"
 _T2_UPPER_YMIN = -0.55
 _T2_LOWER_YMAX = -0.75
-_AXIS_LABEL_FONTSIZE = 16
-_TICK_LABEL_FONTSIZE = 13
-_LEGEND_FONTSIZE = 11
-_PANEL_LABEL_FONTSIZE = 18
 _X_TICK_LABEL_PAD = 8
 _YLABEL_XPOS = 0.05
 
@@ -207,10 +205,10 @@ def _draw_panel_a(ax: plt.Axes, targets: list[dict[str, Any]], encoder_order: li
         rotation=45,
         ha="right",
         rotation_mode="anchor",
-        fontsize=_TICK_LABEL_FONTSIZE,
+        fontsize=FONT_SIZE_TICK,
     )
-    ax.tick_params(axis="x", pad=_X_TICK_LABEL_PAD, labelsize=_TICK_LABEL_FONTSIZE)
-    ax.tick_params(axis="y", labelsize=_TICK_LABEL_FONTSIZE)
+    ax.tick_params(axis="x", pad=_X_TICK_LABEL_PAD, labelsize=FONT_SIZE_TICK)
+    ax.tick_params(axis="y", labelsize=FONT_SIZE_TICK)
     ax.set_ylim(-0.35, 1.00)
     ax.grid(axis="y", linewidth=0.4, color="#E0E0E0", zorder=0)
     ax.set_axisbelow(True)
@@ -220,7 +218,7 @@ def _draw_panel_a(ax: plt.Axes, targets: list[dict[str, Any]], encoder_order: li
         loc="lower left",
         bbox_to_anchor=(0.015, 0.02),
         ncol=2,
-        fontsize=_LEGEND_FONTSIZE,
+        fontsize=FONT_SIZE_TICK,
         handletextpad=0.5,
         columnspacing=0.9,
         borderaxespad=0.0,
@@ -281,13 +279,13 @@ def _add_shared_broken_ylabel(fig: plt.Figure, ax_top: plt.Axes, ax_bottom: plt.
     top_box = ax_top.get_position()
     bottom_box = ax_bottom.get_position()
     y_center = (((top_box.y0 + top_box.y1) / 2.0) + ((bottom_box.y0 + bottom_box.y1) / 2.0)) / 2.0
-    fig.text(_YLABEL_XPOS, y_center, label, rotation=90, va="center", ha="center", fontsize=_AXIS_LABEL_FONTSIZE)
+    fig.text(_YLABEL_XPOS, y_center, label, rotation=90, va="center", ha="center", fontsize=FONT_SIZE_LABEL)
 
 
 def _add_axis_ylabel(fig: plt.Figure, ax: plt.Axes, label: str) -> None:
     box = ax.get_position()
     y_center = (box.y0 + box.y1) / 2.0
-    fig.text(_YLABEL_XPOS, y_center, label, rotation=90, va="center", ha="center", fontsize=_AXIS_LABEL_FONTSIZE)
+    fig.text(_YLABEL_XPOS, y_center, label, rotation=90, va="center", ha="center", fontsize=FONT_SIZE_LABEL)
 
 
 def _draw_panel_b(ax_top: plt.Axes, ax_bottom: plt.Axes, markers: list[dict[str, Any]]) -> None:
@@ -312,18 +310,27 @@ def _draw_panel_b(ax_top: plt.Axes, ax_bottom: plt.Axes, markers: list[dict[str,
     ax_top.spines["bottom"].set_visible(False)
     ax_bottom.spines["top"].set_visible(False)
     ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
-    ax_top.tick_params(axis="y", labelsize=_TICK_LABEL_FONTSIZE)
+    ax_top.tick_params(axis="y", labelsize=FONT_SIZE_TICK)
     ax_bottom.set_xticks(x_positions)
     ax_bottom.set_xticklabels(
         [row["marker"] for row in markers],
         rotation=45,
         ha="right",
         rotation_mode="anchor",
-        fontsize=_TICK_LABEL_FONTSIZE,
+        fontsize=FONT_SIZE_TICK,
     )
-    ax_bottom.tick_params(axis="x", pad=_X_TICK_LABEL_PAD, labelsize=_TICK_LABEL_FONTSIZE)
-    ax_bottom.tick_params(axis="y", labelsize=_TICK_LABEL_FONTSIZE)
+    ax_bottom.tick_params(axis="x", pad=_X_TICK_LABEL_PAD, labelsize=FONT_SIZE_TICK)
+    ax_bottom.tick_params(axis="y", labelsize=FONT_SIZE_TICK)
 
+    ax_top.legend(
+        handles=[Patch(facecolor=_BAR_FACE_COLOR, edgecolor=_BAR_EDGE_COLOR, label="UNI-2h MLP probe")],
+        frameon=False,
+        loc="upper right",
+        bbox_to_anchor=(0.995, 0.985),
+        fontsize=FONT_SIZE_LABEL,
+        handletextpad=0.55,
+        borderaxespad=0.0,
+    )
     _draw_y_break_marks(ax_top, ax_bottom)
 
 
@@ -333,7 +340,7 @@ def _add_panel_label(ax: plt.Axes, label: str) -> None:
         1.03,
         label,
         transform=ax.transAxes,
-        fontsize=_PANEL_LABEL_FONTSIZE,
+        fontsize=FONT_SIZE_TITLE,
         fontweight="bold",
         va="top",
         ha="left",

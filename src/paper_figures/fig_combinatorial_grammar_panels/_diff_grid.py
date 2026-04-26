@@ -6,6 +6,12 @@ from pathlib import Path
 import numpy as np
 from matplotlib.patches import Rectangle
 
+from src.paper_figures.style import (
+    FONT_SIZE_DENSE_LABEL,
+    FONT_SIZE_DENSE_TITLE,
+    FONT_SIZE_INLINE,
+    FONT_SIZE_LABEL,
+)
 from tools.ablation_report.shared import INK, plt
 
 from . import _shared
@@ -23,7 +29,7 @@ def _panel_label(ax: plt.Axes, label: str) -> None:
         transform=ax.transAxes,
         ha="left",
         va="bottom",
-        fontsize=13,
+        fontsize=FONT_SIZE_LABEL,
         fontweight="bold",
         color=INK,
     )
@@ -62,7 +68,7 @@ def render_panel_a(
         0.985,
         f"Representative anchor: {anchor_id}",
         transform=outer_ax.transAxes,
-        fontsize=7.5,
+        fontsize=FONT_SIZE_INLINE,
         color=INK,
         ha="left",
         va="top",
@@ -94,7 +100,7 @@ def render_panel_a(
     ref_ax.imshow(reference_rgb)
     ref_ax.set_xticks([])
     ref_ax.set_yticks([])
-    ref_ax.set_title("reference (original TME)", fontsize=7, color=INK, pad=2.0)
+    ref_ax.set_title("reference (original TME)", fontsize=FONT_SIZE_DENSE_TITLE, color=INK, pad=2.0)
     for spine in ref_ax.spines.values():
         spine.set_linewidth(0.4)
         spine.set_edgecolor("#6A6A6A")
@@ -115,15 +121,14 @@ def render_panel_a(
             if state_idx == 0:
                 oxygen_label = LEVELS[col // len(LEVELS)]
                 glucose_label = LEVELS[col % len(LEVELS)]
-                ax.set_title(f"{oxygen_label}/{glucose_label}", fontsize=5.5, pad=1.2, color=INK)
+                ax.set_title(f"{oxygen_label}/{glucose_label}", fontsize=FONT_SIZE_DENSE_TITLE, pad=1.2, color=INK)
             if col == 0:
-                ax.set_ylabel(state, fontsize=6.5, color=INK)
+                ax.set_ylabel(state, fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
             for spine in ax.spines.values():
                 spine.set_linewidth(0.25)
                 spine.set_edgecolor("#8A8A8A")
 
     cbar_ax = fig.add_subplot(inner[1:4, 9])
     cbar = fig.colorbar(last_im, cax=cbar_ax)
-    cbar.ax.tick_params(labelsize=6, colors=INK)
-    cbar.set_label("|cond - ref| (mean abs RGB)", fontsize=6.5, color=INK)
-
+    cbar.ax.tick_params(labelsize=FONT_SIZE_DENSE_LABEL, colors=INK)
+    cbar.set_label("|cond - ref| (mean abs RGB)", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)

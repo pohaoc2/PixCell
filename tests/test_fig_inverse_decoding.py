@@ -61,7 +61,7 @@ _T2_ROWS = [
 ]
 
 
-def test_build_inverse_decoding_figure_returns_figure_with_two_axes(tmp_path: Path) -> None:
+def test_build_inverse_decoding_figure_returns_plot_axes_without_subplot_titles(tmp_path: Path) -> None:
     from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
 
     uni_csv = tmp_path / "uni.csv"
@@ -82,7 +82,8 @@ def test_build_inverse_decoding_figure_returns_figure_with_two_axes(tmp_path: Pa
     )
 
     assert isinstance(fig, plt.Figure)
-    assert len(fig.axes) == 2
+    assert len(fig.axes) == 3
+    assert [axis.get_title() for axis in fig.axes] == ["", "", ""]
     plt.close(fig)
 
 
