@@ -2,6 +2,8 @@
 from pathlib import Path
 
 from src.paper_figures.fig_ablation_grid import build_representative_ablation_grid
+from src.paper_figures.fig_combined_ablation_grids import build_combined_ablation_grids_figure
+from src.paper_figures.fig_combined_performance import build_combined_performance_figure
 from src.paper_figures.fig_combinatorial_grammar import save_combinatorial_grammar_figure
 from src.paper_figures.fig_combinatorial_grammar_si import save_combinatorial_grammar_si_figure
 from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
@@ -73,6 +75,8 @@ def main() -> None:
 
     fig_loo = build_leave_one_out_figure(summaries)
     save_figure_png(fig_loo, PNG_DIR / "04_leave_one_out_impact.png")
+    fig_combined = build_combined_performance_figure(summaries)
+    save_figure_png(fig_combined, PNG_DIR / "fig_paired_unpaired_performance.png")
 
     build_representative_ablation_grid(
         metrics_root=PAIRED_METRICS_ROOT,
@@ -87,8 +91,14 @@ def main() -> None:
         dataset_root=UNPAIRED_DATASET_ROOT,
         orion_root=UNPAIRED_REFERENCE_ROOT,
         out_png=PNG_DIR / "06_unpaired_ablation_grid.png",
-        tile_id="15360_15872",
+        tile_id="13056_27392",
+        style_mapping_json=ROOT / "inference_output" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
     )
+    fig_ablation_grids = build_combined_ablation_grids_figure(
+        PNG_DIR / "05_paired_ablation_grid.png",
+        PNG_DIR / "06_unpaired_ablation_grid.png",
+    )
+    save_figure_png(fig_ablation_grids, PNG_DIR / "fig_ablation_grids.png")
 
     if T2_MLP_CSV.is_file():
         fig_inverse_decoding = build_inverse_decoding_figure(

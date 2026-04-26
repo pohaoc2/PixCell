@@ -395,7 +395,7 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         col_max = float(np.max(np.abs(col_finite))) if col_finite.size else 1.0
         norm_matrix[:, col_idx] = col_vals / (col_max or 1.0)
 
-    im = ax.imshow(norm_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    im = ax.imshow(norm_matrix, cmap="RdBu", vmin=-1, vmax=1, aspect="auto")
     ax.set_xticks(range(len(cols)))
     ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=7)
     ax.set_yticks(range(len(rows)))

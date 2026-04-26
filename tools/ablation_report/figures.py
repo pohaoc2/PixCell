@@ -138,7 +138,7 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
     ax.text(
         x_cond,
         header_y,
-        "CT/CS/VAS/ENV",
+        "CT/CS/VAS/NUC",
         ha="center",
         va="center",
         fontsize=7.5,
@@ -196,8 +196,8 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
             start = index
     spans.append((len(condition_tuples[-1]), start, len(condition_tuples) - 1))
     dataset_styles = {
-        "paired": {"markerfacecolor": INK, "markeredgecolor": INK, "error_linestyle": "solid"},
-        "unpaired": {"markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": (0, (4, 2))},
+        "paired": {"marker": "^", "markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": "solid"},
+        "unpaired": {"marker": "s", "markerfacecolor": "white", "markeredgecolor": INK, "error_linestyle": (0, (4, 2))},
     }
     x_offsets = {"paired": -0.12, "unpaired": 0.12}
 
@@ -227,12 +227,12 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                 yerr=stds,
                 color=INK,
                 linestyle="none",
-                marker="o",
+                marker=style["marker"],
                 markerfacecolor=style["markerfacecolor"],
                 markeredgecolor=style["markeredgecolor"],
                 markeredgewidth=1.1,
                 linewidth=1.6,
-                markersize=4.8,
+                markersize=8.0,
                 capsize=2.0,
                 elinewidth=0.9,
                 zorder=4,
@@ -261,6 +261,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         ax.set_title(
             f"{METRIC_LABELS.get(metric_key, metric_key)} ({arrow})",
             color=INK,
+            fontsize=18.5,
             fontweight="normal",
             pad=4,
         )
@@ -286,7 +287,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                 transform=ax.get_yaxis_transform(),
                 ha="left",
                 va="bottom",
-                fontsize=8.0,
+                fontsize=16.5,
                 color="#666666",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
                 zorder=5,
@@ -303,7 +304,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                 transform=ax.get_yaxis_transform(),
                 ha="left",
                 va="bottom",
-                fontsize=8.0,
+                fontsize=16.5,
                 color="#666666",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
                 zorder=5,
@@ -314,7 +315,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         ax.spines["bottom"].set_color(INK)
         ax.spines["left"].set_color(INK)
         ax.tick_params(axis="x", length=0)
-        ax.tick_params(axis="y", colors=INK, labelsize=9)
+        ax.tick_params(axis="y", colors=INK, labelsize=17.5)
         ax.set_axisbelow(True)
         dot_ax.set_facecolor("white")
         for x_value, cond in zip(x_positions, condition_tuples, strict=True):
@@ -346,7 +347,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
                     transform=dot_ax.transAxes,
                     ha="right",
                     va="center",
-                    fontsize=8.5,
+                    fontsize=17.0,
                     color=INK,
                 )
 
@@ -357,23 +358,12 @@ def build_metric_trends_figure(summaries: list[DatasetSummary]) -> plt.Figure:
         fig.add_subplot(subgrid[1, 0]).axis("off")
 
     handles = [
-        Line2D([0], [0], color="#444444", linestyle="None", marker="o", markerfacecolor=INK, markeredgecolor=INK, markersize=5.0, linewidth=1.6, label="Paired"),
-        Line2D(
-            [0],
-            [0],
-            color="#444444",
-            linestyle="None",
-            marker="o",
-            markerfacecolor="white",
-            markeredgecolor="#444444",
-            markersize=5.0,
-            linewidth=1.6,
-            label="Unpaired",
-        ),
+        Line2D([0], [0], color=INK, linestyle="None", marker="^", markerfacecolor="white", markeredgecolor=INK, markersize=8.0, linewidth=1.6, label="Paired"),
+        Line2D([0], [0], color=INK, linestyle="None", marker="s", markerfacecolor="white", markeredgecolor=INK, markersize=8.0, linewidth=1.6, label="Unpaired"),
         Patch(facecolor="#A8A8A8", edgecolor="#8A8A8A", hatch="////", alpha=0.22, label="Benchmark band (mean ± SD)"),
         Line2D([0], [0], color="#8A8A8A", linestyle=(0, (5, 2.5)), linewidth=1.1, label="Benchmark line"),
     ]
-    fig.legend(handles=handles, loc="lower right", ncol=4, frameon=False, bbox_to_anchor=(0.99, 0.04), fontsize=9.0)
+    fig.legend(handles=handles, loc="lower right", ncol=4, frameon=False, bbox_to_anchor=(0.99, 0.04), fontsize=13.5)
     fig.subplots_adjust(left=0.055, right=0.99, bottom=0.14, top=0.95)
     return fig
 
@@ -467,7 +457,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
         masked = np.ma.masked_invalid(normalized_matrix)
         im = ax.imshow(masked, cmap=CHANNEL_EFFECT_CMAP, vmin=-1.0, vmax=1.0, aspect="auto")
         ax.set_yticks(range(len(FOUR_GROUP_ORDER)))
-        ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=10.0, color=INK)
+        ax.set_yticklabels([GROUP_LABELS[group] for group in FOUR_GROUP_ORDER], fontsize=11.5, color=INK)
         ax.set_xticks(range(len(shared_metric_keys)))
         ax.xaxis.tick_top()
         ax.xaxis.set_label_position("top")
@@ -475,11 +465,9 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
             [_metric_label_with_arrow(metric_key) for metric_key in shared_metric_keys],
             rotation=0,
             ha="center",
-            fontsize=9.4,
+            fontsize=10.9,
             color=INK,
         )
-        if col > 0:
-            ax.set_xticklabels([])
         if col > 0:
             ax.set_yticklabels([])
         for r in range(raw_matrix.shape[0]):
@@ -498,7 +486,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
                     f"{display_value:+.2f}\n±{raw_std:.2f}",
                     ha="center",
                     va="center",
-                    fontsize=9.0,
+                    fontsize=10.5,
                     color="white" if abs(norm_value) >= 0.55 else "#111111",
                 )
         ax.set_xticks(np.arange(-0.5, len(shared_metric_keys), 1), minor=True)
@@ -515,7 +503,7 @@ def build_channel_effect_heatmaps_figure(summaries: list[DatasetSummary]) -> plt
     cax = fig.add_subplot(grid[0, len(summaries)])
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, 0, 1])
-    cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=8.0)
+    cbar.set_ticklabels(["most\nneg.", "0\n(no effect)", "most\npos."], fontsize=9.5)
     cbar.ax.yaxis.set_tick_params(color=INK, labelcolor=INK)
     cbar.outline.set_edgecolor(INK)
     cbar.outline.set_linewidth(1.0)

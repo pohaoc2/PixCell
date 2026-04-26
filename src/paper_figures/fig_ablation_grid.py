@@ -74,6 +74,7 @@ def build_representative_ablation_grid(
         out_png=out_png,
         dpi=dpi,
         auto_cosine=False,
+        sort_by="pq",
         metric_bars=METRIC_BAR_PRESETS["paired"],
         style_mapping=style_mapping,
     )
