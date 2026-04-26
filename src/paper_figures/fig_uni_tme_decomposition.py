@@ -25,6 +25,13 @@ from src.a2_decomposition.metrics import (
 from tools.ablation_report.shared import INK, METRIC_LABELS, OKABE_GRAY, SOFT_GRID, plt
 from tools.stage3.hed_utils import tissue_mask_from_rgb
 
+from src.paper_figures.style import (
+    FONT_SIZE_CELL_TEXT,
+    FONT_SIZE_DENSE_LABEL,
+    FONT_SIZE_DENSE_TITLE,
+    FONT_SIZE_LABEL,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ORION_ROOT = ROOT / "data" / "orion-crc33"
@@ -110,7 +117,7 @@ def _panel_label(ax: plt.Axes, label: str) -> None:
         transform=ax.transAxes,
         ha="left",
         va="bottom",
-        fontsize=13,
+        fontsize=FONT_SIZE_LABEL,
         fontweight="bold",
         color=INK,
     )
@@ -126,7 +133,7 @@ def _render_image_cell(
 ) -> None:
     ax.imshow(image)
     if title:
-        ax.set_title(title, fontsize=7, pad=2)
+        ax.set_title(title, fontsize=FONT_SIZE_DENSE_TITLE, pad=2)
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
@@ -134,6 +141,35 @@ def _render_image_cell(
         spine.set_linewidth(0.8)
         spine.set_color(border_color)
         spine.set_linestyle(border_linestyle)
+
+
+def _render_panel_a_row_labels(ax: plt.Axes) -> None:
+    ax.text(
+        -0.055,
+        0.835,
+        "Inputs",
+        transform=ax.transAxes,
+        rotation=90,
+        ha="center",
+        va="center",
+        fontsize=FONT_SIZE_DENSE_TITLE,
+        fontweight="bold",
+        color=INK,
+        clip_on=False,
+    )
+    ax.text(
+        -0.055,
+        0.335,
+        "Generated outputs",
+        transform=ax.transAxes,
+        rotation=90,
+        ha="center",
+        va="center",
+        fontsize=FONT_SIZE_DENSE_TITLE,
+        fontweight="bold",
+        color=INK,
+        clip_on=False,
+    )
 
 
 def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) -> None:
@@ -155,7 +191,7 @@ def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) ->
         )
         if show_labels:
             ax.text(x_dot - 0.06, y_dot, label, transform=ax.transAxes,
-                    ha="right", va="center", fontsize=5.5, color=INK)
+                    ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
 
 
 def _render_panel_a(
@@ -169,6 +205,7 @@ def _render_panel_a(
     outer_ax = fig.add_subplot(subgrid)
     outer_ax.axis("off")
     _panel_label(outer_ax, "A")
+    _render_panel_a_row_labels(outer_ax)
 
     grid = subgrid.subgridspec(3, 2, wspace=0.03, hspace=0.03)
     sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
@@ -234,8 +271,8 @@ def _render_dot_key_single(key_ax: plt.Axes, *, show_labels: bool) -> None:
         key_ax.scatter(x, 1, s=20, facecolors=INK if MODE_USE_UNI[mode_key] else "white", edgecolors=INK, linewidths=0.8)
         key_ax.scatter(x, 0, s=20, facecolors=INK if MODE_USE_TME[mode_key] else "white", edgecolors=INK, linewidths=0.8)
     if show_labels:
-        key_ax.text(-0.8, 1, "UNI", ha="right", va="center", fontsize=6.5, color=INK)
-        key_ax.text(-0.8, 0, "TME", ha="right", va="center", fontsize=6.5, color=INK)
+        key_ax.text(-0.8, 1, "UNI", ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
+        key_ax.text(-0.8, 0, "TME", ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
     key_ax.axis("off")
 
 
@@ -291,7 +328,7 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict], *, label
         row = summary.get("uni_plus_tme", {}).get(metric_key)
         raw_dir = row.direction if row is not None else ""
         arrow = {"up": "↑", "down": "↓"}.get(raw_dir.lower(), raw_dir)
-        ax.set_title(f"{label} ({arrow})", fontsize=7, pad=2)
+        ax.set_title(f"{label} ({arrow})", fontsize=FONT_SIZE_DENSE_TITLE, pad=2)
         ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
         ax.set_xticks([])
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.7)
@@ -300,12 +337,12 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict], *, label
         if metric_key in _SHARED_METRICS:
             ax.set_ylim(0.0, 1.0)
             if metric_key == "lpips":
-                ax.tick_params(axis="y", labelsize=6.5, colors=INK)
+                ax.tick_params(axis="y", labelsize=FONT_SIZE_DENSE_LABEL, colors=INK)
             else:
                 ax.tick_params(axis="y", left=True, labelleft=False)
         else:
             ax.set_ylim(*_tight_ylim(values, errors))
-            ax.tick_params(axis="y", labelsize=6.5, colors=INK)
+            ax.tick_params(axis="y", labelsize=FONT_SIZE_DENSE_LABEL, colors=INK)
 
         _render_dot_key_single(key_ax, show_labels=(idx == 0))
 
@@ -397,9 +434,9 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
 
     im = ax.imshow(norm_matrix, cmap="RdBu", vmin=-1, vmax=1, aspect="auto")
     ax.set_xticks(range(len(cols)))
-    ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=7)
+    ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=FONT_SIZE_DENSE_LABEL)
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels([_EFFECT_SHORT.get(r, r) for r in rows], fontsize=7)
+    ax.set_yticklabels([_EFFECT_SHORT.get(r, r) for r in rows], fontsize=FONT_SIZE_DENSE_LABEL)
     for row_idx in range(len(rows)):
         for col_idx in range(len(cols)):
             value = matrix[row_idx, col_idx]
@@ -407,13 +444,13 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
                 text_color = "white" if abs(norm_matrix[row_idx, col_idx]) > 0.6 else INK
                 sd = effect_sds[rows[row_idx]].get(cols[col_idx])
                 label = _fmt_val(value) if sd is None else f"{_fmt_val(value)}\n±{_fmt_val(sd)}"
-                ax.text(col_idx, row_idx, label, ha="center", va="center", fontsize=6.5, color=text_color)
+                ax.text(col_idx, row_idx, label, ha="center", va="center", fontsize=FONT_SIZE_CELL_TEXT, color=text_color)
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.06)
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, 0, 1])
     cbar.set_ticklabels(["most\nneg.", "0", "most\npos."])
-    cbar.ax.tick_params(labelsize=6.5)
+    cbar.ax.tick_params(labelsize=FONT_SIZE_DENSE_LABEL)
 
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.patches import Rectangle
 
+from src.paper_figures.style import FONT_SIZE_DENSE_LABEL, FONT_SIZE_DENSE_TITLE, FONT_SIZE_INLINE, FONT_SIZE_LABEL
 from tools.ablation_report.shared import INK, SOFT_GRID, plt
 
 
@@ -28,7 +29,7 @@ def _panel_label(ax: plt.Axes, label: str) -> None:
         transform=ax.transAxes,
         ha="left",
         va="bottom",
-        fontsize=13,
+        fontsize=FONT_SIZE_LABEL,
         fontweight="bold",
         color=INK,
     )
@@ -80,7 +81,7 @@ def render_panel_c(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
         1.01,
         "Signed residuals: lowest / median / highest L2",
         transform=outer_ax.transAxes,
-        fontsize=7.5,
+        fontsize=FONT_SIZE_INLINE,
         ha="left",
         va="bottom",
         color=INK,
@@ -114,12 +115,12 @@ def render_panel_c(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
         ax.barh(y, values, height=0.66, color="#4C78A8", edgecolor="black", linewidth=0.5)
         ax.axvline(0.0, color="black", linewidth=0.8)
         ax.set_yticks(y)
-        ax.set_yticklabels(labels, fontsize=6.5, color=INK)
+        ax.set_yticklabels(labels, fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
         ax.invert_yaxis()
-        ax.tick_params(axis="x", labelsize=6.5, colors=INK)
+        ax.tick_params(axis="x", labelsize=FONT_SIZE_DENSE_LABEL, colors=INK)
         ax.set_title(
             f"{case_label}: {state}, O2={oxygen_label}, glucose={glucose_label}, L2={l2_value:.3g}",
-            fontsize=7,
+            fontsize=FONT_SIZE_DENSE_TITLE,
             loc="left",
             color=INK,
         )
@@ -127,4 +128,3 @@ def render_panel_c(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
         ax.set_axisbelow(True)
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
-

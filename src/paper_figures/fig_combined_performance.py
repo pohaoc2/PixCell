@@ -13,6 +13,9 @@ from tools.ablation_report.figures import (
 
 _RENDER_DPI = 220
 _LABEL_STRIP_PX = 80
+COMPOSITE_WIDTH_IN = 15.8
+COMPOSITE_TABLE_FONT_SCALE = 1.08
+COMPOSITE_HEATMAP_FONT_SCALE = 1.28
 
 
 def _fig_to_rgb(fig: plt.Figure) -> np.ndarray:
@@ -24,13 +27,6 @@ def _fig_to_rgb(fig: plt.Figure) -> np.ndarray:
     return arr
 
 
-def _scale_to_width(img: np.ndarray, target_w: int) -> np.ndarray:
-    if img.shape[1] == target_w:
-        return img
-    h = round(img.shape[0] * target_w / img.shape[1])
-    return np.array(Image.fromarray(img).resize((target_w, h), Image.LANCZOS))
-
-
 def _add_label_strip(img: np.ndarray, px: int = _LABEL_STRIP_PX) -> np.ndarray:
     strip = np.full((px, img.shape[1], 3), 255, dtype=np.uint8)
     return np.concatenate([strip, img], axis=0)
@@ -38,12 +34,24 @@ def _add_label_strip(img: np.ndarray, px: int = _LABEL_STRIP_PX) -> np.ndarray:
 
 def build_combined_performance_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     imgs = [
-        _fig_to_rgb(build_metric_trends_figure(summaries)),
-        _fig_to_rgb(build_comparison_table_figure(summaries)),
-        _fig_to_rgb(build_channel_effect_heatmaps_figure(summaries)),
+        _fig_to_rgb(build_metric_trends_figure(summaries, width_inches=COMPOSITE_WIDTH_IN)),
+        _fig_to_rgb(
+            build_comparison_table_figure(
+                summaries,
+                width_inches=COMPOSITE_WIDTH_IN,
+                font_scale=COMPOSITE_TABLE_FONT_SCALE,
+            )
+        ),
+        _fig_to_rgb(
+            build_channel_effect_heatmaps_figure(
+                summaries,
+                width_inches=COMPOSITE_WIDTH_IN,
+                font_scale=COMPOSITE_HEATMAP_FONT_SCALE,
+            )
+        ),
     ]
     max_w = max(img.shape[1] for img in imgs)
-    imgs = [_add_label_strip(_scale_to_width(img, max_w)) for img in imgs]
+    imgs = [_add_label_strip(img) for img in imgs]
     heights = [img.shape[0] for img in imgs]
 
     fig_w = max_w / _RENDER_DPI
@@ -61,6 +69,7 @@ def build_combined_performance_figure(summaries: list[DatasetSummary]) -> plt.Fi
             0.994,
             label,
             transform=ax.transAxes,
+            # Overlay is drawn on 220 DPI raster panels, so this remains in raster-pixel scale.
             fontsize=28,
             fontweight="bold",
             va="top",
