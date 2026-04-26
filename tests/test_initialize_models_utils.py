@@ -35,6 +35,7 @@ def test_parse_args_applies_expected_defaults():
     assert args.report_to == "tensorboard"
     assert args.debug is False
     assert args.skip_step == 0
+    assert args.seed is None
 
 
 def test_parse_args_parses_optional_flags():
@@ -52,6 +53,8 @@ def test_parse_args_parses_optional_flags():
             "--debug",
             "--skip-step",
             "11",
+            "--seed",
+            "7",
         ]
     )
 
@@ -61,6 +64,7 @@ def test_parse_args_parses_optional_flags():
     assert args.report_to == "wandb"
     assert args.debug is True
     assert args.skip_step == 11
+    assert args.seed == 7
 
 
 def test_set_fsdp_env_sets_expected_environment_variables(monkeypatch):

@@ -130,6 +130,9 @@ def initialize_config_and_accelerator(args_list=None):
     if args.batch_size is not None:
         config.train_batch_size = args.batch_size
 
+    if args.seed is not None:
+        config.seed = args.seed
+
     # Setup workspace
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)

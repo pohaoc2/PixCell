@@ -12,6 +12,7 @@ Design:
 Entry point: use stage2_train.py (calls main() here).
 """
 import os
+import json
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -148,6 +149,12 @@ def train_controlnet_exp(models_dict):
     logger.info(f"start_epoch={start_epoch}  start_step={start_step}  total_steps={total_steps}")
     logger.info("=" * 80)
 
+    train_log_fh = None
+    if accelerator.is_main_process:
+        train_log_path = Path(config.work_dir) / "train_log.jsonl"
+        train_log_path.parent.mkdir(parents=True, exist_ok=True)
+        train_log_fh = train_log_path.open("a", buffering=1, encoding="utf-8")
+
     _proj_grad_norms: dict = {}
     _tme_residuals:   dict = {}
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
@@ -219,6 +226,7 @@ def train_controlnet_exp(models_dict):
             # 3. Training step — TME forward is inside accumulate so its gradient
             # graph is always built after zero_grad(), guaranteeing that
             # optimizer_tme.step() sees non-None gradients on every step.
+            grad_norm = None
             with accelerator.accumulate(controlnet, tme_module):
                 optimizer.zero_grad()
                 optimizer_tme.zero_grad()
@@ -258,12 +266,13 @@ def train_controlnet_exp(models_dict):
                                     _g.norm().item(),
                                     _gblock.cross_attn.proj.weight.abs().max().item(),
                                 )
-                    accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
+                    grad_norm_ctrl = accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
                     optimizer.step()
                     lr_scheduler.step()
-                    accelerator.clip_grad_norm_(tme_module.parameters(), config.gradient_clip)
+                    grad_norm_tme = accelerator.clip_grad_norm_(tme_module.parameters(), config.gradient_clip)
                     optimizer_tme.step()
                     lr_scheduler_tme.step()
+                    grad_norm = max(float(grad_norm_ctrl), float(grad_norm_tme))
 
                 if accelerator.is_main_process:
                     ema_update(model_ema, controlnet, config.ema_rate)
@@ -290,6 +299,17 @@ def train_controlnet_exp(models_dict):
                         f"LR_tme:  {optimizer_tme.param_groups[0]['lr']:.2e} "
                         f"Samples/s: {samples_per_sec:.2f}"
                     )
+                    if train_log_fh is not None:
+                        train_log_fh.write(
+                            json.dumps(
+                                {
+                                    "step": int(global_step),
+                                    "loss": float(loss.detach().item()),
+                                    "grad_norm": grad_norm,
+                                }
+                            )
+                            + "\n"
+                        )
                     last_tic = time.time()
 
                 if global_step % config.save_model_steps == 0:
@@ -328,6 +348,9 @@ def train_controlnet_exp(models_dict):
             )
         if global_step >= total_steps:
             break
+
+    if train_log_fh is not None:
+        train_log_fh.close()
 
     logger.info("=" * 80)
     logger.info("Fine-tuning Complete!")

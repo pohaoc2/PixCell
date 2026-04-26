@@ -42,4 +42,10 @@ def parse_args(args_list=None):
     parser.add_argument("--slurm-time-limit", type=float, default=float("inf"))
     parser.add_argument("--loss-report-name", type=str, default="loss")
     parser.add_argument("--skip-step", type=int, default=0)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override config seed for per-run ablation reproducibility.",
+    )
     return parser.parse_args(args_list)
