@@ -39,6 +39,7 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
         tme_module, optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme
     """
     channel_groups_cfg = getattr(config, "channel_groups", None)
+    tme_input_mode = getattr(config, "tme_input_mode", None)
 
     if channel_groups_cfg is not None:
         group_specs = []
@@ -49,6 +50,14 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
             False,
             False,
             channel_groups=group_specs,
+            base_ch=getattr(config, "tme_base_ch", 32),
+        )
+    elif tme_input_mode == "all_channels":
+        tme_module = build_model(
+            getattr(config, "tme_model", "RawConditioningPassthrough"),
+            False,
+            False,
+            active_channels=active_channels,
             base_ch=getattr(config, "tme_base_ch", 32),
         )
     else:
@@ -70,7 +79,8 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio=1)
 
     tme_proj_lr = getattr(config, "tme_proj_lr", None)
-    if tme_proj_lr is not None:
+    has_proj_split = any("cross_attn.proj" in n for n, _ in tme_module.named_parameters())
+    if tme_proj_lr is not None and has_proj_split:
         proj_params  = [p for n, p in tme_module.named_parameters() if "cross_attn.proj" in n]
         other_params = [p for n, p in tme_module.named_parameters() if "cross_attn.proj" not in n]
         base_tme_lr  = getattr(config, "tme_lr", 1e-5)

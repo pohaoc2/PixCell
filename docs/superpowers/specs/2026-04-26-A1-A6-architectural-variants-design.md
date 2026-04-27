@@ -2,7 +2,9 @@
 
 **Date:** 2026-04-26
 **Storyline anchor:** Methods-paper reframe, Section A (P0). Design-justification ablations.
-**Scope:** A1 (multi-group TME vs. naive concat ControlNet) and A6 (TME injection mechanism: cross-attention vs. spatial broadcast vs. FiLM). A2, A3, A4, A5 covered by separate specs.
+**Scope:** A1 (multi-group TME vs. naive concat ControlNet) plus the retained A6 TODO (TME injection mechanism: cross-attention vs. spatial broadcast vs. FiLM). A2, A3, A4, A5 covered by separate specs.
+
+**Status:** A1 is the active implementation target. A6 remains design-only TODO and is intentionally not scheduled in the current notebook or code path.
 
 ---
 
@@ -10,7 +12,7 @@
 
 The current design has two architectural choices that have not been measured against alternatives:
 - **A1:** the multi-group TME module (per-group encoder + per-group cross-attention) versus simpler ControlNet conditioning paths.
-- **A6:** the cross-attention injection of TME residuals into ControlNet, versus alternative injection mechanisms (spatial broadcast addition, FiLM modulation).
+- **A6:** the cross-attention injection of TME residuals into ControlNet, versus alternative injection mechanisms (spatial broadcast addition, FiLM modulation). This remains a TODO, not an active implementation item.
 
 A methods paper must show these choices were not arbitrary. This spec runs a small head-to-head and produces two SI figures.
 
@@ -27,7 +29,7 @@ A methods paper must show these choices were not arbitrary. This spec runs a sma
   - **A1.i Concat:** single-encoder ControlNet conditioned on all channels concatenated along the channel axis (mask + cell_types + cell_state + vasculature + microenv → 10-channel input). No TME module. Same ControlNet architecture; the conditioning input projection is widened to 10 channels.
   - **A1.ii Per-channel-no-grouping:** one encoder per individual channel (10 encoders) feeding into the same cross-attention path as production, but without group-level pooling. Tests whether grouping itself helps.
   - **A1.iii Production:** existing multi-group design (4 groups). Reused.
-- **A6 variants:**
+- **A6 variants (TODO, not implemented):**
   - **A6.cross_attn:** production cross-attention injection. Reused.
   - **A6.broadcast:** TME-encoder output is spatially broadcast and added to the ControlNet conditioning latent (no attention, no per-group Q/K/V). Group encoders unchanged.
   - **A6.film:** TME-encoder output is reduced to per-group γ/β scale-and-shift parameters that modulate the ControlNet conditioning latent (FiLM). Group encoders unchanged.
@@ -37,7 +39,7 @@ A methods paper must show these choices were not arbitrary. This spec runs a sma
 | ID | Variants | Seeds | Schedule |
 |----|----------|-------|----------|
 | A1 | i Concat, ii Per-channel-no-grouping, iii Production (reused) | 3 (i, ii) | short proxy + 1 full-headline run per variant |
-| A6 | cross_attn (reused), broadcast, film | 3 (broadcast, film) | short proxy + 1 full-headline run per variant |
+| A6 (TODO) | cross_attn (reused), broadcast, film | 3 (broadcast, film) | short proxy + 1 full-headline run per variant |
 
 3 seeds chosen because architectural variants are far more expensive than the A2/A3 config flips. A 3-seed run is the minimum for an SD-bar that reviewers will accept.
 
@@ -57,7 +59,7 @@ A methods paper must show these choices were not arbitrary. This spec runs a sma
 
 3 rows × 4 tiles. Same fixed test tile IDs as the A2/A3 spec, for visual continuity.
 
-## 6. A6 — TME injection mechanism (`SI_A6_injection.png`)
+## 6. A6 — TME injection mechanism (`SI_A6_injection.png`, TODO)
 
 ### 6.1 Three-row SI table
 
@@ -85,20 +87,20 @@ New code:
 
 - `diffusion/model/nets/concat_controlnet.py` — A1.i variant. Subclasses or wraps the existing ControlNet so its conditioning input projection accepts 10 channels. Reuses everything else.
 - `diffusion/model/nets/per_channel_tme.py` — A1.ii variant. A `PerChannelTMEModule` with one encoder per individual channel feeding the existing cross-attention head (no grouping).
-- `diffusion/model/nets/multi_group_tme_broadcast.py` — A6.broadcast variant. Drop-in replacement for `MultiGroupTMEModule` that returns a broadcast-added residual instead of cross-attention output.
-- `diffusion/model/nets/multi_group_tme_film.py` — A6.film variant. Per-group FiLM modulator.
+- `diffusion/model/nets/multi_group_tme_broadcast.py` — A6.broadcast variant. TODO; not implemented.
+- `diffusion/model/nets/multi_group_tme_film.py` — A6.film variant. TODO; not implemented.
 - `configs/config_controlnet_exp_a1_concat.py`
 - `configs/config_controlnet_exp_a1_per_channel.py`
-- `configs/config_controlnet_exp_a6_broadcast.py`
-- `configs/config_controlnet_exp_a6_film.py`
+- `configs/config_controlnet_exp_a6_broadcast.py` — TODO; not implemented.
+- `configs/config_controlnet_exp_a6_film.py` — TODO; not implemented.
 - `tools/ablation_a1/__init__.py` (empty)
-- `tools/ablation_a6/__init__.py` (empty)
+- `tools/ablation_a6/__init__.py` (empty, TODO)
 - `src/paper_figures/fig_si_a1_tme_design.py` — figure builder.
-- `src/paper_figures/fig_si_a6_injection.py` — figure builder.
+- `src/paper_figures/fig_si_a6_injection.py` — figure builder (TODO).
 - `tests/test_concat_controlnet.py` — shape + forward smoke test.
 - `tests/test_per_channel_tme.py` — shape + active-channel gating test.
-- `tests/test_multi_group_tme_broadcast.py` — shape + zero-init identity.
-- `tests/test_multi_group_tme_film.py` — shape + zero-γ identity (γ=0,β=0 ⇒ identity).
+- `tests/test_multi_group_tme_broadcast.py` — shape + zero-init identity (TODO).
+- `tests/test_multi_group_tme_film.py` — shape + zero-γ identity (γ=0,β=0 ⇒ identity) (TODO).
 
 Reused without change:
 - `train_scripts/train_controlnet_exp.py` — config-flag driven; new variants register their module class via the `tme_model` config string.

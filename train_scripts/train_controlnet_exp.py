@@ -47,6 +47,15 @@ from train_scripts.exp_config_utils import (
 from tools.channel_group_utils import split_channels_to_groups, apply_group_dropout
 
 
+def _conditioning_mode(config) -> str:
+    mode = getattr(config, "tme_input_mode", None)
+    if mode is not None:
+        return mode
+    if getattr(config, "channel_groups", None) is not None:
+        return "grouped"
+    return "non_mask_channels"
+
+
 # ── Initialization ────────────────────────────────────────────────────────────
 
 def initialize_exp_training(config, accelerator, logger, controlnet):
@@ -130,6 +139,7 @@ def train_controlnet_exp(models_dict):
     channel_groups = getattr(config, "channel_groups", None)
     group_dropout_probs = getattr(config, "group_dropout_probs", {})
     use_multi_group = channel_groups is not None
+    conditioning_mode = _conditioning_mode(config)
     channel_weights = getattr(config, "channel_reliability_weights", None)
 
     controlnet.train()
@@ -201,7 +211,7 @@ def train_controlnet_exp(models_dict):
             tme_dtype = next(tme_module.parameters()).dtype
 
             # Prepare TME inputs (no learnable ops here — pure data shaping).
-            if use_multi_group:
+            if conditioning_mode == "grouped":
                 active_channels = resolve_exp_active_channels(config)
                 tme_channel_dict = split_channels_to_groups(
                     control_input.to(dtype=tme_dtype), active_channels, channel_groups,
@@ -215,6 +225,8 @@ def train_controlnet_exp(models_dict):
                         gname = g["name"]
                         if gname not in active_groups_per_sample[b_idx] and gname in tme_channel_dict:
                             tme_channel_dict[gname][b_idx] = 0.0
+            elif conditioning_mode == "all_channels":
+                tme_inputs = control_input.to(dtype=tme_dtype)
             else:
                 tme_channels = control_input[:, 1:, :, :].to(dtype=tme_dtype)
                 if channel_weights is not None:
@@ -231,13 +243,15 @@ def train_controlnet_exp(models_dict):
                 optimizer.zero_grad()
                 optimizer_tme.zero_grad()
 
-                if use_multi_group:
+                if conditioning_mode == "grouped":
                     fused, _tme_residuals = tme_module(
                         vae_mask.to(dtype=tme_dtype), tme_channel_dict, return_residuals=True,
                     )
                     if getattr(config, "zero_mask_latent", False):
                         fused = fused - vae_mask.to(dtype=tme_dtype)
                     ctrl_latent = fused.float()
+                elif conditioning_mode == "all_channels":
+                    ctrl_latent = tme_module(vae_mask.to(dtype=tme_dtype), tme_inputs).float()
                 else:
                     ctrl_latent = tme_module(vae_mask.to(dtype=tme_dtype), tme_channels).float()
 
@@ -258,7 +272,7 @@ def train_controlnet_exp(models_dict):
 
                 if accelerator.sync_gradients:
                     _proj_grad_norms = {}
-                    if use_multi_group:
+                    if conditioning_mode == "grouped":
                         for _gname, _gblock in accelerator.unwrap_model(tme_module).groups.items():
                             _g = _gblock.cross_attn.proj.weight.grad
                             if _g is not None:
@@ -374,21 +388,36 @@ def generate_validation_visualizations(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     channel_groups = config.channel_groups
+    conditioning_mode = _conditioning_mode(config)
     active_channels = resolve_exp_active_channels(config)
     dtype = next(tme_module.parameters()).dtype
     vae_scale, vae_shift = config.scale_factor, config.shift_factor
-
-    tme_dict = split_channels_to_groups(
-        val_control_input.to(device, dtype=dtype), active_channels, channel_groups,
-    )
     mask_latent = val_vae_mask.to(device, dtype=dtype)
     mask_latent_scaled = (mask_latent - vae_shift) * vae_scale
 
     tme_module.eval()
-    fused, _residuals, attn_maps = tme_module(
-        mask_latent_scaled, tme_dict,
-        return_residuals=True, return_attn_weights=True,
-    )
+    if conditioning_mode == "grouped":
+        tme_inputs = split_channels_to_groups(
+            val_control_input.to(device, dtype=dtype), active_channels, channel_groups,
+        )
+        fused, _residuals, attn_maps = tme_module(
+            mask_latent_scaled, tme_inputs,
+            return_residuals=True, return_attn_weights=True,
+        )
+    elif conditioning_mode == "all_channels":
+        fused, _residuals = tme_module(
+            mask_latent_scaled,
+            val_control_input.to(device, dtype=dtype),
+            return_residuals=True,
+        )
+        attn_maps = {}
+    else:
+        fused, _residuals = tme_module(
+            mask_latent_scaled,
+            val_control_input[:, 1:, :, :].to(device, dtype=dtype),
+            return_residuals=True,
+        )
+        attn_maps = {}
     tme_module.train()
 
     scheduler = make_inference_scheduler(num_steps=20, device=device)
@@ -469,7 +498,7 @@ def main():
     # prepared model so the optimizer always steps on live parameters.
     _tme = accelerator.unwrap_model(tme_module)
     _tme_proj_lr = getattr(config, "tme_proj_lr", None)
-    if _tme_proj_lr is not None:
+    if _tme_proj_lr is not None and any("cross_attn.proj" in n for n, _ in _tme.named_parameters()):
         _proj  = [p for n, p in _tme.named_parameters() if "cross_attn.proj" in n]
         _other = [p for n, p in _tme.named_parameters() if "cross_attn.proj" not in n]
         optimizer_tme = torch.optim.AdamW(

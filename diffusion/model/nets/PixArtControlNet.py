@@ -229,6 +229,8 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
         qk_norm=False,
         kv_compress_config=None,
         conditioning_channels=16,  # Cell mask conditioning channels
+        conditioning_input_size=None,
+        conditioning_patch_size=None,
         n_controlnet_blocks=None,  # Optional: use subset of blocks
         config=None,
         **kwargs,
@@ -241,6 +243,8 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
         self.pe_interpolation = pe_interpolation
         self.controlnet_depth = controlnet_depth
         self.hidden_size = hidden_size
+        self.conditioning_input_size = conditioning_input_size or input_size
+        self.conditioning_patch_size = conditioning_patch_size or patch_size
 
         # 1. Input embeddings
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
@@ -268,10 +272,19 @@ class PixCellControlNet(ModelMixin, ConfigMixin):
 
         # 4. Conditioning embedder (cell masks) - using diffusers PatchEmbed + zero_module
         self.cond_embedder = PatchEmbed(
-            input_size, patch_size, conditioning_channels, hidden_size, bias=True
+            self.conditioning_input_size,
+            self.conditioning_patch_size,
+            conditioning_channels,
+            hidden_size,
+            bias=True,
         )
         # Zero-initialize using diffusers' zero_module
         self.cond_embedder = zero_module(self.cond_embedder)
+        if self.cond_embedder.num_patches != self.x_embedder.num_patches:
+            raise ValueError(
+                "conditioning embedder must produce the same number of patches as x_embedder: "
+                f"got {self.cond_embedder.num_patches} vs {self.x_embedder.num_patches}"
+            )
 
         # 5. TRAINABLE Transformer blocks (copied from base model)
         drop_path_list = [x.item() for x in torch.linspace(0, drop_path, controlnet_depth)]

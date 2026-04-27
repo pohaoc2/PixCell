@@ -33,6 +33,15 @@ _MIRROR_BORDER_PX: int = 8  # reflect-pad non-binary channels before resize
 _TILE_ID_EXTS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".tif", ".npy")
 
 
+def _conditioning_mode(config) -> str:
+    mode = getattr(config, "tme_input_mode", None)
+    if mode is not None:
+        return mode
+    if getattr(config, "channel_groups", None) is not None:
+        return "grouped"
+    return "non_mask_channels"
+
+
 def _prepare_generation_context(
     ctrl_full: torch.Tensor,
     *,
@@ -65,12 +74,15 @@ def _prepare_generation_context(
         dtype=dtype,
     )
     channel_groups_cfg = getattr(config, "channel_groups", None)
-    if channel_groups_cfg is not None:
+    conditioning_mode = _conditioning_mode(config)
+    if conditioning_mode == "grouped":
         tme_inputs = split_channels_to_groups(
             ctrl_full.unsqueeze(0).to(device, dtype=dtype),
             active_channels,
             channel_groups_cfg,
         )
+    elif conditioning_mode == "all_channels":
+        tme_inputs = ctrl_full.unsqueeze(0).to(device, dtype=dtype)
     else:
         tme_inputs = ctrl_full[1:].unsqueeze(0).to(device, dtype=dtype)
 
@@ -89,6 +101,7 @@ def _prepare_generation_context(
         uni_embeds=uni_embeds.to(device, dtype=dtype),
         zero_mask_latent=getattr(config, "zero_mask_latent", False),
         channel_groups_cfg=channel_groups_cfg,
+        conditioning_mode=conditioning_mode,
     )
 
 
@@ -226,7 +239,7 @@ def _fuse_active_groups(
     zero_mask_latent = context["zero_mask_latent"]
 
     with torch.no_grad():
-        if active_groups:
+        if active_groups or context["conditioning_mode"] == "all_channels":
             fused, _, _ = _fuse_conditioning_latent(
                 context,
                 active_groups=active_groups,
@@ -253,38 +266,44 @@ def _fuse_conditioning_latent(
     active_group_set = None if active_groups is None else set(active_groups)
 
     with torch.no_grad():
-        if context["channel_groups_cfg"] is None:
-            if include_residuals:
-                fused, residuals = tme_module(vae_mask, tme_inputs, return_residuals=True)
+        if context["conditioning_mode"] == "grouped":
+            if include_attn_maps:
+                fused, residuals = tme_module(
+                    vae_mask,
+                    tme_inputs,
+                    active_groups=active_group_set,
+                    return_residuals=True,
+                )
+                _, _, attn_maps = tme_module(
+                    vae_mask,
+                    tme_inputs,
+                    active_groups=active_group_set,
+                    return_residuals=True,
+                    return_attn_weights=True,
+                )
+            elif include_residuals:
+                fused, residuals = tme_module(
+                    vae_mask,
+                    tme_inputs,
+                    active_groups=active_group_set,
+                    return_residuals=True,
+                )
             else:
-                fused = tme_module(vae_mask, tme_inputs)
-        elif include_attn_maps:
-            fused, residuals = tme_module(
-                vae_mask,
-                tme_inputs,
-                active_groups=active_group_set,
-                return_residuals=True,
-            )
-            _, _, attn_maps = tme_module(
-                vae_mask,
-                tme_inputs,
-                active_groups=active_group_set,
-                return_residuals=True,
-                return_attn_weights=True,
-            )
-        elif include_residuals:
-            fused, residuals = tme_module(
-                vae_mask,
-                tme_inputs,
-                active_groups=active_group_set,
-                return_residuals=True,
-            )
+                fused = tme_module(
+                    vae_mask,
+                    tme_inputs,
+                    active_groups=active_group_set,
+                )
         else:
-            fused = tme_module(
-                vae_mask,
-                tme_inputs,
-                active_groups=active_group_set,
-            )
+            if include_residuals:
+                fused, residuals = tme_module(
+                    vae_mask,
+                    tme_inputs,
+                    active_groups=active_group_set,
+                    return_residuals=True,
+                )
+            else:
+                fused = tme_module(vae_mask, tme_inputs, active_groups=active_group_set)
 
     if context["zero_mask_latent"]:
         fused = fused - vae_mask
@@ -441,7 +460,8 @@ def load_all_models(
 
     print("Loading TME module...")
     channel_groups_cfg = getattr(config, "channel_groups", None)
-    if channel_groups_cfg is not None:
+    conditioning_mode = _conditioning_mode(config)
+    if conditioning_mode == "grouped":
         group_specs = [
             dict(name=g["name"], n_channels=len(g["channels"]))
             for g in channel_groups_cfg
@@ -453,10 +473,18 @@ def load_all_models(
             channel_groups=group_specs,
             base_ch=getattr(config, "tme_base_ch", 32),
         )
+    elif conditioning_mode == "all_channels":
+        tme_module = build_model(
+            getattr(config, "tme_model", "RawConditioningPassthrough"),
+            False,
+            False,
+            active_channels=list(config.data.active_channels),
+            base_ch=getattr(config, "tme_base_ch", 32),
+        )
     else:
         n_tme_channels = len(config.data.active_channels) - 1
         tme_module = build_model(
-            "TMEConditioningModule",
+            getattr(config, "tme_model", "TMEConditioningModule"),
             False,
             False,
             n_tme_channels=n_tme_channels,
