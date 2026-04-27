@@ -7,9 +7,15 @@ from pathlib import Path
 from tools.ablation_a3.aggregate_stability import _read_log
 
 
-LOG_SOURCES: dict[str, dict[str, Path]] = {
+ProductionSource = Path | tuple[Path, ...]
+
+
+LOG_SOURCES: dict[str, dict[str, ProductionSource]] = {
     "production": {
-        "full_seed_42": Path("checkpoints/pixcell_controlnet_exp/npy_inputs/train_log.log"),
+        "full_seed_42": (
+            Path("checkpoints/pixcell_controlnet_exp_retrain/full_seed_42/train_log.jsonl"),
+            Path("checkpoints/pixcell_controlnet_exp/npy_inputs/train_log.log"),
+        ),
     },
     "a1_concat": {
         "full_seed_42": Path("checkpoints/a1_concat/full_seed_42/train_log.jsonl"),
@@ -72,9 +78,18 @@ def extract_run(path: Path) -> list[dict]:
     return result
 
 
-def extract_all_curves(extra_sources: dict[str, dict[str, Path]] | None = None) -> dict:
+def _resolve_log_source(path_or_paths: ProductionSource) -> Path:
+    if isinstance(path_or_paths, Path):
+        return path_or_paths
+    for candidate in path_or_paths:
+        if Path(candidate).exists():
+            return Path(candidate)
+    return Path(path_or_paths[0])
+
+
+def extract_all_curves(extra_sources: dict[str, dict[str, ProductionSource]] | None = None) -> dict:
     """Return {variant: {run_id: [{step, loss, grad_norm}]}} for available logs."""
-    sources: dict[str, dict[str, Path]] = {variant: dict(runs) for variant, runs in LOG_SOURCES.items()}
+    sources: dict[str, dict[str, ProductionSource]] = {variant: dict(runs) for variant, runs in LOG_SOURCES.items()}
     if extra_sources:
         for variant, runs in extra_sources.items():
             sources.setdefault(variant, {}).update(runs)
@@ -83,7 +98,8 @@ def extract_all_curves(extra_sources: dict[str, dict[str, Path]] | None = None) 
     for variant, runs in sources.items():
         variant_curves: dict[str, list[dict]] = {}
         for run_id, path in runs.items():
-            entries = extract_run(path)
+            resolved_path = _resolve_log_source(path)
+            entries = extract_run(resolved_path)
             if entries:
                 variant_curves[run_id] = entries
         if variant_curves:

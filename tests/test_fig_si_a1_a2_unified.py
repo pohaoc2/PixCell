@@ -162,6 +162,44 @@ def test_section1_production_and_concat_are_dashed(tmp_path: Path):
     assert "--" in line_styles["Concat TME"]
 
 
+def test_section1_excludes_off_shelf_from_legend_and_axes(tmp_path: Path):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from src.paper_figures.fig_si_a1_a2_unified import build_section1_figure
+
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(json.dumps(SYNTHETIC_CACHE), encoding="utf-8")
+
+    fig = build_section1_figure(cache_path=cache_path)
+
+    labels = []
+    for ax in fig.axes:
+        labels.extend(line.get_label() for line in ax.lines)
+
+    assert "Off-the-shelf PixCell" not in labels
+
+
+def test_read_log_carries_preceding_proj_grad(tmp_path: Path):
+    from tools.ablation_a3.aggregate_stability import _read_log
+
+    log_path = tmp_path / "train_log.log"
+    log_path.write_text(
+        "proj_grad[cell_identity]=1.080e-04\n"
+        "proj_grad[cell_state]=1.195e-04\n"
+        "proj_grad[microenv]=1.649e-04\n"
+        "Epoch [1/20] Step [50/2600] Loss: 0.1074\n",
+        encoding="utf-8",
+    )
+
+    entries = _read_log(log_path)
+
+    assert len(entries) == 1
+    assert entries[0]["step"] == 50
+    assert entries[0]["loss"] == pytest.approx(0.1074)
+    assert entries[0]["grad_norm"] == pytest.approx(1.649e-04)
+
+
 def test_build_section4_figure_handles_missing_data(tmp_path: Path):
     import matplotlib
 

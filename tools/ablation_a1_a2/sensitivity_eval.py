@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -39,6 +40,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight test 
     resolve_data_layout = None  # type: ignore[assignment]
 
 read_config = None
+TRIVIAL_VARIANT_TYPES = {"bypass", "off_shelf"}
+DEFAULT_RENDER_DIRNAME = "sensitivity_tiles"
 
 
 def _ensure_generation_imports() -> None:
@@ -193,6 +196,196 @@ def summarize_variant_sensitivity(group_scores: dict[str, list[float]]) -> dict[
     return {"mean": 0.0, "std": 0.0, "per_group": {}}
 
 
+def _variant_type(variant_key: str) -> str:
+    return str(INFERENCE_VARIANTS[variant_key].get("variant_type", ""))
+
+
+def variant_requires_generation(variant_key: str) -> bool:
+    return _variant_type(variant_key) not in TRIVIAL_VARIANT_TYPES
+
+
+def _render_root(cache_dir: Path, render_root: Path | None = None) -> Path:
+    return Path(render_root) if render_root is not None else Path(cache_dir) / DEFAULT_RENDER_DIRNAME
+
+
+def _render_image_path(render_root: Path, variant_key: str, group_name: str, tile_id: str) -> Path:
+    return Path(render_root) / variant_key / group_name / f"{tile_id}.png"
+
+
+def _load_rgb(path: Path) -> np.ndarray:
+    return np.asarray(Image.open(path).convert("RGB"))
+
+
+def _save_rgb(path: Path, image: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.asarray(image, dtype=np.uint8)).save(path)
+
+
+def _discover_rendered_groups(render_root: Path, variant_key: str) -> list[str]:
+    variant_dir = Path(render_root) / variant_key
+    if not variant_dir.is_dir():
+        return []
+    return sorted(path.name for path in variant_dir.iterdir() if path.is_dir())
+
+
+def _load_rendered_group_images(render_root: Path, variant_key: str, tile_id: str) -> dict[str, np.ndarray]:
+    group_names = _discover_rendered_groups(render_root, variant_key)
+    if not group_names:
+        raise FileNotFoundError(f"no rendered sensitivity groups found under {Path(render_root) / variant_key}")
+
+    group_images: dict[str, np.ndarray] = {}
+    for group_name in group_names:
+        image_path = _render_image_path(render_root, variant_key, group_name, tile_id)
+        if not image_path.is_file():
+            raise FileNotFoundError(f"missing rendered sensitivity image: {image_path}")
+        group_images[group_name] = _load_rgb(image_path)
+    return group_images
+
+
+def _print_progress(phase: str, variant_key: str, index: int, total: int, tile_id: str, *, suffix: str = "") -> None:
+    message = f"[{phase}:{variant_key}] {index}/{total} tile={tile_id}"
+    if suffix:
+        message += f" {suffix}"
+    print(message, flush=True)
+
+
+def render_sensitivity(
+    *,
+    cache_dir: Path,
+    tile_ids: list[str],
+    device: str,
+    exp_channels_dir: Path,
+    features_dir: Path,
+    guidance_scale: float = 1.5,
+    seed: int = 42,
+    variants: list[str] | None = None,
+    render_root: Path | None = None,
+) -> Path:
+    """Render and persist per-group ablation H&E images for later sensitivity scoring."""
+    _ensure_model_imports()
+    _ensure_read_config()
+
+    selected_variants = variants or list(INFERENCE_VARIANTS)
+    out_root = _render_root(cache_dir, render_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    manifest: dict[str, object] = {
+        "version": 1,
+        "tile_count": len(tile_ids),
+        "tile_ids": list(tile_ids),
+        "variants": {},
+    }
+
+    for variant_key in selected_variants:
+        variant_cfg = INFERENCE_VARIANTS[variant_key]
+        if not variant_requires_generation(variant_key):
+            print(f"[render:{variant_key}] skip render; variant_type={variant_cfg['variant_type']} has trivial zero-sensitivity semantics", flush=True)
+            manifest["variants"][variant_key] = {
+                "variant_type": variant_cfg["variant_type"],
+                "rendered": False,
+                "groups": _group_names_from_config(read_config(str(variant_cfg["config_path"]))),
+            }
+            continue
+
+        config_path = str(variant_cfg["config_path"])
+        config = read_config(config_path)
+        config._filename = config_path
+        models = load_all_models(config, config_path, Path(variant_cfg["ckpt_dir"]), device)
+        scheduler = make_inference_scheduler(num_steps=30, device=device)
+        rendered_groups: list[str] = _discover_rendered_groups(out_root, variant_key)
+
+        print(f"[render:{variant_key}] start {len(tile_ids)} tiles", flush=True)
+        for index, tile_id in enumerate(tile_ids, start=1):
+            if rendered_groups:
+                expected_paths = [_render_image_path(out_root, variant_key, group_name, tile_id) for group_name in rendered_groups]
+                if expected_paths and all(path.is_file() for path in expected_paths):
+                    _print_progress("render", variant_key, index, len(tile_ids), tile_id, suffix="cached")
+                    continue
+
+            uni_embeds = resolve_uni_embedding(tile_id, feat_dir=features_dir, null_uni=False)
+            group_images = generate_group_ablations(
+                tile_id,
+                models=models,
+                config=config,
+                scheduler=scheduler,
+                uni_embeds=uni_embeds,
+                device=device,
+                exp_channels_dir=exp_channels_dir,
+                guidance_scale=guidance_scale,
+                seed=seed,
+            )
+            rendered_groups = sorted(group_images)
+            for group_name, image in group_images.items():
+                _save_rgb(_render_image_path(out_root, variant_key, group_name, tile_id), image)
+            _print_progress("render", variant_key, index, len(tile_ids), tile_id, suffix=f"saved_groups={len(group_images)}")
+
+        manifest["variants"][variant_key] = {
+            "variant_type": variant_cfg["variant_type"],
+            "rendered": True,
+            "groups": rendered_groups,
+        }
+
+        del models, scheduler, config
+        _release_accelerator_memory(device)
+
+    manifest_path = out_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"Rendered sensitivity images -> {out_root}", flush=True)
+    return out_root
+
+
+def score_sensitivity(
+    *,
+    cache_dir: Path,
+    tile_ids: list[str],
+    device: str,
+    variants: list[str] | None = None,
+    render_root: Path | None = None,
+) -> dict[str, dict[str, object]]:
+    """Score ΔLPIPS from persisted per-group ablation H&E images and merge cache.json."""
+    _ensure_read_config()
+    sensitivity: dict[str, dict[str, object]] = {}
+    selected_variants = variants or list(INFERENCE_VARIANTS)
+    out_root = _render_root(cache_dir, render_root)
+
+    for variant_key in selected_variants:
+        variant_cfg = INFERENCE_VARIANTS[variant_key]
+        config_path = str(variant_cfg["config_path"])
+        config = read_config(config_path)
+        config._filename = config_path
+        baseline_dir = Path(cache_dir) / "tiles" / variant_key
+        per_group_scores: dict[str, list[float]] = {}
+        trivial_variant = not variant_requires_generation(variant_key)
+        group_names = _group_names_from_config(config) if trivial_variant else _discover_rendered_groups(out_root, variant_key)
+
+        print(f"[score:{variant_key}] start {len(tile_ids)} tiles", flush=True)
+        for index, tile_id in enumerate(tile_ids, start=1):
+            baseline_path = baseline_dir / f"{tile_id}.png"
+            if not baseline_path.is_file():
+                print(f"  [score:{variant_key}] baseline tile missing: {baseline_path} - skip", flush=True)
+                continue
+
+            baseline_rgb = _load_rgb(baseline_path)
+            if trivial_variant:
+                group_images = {group_name: baseline_rgb.copy() for group_name in group_names}
+            else:
+                group_images = _load_rendered_group_images(out_root, variant_key, tile_id)
+
+            scores = compute_sensitivity_scores(baseline_rgb, group_images, device=device)
+            for group, score in scores.items():
+                per_group_scores.setdefault(group, []).append(float(score))
+            _print_progress("score", variant_key, index, len(tile_ids), tile_id, suffix=f"groups={len(scores)}")
+
+        sensitivity[variant_key] = summarize_variant_sensitivity(per_group_scores)
+
+    cache_path = Path(cache_dir) / "cache.json"
+    cache = load_cache(cache_path)
+    merge_sensitivity(cache, sensitivity)
+    save_cache(cache, cache_path)
+    print(f"Sensitivity cache updated -> {cache_path}", flush=True)
+    return sensitivity
+
+
 def generate_group_ablations(
     tile_id: str,
     *,
@@ -269,75 +462,38 @@ def run_sensitivity(
     guidance_scale: float = 1.5,
     seed: int = 42,
     variants: list[str] | None = None,
+    render_root: Path | None = None,
 ) -> dict[str, dict[str, object]]:
-    """Compute per-variant sensitivity summaries and write them into cache.json."""
-    _ensure_model_imports()
-    _ensure_read_config()
-    sensitivity: dict[str, dict[str, object]] = {}
-    selected_variants = variants or list(INFERENCE_VARIANTS)
-
-    for variant_key in selected_variants:
-        variant_cfg = INFERENCE_VARIANTS[variant_key]
-        config_path = str(variant_cfg["config_path"])
-        config = read_config(config_path)
-        config._filename = config_path
-        baseline_dir = cache_dir / "tiles" / variant_key
-        per_group_scores: dict[str, list[float]] = {}
-
-        models = None
-        scheduler = None
-        if variant_cfg.get("variant_type") not in {"bypass", "off_shelf"}:
-            models = load_all_models(config, config_path, Path(variant_cfg["ckpt_dir"]), device)
-            scheduler = make_inference_scheduler(num_steps=30, device=device)
-
-        for tile_id in tile_ids:
-            baseline_path = baseline_dir / f"{tile_id}.png"
-            if not baseline_path.is_file():
-                print(f"  [sensitivity] baseline tile missing: {baseline_path} - skip")
-                continue
-
-            baseline_rgb = np.asarray(Image.open(baseline_path).convert("RGB"))
-            if variant_cfg.get("variant_type") in {"bypass", "off_shelf"}:
-                group_images = {
-                    group_name: baseline_rgb.copy()
-                    for group_name in _group_names_from_config(config)
-                }
-            else:
-                uni_embeds = resolve_uni_embedding(tile_id, feat_dir=features_dir, null_uni=False)
-                group_images = generate_group_ablations(
-                    tile_id,
-                    models=models,
-                    config=config,
-                    scheduler=scheduler,
-                    uni_embeds=uni_embeds,
-                    device=device,
-                    exp_channels_dir=exp_channels_dir,
-                    guidance_scale=guidance_scale,
-                    seed=seed,
-                )
-            scores = compute_sensitivity_scores(baseline_rgb, group_images, device=device)
-            for group, score in scores.items():
-                per_group_scores.setdefault(group, []).append(float(score))
-
-        sensitivity[variant_key] = summarize_variant_sensitivity(per_group_scores)
-
-        del models, scheduler, config
-        _release_accelerator_memory(device)
-
-    cache_path = cache_dir / "cache.json"
-    cache = load_cache(cache_path)
-    merge_sensitivity(cache, sensitivity)
-    save_cache(cache, cache_path)
-    return sensitivity
+    """Legacy all-in-one path: render ablation H&E images first, then score ΔLPIPS."""
+    out_root = render_sensitivity(
+        cache_dir=cache_dir,
+        tile_ids=tile_ids,
+        device=device,
+        exp_channels_dir=exp_channels_dir,
+        features_dir=features_dir,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        variants=variants,
+        render_root=render_root,
+    )
+    return score_sensitivity(
+        cache_dir=cache_dir,
+        tile_ids=tile_ids,
+        device=device,
+        variants=variants,
+        render_root=out_root,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=["run", "render", "score"], default="run")
     parser.add_argument("--cache-dir", default="inference_output/si_a1_a2")
     parser.add_argument("--tile-ids-file", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--guidance-scale", type=float, default=1.5)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--render-root", default=None)
     parser.add_argument(
         "--variants",
         nargs="+",
@@ -354,6 +510,29 @@ def main(argv: list[str] | None = None) -> int:
     ]
     _ensure_layout_imports()
     exp_channels_dir, features_dir, _ = resolve_data_layout(Path("data/orion-crc33"))
+    render_root = Path(args.render_root) if args.render_root else None
+    if args.mode == "render":
+        render_sensitivity(
+            cache_dir=cache_dir,
+            tile_ids=tile_ids,
+            device=args.device,
+            exp_channels_dir=exp_channels_dir,
+            features_dir=features_dir,
+            guidance_scale=args.guidance_scale,
+            seed=args.seed,
+            variants=args.variants,
+            render_root=render_root,
+        )
+        return 0
+    if args.mode == "score":
+        score_sensitivity(
+            cache_dir=cache_dir,
+            tile_ids=tile_ids,
+            device=args.device,
+            variants=args.variants,
+            render_root=render_root,
+        )
+        return 0
     run_sensitivity(
         cache_dir=cache_dir,
         tile_ids=tile_ids,
@@ -363,6 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         guidance_scale=args.guidance_scale,
         seed=args.seed,
         variants=args.variants,
+        render_root=render_root,
     )
     return 0
 

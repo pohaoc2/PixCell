@@ -11,8 +11,11 @@ import pytest
 from tools.ablation_a1_a2.sensitivity_eval import (
     compute_sensitivity_scores,
     generate_group_ablations,
+    render_sensitivity,
     run_sensitivity,
+    score_sensitivity,
     summarize_variant_sensitivity,
+    variant_requires_generation,
 )
 
 
@@ -97,6 +100,78 @@ def test_summarize_variant_sensitivity_averages_group_means():
     assert summary["mean"] == pytest.approx(0.25)
     assert summary["std"] == pytest.approx(0.05)
     assert summary["per_group"]["cell_types"]["mean"] == pytest.approx(0.20)
+
+
+def test_variant_requires_generation_flags_trivial_variants():
+    assert variant_requires_generation("production") is True
+    assert variant_requires_generation("a2_bypass_full_tme") is True
+    assert variant_requires_generation("a2_off_shelf") is False
+    assert variant_requires_generation("a2_bypass") is False
+
+
+def test_render_sensitivity_writes_group_images(tmp_path):
+    cache_dir = tmp_path / "si_a1_a2"
+    cache_dir.mkdir()
+    tile_dir = cache_dir / "tiles" / "production"
+    tile_dir.mkdir(parents=True)
+
+    fake_rgb = np.zeros((256, 256, 3), dtype=np.uint8)
+    Image.fromarray(fake_rgb).save(tile_dir / "tile_0.png")
+
+    with (
+        patch("tools.ablation_a1_a2.sensitivity_eval.load_all_models", return_value={}),
+        patch("tools.ablation_a1_a2.sensitivity_eval.make_inference_scheduler", return_value=MagicMock()),
+        patch("tools.ablation_a1_a2.sensitivity_eval.read_config", return_value=MagicMock()),
+        patch("tools.ablation_a1_a2.sensitivity_eval.resolve_uni_embedding", return_value=object()),
+        patch("tools.ablation_a1_a2.sensitivity_eval._release_accelerator_memory"),
+        patch(
+            "tools.ablation_a1_a2.sensitivity_eval.generate_group_ablations",
+            return_value={"cell_types": fake_rgb, "cell_state": fake_rgb},
+        ),
+    ):
+        render_root = render_sensitivity(
+            cache_dir=cache_dir,
+            tile_ids=["tile_0"],
+            device="cpu",
+            exp_channels_dir=Path("/tmp"),
+            features_dir=Path("/tmp"),
+            variants=["production"],
+        )
+
+    assert (render_root / "production" / "cell_types" / "tile_0.png").is_file()
+    assert (render_root / "production" / "cell_state" / "tile_0.png").is_file()
+    assert (render_root / "manifest.json").is_file()
+
+
+def test_score_sensitivity_reads_rendered_images_and_writes_cache(tmp_path):
+    cache_dir = tmp_path / "si_a1_a2"
+    cache_dir.mkdir()
+    tile_dir = cache_dir / "tiles" / "production"
+    tile_dir.mkdir(parents=True)
+    render_root = cache_dir / "sensitivity_tiles"
+
+    fake_rgb = np.zeros((256, 256, 3), dtype=np.uint8)
+    Image.fromarray(fake_rgb).save(tile_dir / "tile_0.png")
+    for group_name in ("cell_types", "cell_state"):
+        group_dir = render_root / "production" / group_name
+        group_dir.mkdir(parents=True)
+        Image.fromarray(fake_rgb).save(group_dir / "tile_0.png")
+
+    with patch(
+        "tools.ablation_a1_a2.sensitivity_eval.compute_sensitivity_scores",
+        return_value={"cell_types": 0.0, "cell_state": 0.2},
+    ):
+        score_sensitivity(
+            cache_dir=cache_dir,
+            tile_ids=["tile_0"],
+            device="cpu",
+            variants=["production"],
+            render_root=render_root,
+        )
+
+    cache = json.loads((cache_dir / "cache.json").read_text(encoding="utf-8"))
+    assert cache["sensitivity"]["production"]["mean"] == pytest.approx(0.1)
+    assert cache["sensitivity"]["production"]["per_group"]["cell_state"]["mean"] == pytest.approx(0.2)
 
 
 def test_run_sensitivity_writes_cache(tmp_path):

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.font_manager import FontProperties
 from matplotlib.ticker import FormatStrFormatter, FuncFormatter, MaxNLocator
 import numpy as np
 from PIL import Image
@@ -24,6 +25,7 @@ from tools.ablation_a1_a2.log_utils import deserialise_float
 
 PRIMARY_A2_VARIANT = "a2_bypass_full_tme"
 LEGACY_A2_VARIANT = "a2_bypass"
+SECTION1_FONT_FAMILY = "DejaVu Serif"
 
 
 VARIANT_SPECS: dict[str, dict] = {
@@ -273,31 +275,33 @@ def _format_step_tick(value: float, _pos: int) -> str:
 
 
 def _style_training_axis(ax: plt.Axes) -> None:
-    ax.set_xlabel("Step", fontsize=FONT_SIZE_LABEL)
+    ax.set_xlabel("Step", fontsize=FONT_SIZE_LABEL, fontfamily=SECTION1_FONT_FAMILY)
     ax.tick_params(labelsize=FONT_SIZE_TICK, width=0.7, length=3)
     ax.xaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
     ax.xaxis.set_major_formatter(FuncFormatter(_format_step_tick))
     ax.grid(axis="y", color="#d9d9d9", linewidth=0.45)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    for tick in [*ax.get_xticklabels(), *ax.get_yticklabels()]:
+        tick.set_fontfamily(SECTION1_FONT_FAMILY)
 
 
 def _style_loss_axis(ax: plt.Axes) -> None:
-    ax.set_ylabel("Training loss", fontsize=FONT_SIZE_LABEL)
+    ax.set_ylabel("Training loss", fontsize=FONT_SIZE_LABEL, fontfamily=SECTION1_FONT_FAMILY)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
     _style_training_axis(ax)
 
 
 def _style_grad_axis(ax: plt.Axes) -> None:
-    ax.set_ylabel("Gradient norm", fontsize=FONT_SIZE_LABEL)
+    ax.set_ylabel("Gradient norm", fontsize=FONT_SIZE_LABEL, fontfamily=SECTION1_FONT_FAMILY)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
     _style_training_axis(ax)
 
 
 def _plot_loss_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], title: str) -> None:
-    ax.set_title(title, fontsize=FONT_SIZE_LABEL, loc="left", pad=3)
+    ax.set_title(title, fontsize=FONT_SIZE_LABEL, loc="left", pad=3, fontfamily=SECTION1_FONT_FAMILY)
     _style_loss_axis(ax)
 
     for variant in variant_keys:
@@ -308,14 +312,30 @@ def _plot_loss_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], title
             continue
         finite = np.isfinite(mean)
         if np.any(finite):
-            ax.plot(steps[finite], mean[finite], color=spec["color"], lw=spec["lw"], ls=spec["ls"], label=spec["label"])
+            ax.plot(
+                steps[finite],
+                mean[finite],
+                color=spec["color"],
+                lw=spec["lw"],
+                ls=spec["ls"],
+                label=spec["label"],
+                zorder=4 if variant == "production" else 3,
+            )
         else:
             synthetic = np.abs(np.sin(np.arange(len(steps)) * 1.7)) * 0.08 + 0.22
-            ax.plot(steps, synthetic, color=spec["color"], lw=spec["lw"], ls=spec["ls"], label=f"{spec['label']} unstable")
+            ax.plot(
+                steps,
+                synthetic,
+                color=spec["color"],
+                lw=spec["lw"],
+                ls=spec["ls"],
+                label=f"{spec['label']} unstable",
+                zorder=4 if variant == "production" else 3,
+            )
 
 
 def _plot_gradnorm_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], title: str) -> None:
-    ax.set_title(title, fontsize=FONT_SIZE_LABEL, loc="left", pad=3)
+    ax.set_title(title, fontsize=FONT_SIZE_LABEL, loc="left", pad=3, fontfamily=SECTION1_FONT_FAMILY)
     _style_grad_axis(ax)
 
     unstable_to_draw: list[tuple[str, np.ndarray]] = []
@@ -330,7 +350,15 @@ def _plot_gradnorm_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], t
             continue
         finite = np.isfinite(mean) & (mean > 0)
         if np.any(finite):
-            ax.plot(steps[finite], mean[finite], color=spec["color"], lw=spec["lw"], ls=spec["ls"], label=spec["label"])
+            ax.plot(
+                steps[finite],
+                mean[finite],
+                color=spec["color"],
+                lw=spec["lw"],
+                ls=spec["ls"],
+                label=spec["label"],
+                zorder=5 if variant == "production" else 3,
+            )
         if np.any(np.isinf(mean)):
             unstable_to_draw.append((variant, steps))
         if not np.any(finite) and not np.any(np.isinf(mean)):
@@ -351,6 +379,7 @@ def _plot_gradnorm_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], t
             va="center",
             fontsize=FONT_SIZE_ANNOTATION,
             color="black",
+            fontfamily=SECTION1_FONT_FAMILY,
         )
     else:
         span = ymax - ymin
@@ -368,7 +397,20 @@ def _plot_gradnorm_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], t
             color=spec["color"],
             lw=spec["lw"],
             ls="--",
-            label=f"{spec['label']} (inf grad.)",
+            label=f"{spec['label']} (grad explosion)",
+        )
+
+    if unstable_to_draw:
+        ax.text(
+            0.98,
+            0.98,
+            "Dashed top lines = clipped grad explosion",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=FONT_SIZE_ANNOTATION - 1,
+            color="#4a4a4a",
+            fontfamily=SECTION1_FONT_FAMILY,
         )
 
     for variant in not_logged:
@@ -398,7 +440,7 @@ def _section1_legend_handles(variant_keys: list[str]) -> list[Line2D]:
 def _draw_section1_curves(fig: plt.Figure, gs_slot, cache: dict) -> None:
     sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.18], hspace=0.34, wspace=0.38)
     curves = cache.get("training_curves", {})
-    all_variants = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT, "a2_off_shelf"]
+    all_variants = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
     _plot_loss_curves(fig.add_subplot(sub[0, 0]), curves, all_variants, "Training loss")
     _plot_gradnorm_curves(fig.add_subplot(sub[0, 1]), curves, all_variants, "Gradient norm")
     legend_ax = fig.add_subplot(sub[1, :])
@@ -406,9 +448,9 @@ def _draw_section1_curves(fig: plt.Figure, gs_slot, cache: dict) -> None:
     legend_ax.legend(
         handles=_section1_legend_handles(all_variants),
         loc="center",
-        ncol=5,
+        ncol=4,
         frameon=False,
-        fontsize=FONT_SIZE_TICK,
+        prop=FontProperties(family=SECTION1_FONT_FAMILY, size=FONT_SIZE_TICK),
         handlelength=2.8,
         columnspacing=1.4,
     )

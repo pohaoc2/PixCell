@@ -30,6 +30,7 @@ def _is_nan(value) -> bool:
 
 def _read_log(path: Path) -> list[dict]:
     entries: list[dict] = []
+    pending_grad_matches: list[float] = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -37,17 +38,21 @@ def _read_log(path: Path) -> list[dict]:
                 continue
             try:
                 entries.append(json.loads(line))
+                pending_grad_matches = []
                 continue
             except json.JSONDecodeError:
                 pass
             loss_match = _LOSS_RE.search(line)
             step_match = _STEP_RE.search(line)
             grad_matches = [_to_float(match) for match in _GRAD_RE.findall(line)]
+            if grad_matches:
+                pending_grad_matches.extend(grad_matches)
             if loss_match and step_match:
                 rec = {"step": int(step_match.group(1)), "loss": _to_float(loss_match.group(1))}
-                if grad_matches:
-                    rec["grad_norm"] = max(abs(g) for g in grad_matches)
+                if pending_grad_matches:
+                    rec["grad_norm"] = max(abs(g) for g in pending_grad_matches)
                 entries.append(rec)
+                pending_grad_matches = []
     return entries
 
 
