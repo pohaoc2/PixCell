@@ -5,6 +5,9 @@ from diffusion.model.utils import set_grad_checkpoint
 MODELS = Registry('models')
 
 import diffusion.model.nets.multi_group_tme  # noqa: F401
+import diffusion.model.nets.tme_encoder  # noqa: F401
+import diffusion.model.nets.concat_controlnet  # noqa: F401
+import diffusion.model.nets.per_channel_tme  # noqa: F401
 
 
 def build_model(cfg, use_grad_checkpoint=False, use_fp32_attention=False, gc_step=1, **kwargs):

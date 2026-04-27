@@ -1,3 +1,5 @@
 from .PixArt import PixArt_ControlNet, PixArt_XL_2_UNI
 from .PixArtControlNet import PixCell_ControlNet_XL_2_UNI
 from .tme_encoder import TMEConditioningModule
+from .concat_controlnet import PixCell_ControlNet_XL_2_UNI_Concat
+from .per_channel_tme import PerChannelTMEModule, RawConditioningPassthrough

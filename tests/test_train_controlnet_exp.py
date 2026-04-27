@@ -214,3 +214,75 @@ def test_load_tme_checkpoint_reset_skips_optimizer(tmp_path):
     assert step == 4890
     for p in dst_tme.parameters():
         assert torch.allclose(p, torch.tensor(0.42)), "model weights must transfer"
+
+
+def test_build_tme_supports_per_channel_module():
+    from train_scripts.training_utils import _build_tme_module_and_optimizers
+    from unittest.mock import MagicMock, patch
+    import types
+
+    config = types.SimpleNamespace(
+        tme_model="PerChannelTMEModule",
+        tme_input_mode="all_channels",
+        tme_base_ch=16,
+        optimizer={"type": "AdamW", "lr": 5e-6, "weight_decay": 0.0,
+                   "betas": (0.9, 0.999), "eps": 1e-8},
+        lr_schedule_args={"num_warmup_steps": 10},
+        num_epochs=1,
+    )
+    controlnet = MagicMock()
+    dataloader = MagicMock()
+    dataloader.__len__ = lambda self: 10
+    logger = MagicMock()
+    active_ch = [
+        "cell_masks",
+        "cell_type_healthy",
+        "cell_type_cancer",
+        "cell_type_immune",
+        "cell_state_prolif",
+        "cell_state_nonprolif",
+        "cell_state_dead",
+        "vasculature",
+        "oxygen",
+        "glucose",
+    ]
+
+    with patch("train_scripts.training_utils.build_optimizer") as mock_opt, \
+         patch("train_scripts.training_utils.build_lr_scheduler") as mock_sched:
+        mock_opt.return_value = MagicMock()
+        mock_sched.return_value = MagicMock()
+        result = _build_tme_module_and_optimizers(
+            config, controlnet, dataloader, active_ch, logger
+        )
+
+    assert type(result["tme_module"]).__name__ == "PerChannelTMEModule"
+
+
+def test_build_tme_supports_raw_conditioning_passthrough():
+    from train_scripts.training_utils import _build_tme_module_and_optimizers
+    from unittest.mock import MagicMock, patch
+    import types
+
+    config = types.SimpleNamespace(
+        tme_model="RawConditioningPassthrough",
+        tme_input_mode="all_channels",
+        optimizer={"type": "AdamW", "lr": 5e-6, "weight_decay": 0.0,
+                   "betas": (0.9, 0.999), "eps": 1e-8},
+        lr_schedule_args={"num_warmup_steps": 10},
+        num_epochs=1,
+    )
+    controlnet = MagicMock()
+    dataloader = MagicMock()
+    dataloader.__len__ = lambda self: 10
+    logger = MagicMock()
+    active_ch = ["cell_masks", "oxygen"]
+
+    with patch("train_scripts.training_utils.build_optimizer") as mock_opt, \
+         patch("train_scripts.training_utils.build_lr_scheduler") as mock_sched:
+        mock_opt.return_value = MagicMock()
+        mock_sched.return_value = MagicMock()
+        result = _build_tme_module_and_optimizers(
+            config, controlnet, dataloader, active_ch, logger
+        )
+
+    assert type(result["tme_module"]).__name__ == "RawConditioningPassthrough"
