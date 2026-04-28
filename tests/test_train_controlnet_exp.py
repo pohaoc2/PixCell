@@ -286,3 +286,44 @@ def test_build_tme_supports_raw_conditioning_passthrough():
         )
 
     assert type(result["tme_module"]).__name__ == "RawConditioningPassthrough"
+
+
+def test_resolve_exp_dataset_kwargs_forwards_max_train_samples():
+    from train_scripts.exp_config_utils import resolve_exp_dataset_kwargs
+    import types
+
+    config = types.SimpleNamespace(
+        data={
+            "active_channels": [
+                "cell_masks",
+                "cell_type_healthy",
+                "cell_type_cancer",
+                "cell_type_immune",
+                "cell_state_prolif",
+                "cell_state_nonprolif",
+                "cell_state_dead",
+            ],
+            "max_train_samples": 100,
+        }
+    )
+
+    kwargs = resolve_exp_dataset_kwargs(config)
+
+    assert kwargs["max_train_samples"] == 100
+
+
+def test_grad_health_counts_nonfinite_values():
+    from train_scripts.train_controlnet_exp import _grad_health
+
+    good = torch.nn.Parameter(torch.zeros(2))
+    bad = torch.nn.Parameter(torch.zeros(3))
+    good.grad = torch.tensor([3.0, 4.0])
+    bad.grad = torch.tensor([1.0, float("inf"), float("nan")])
+
+    stats = _grad_health([good, bad])
+
+    assert stats["total_tensors"] == 2
+    assert stats["nonfinite_tensors"] == 1
+    assert stats["nonfinite_values"] == 2
+    assert stats["max_abs"] == pytest.approx(4.0)
+    assert stats["finite_norm"] == pytest.approx((3.0**2 + 4.0**2 + 1.0**2) ** 0.5)

@@ -13,6 +13,7 @@ ProductionSource = Path | tuple[Path, ...]
 LOG_SOURCES: dict[str, dict[str, ProductionSource]] = {
     "production": {
         "full_seed_42": (
+            Path("checkpoints/production_retrain/full_seed_42/train_log.jsonl"),
             Path("checkpoints/pixcell_controlnet_exp_retrain/full_seed_42/train_log.jsonl"),
             Path("checkpoints/pixcell_controlnet_exp/npy_inputs/train_log.log"),
         ),

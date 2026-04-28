@@ -68,4 +68,9 @@ def resolve_exp_dataset_kwargs(config) -> dict[str, object]:
         if value is None:
             value = _cfg_get(data_cfg, key, default)
         dataset_kwargs[key] = value
+    max_train_samples = _cfg_get(config, "max_train_samples", None)
+    if max_train_samples is None:
+        max_train_samples = _cfg_get(data_cfg, "max_train_samples", None)
+    if max_train_samples is not None:
+        dataset_kwargs["max_train_samples"] = max_train_samples
     return dataset_kwargs

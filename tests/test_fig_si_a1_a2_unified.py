@@ -128,6 +128,42 @@ def test_build_figure_no_error(tmp_path: Path):
     assert out.exists()
 
 
+def test_unified_layout_aligns_top_and_equalizes_tile_gaps(tmp_path: Path):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from PIL import Image
+    from src.paper_figures.fig_si_a1_a2_unified import build_figure
+
+    cache = json.loads(json.dumps(SYNTHETIC_CACHE))
+    cache["tile_ids"] = [f"tile_{idx:03d}" for idx in range(1, 11)]
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    tile_dir = tmp_path / "tiles"
+    for variant in ("production", "a1_concat", "a1_per_channel", "a2_bypass_full_tme", "a2_off_shelf", "gt"):
+        variant_dir = tile_dir / variant
+        variant_dir.mkdir(parents=True)
+        for tile_id in cache["tile_ids"]:
+            Image.fromarray(np.full((256, 256, 3), 200, dtype=np.uint8)).save(variant_dir / f"{tile_id}.png")
+
+    fig = build_figure(cache_path=cache_path, tile_dir=tile_dir)
+    size_w, size_h = fig.get_size_inches()
+    panel_a_ax = fig.axes[0]
+    tile_axes = [ax for ax in fig.axes if ax.images]
+
+    first_tile = tile_axes[0]
+    second_tile = tile_axes[1]
+    below_first_tile = tile_axes[10]
+
+    panel_a_left = panel_a_ax.get_position().x0
+    panel_c_left = min(ax.get_position().x0 for ax in tile_axes)
+    wgap_in = (second_tile.get_position().x0 - first_tile.get_position().x1) * size_w
+    hgap_in = (first_tile.get_position().y0 - below_first_tile.get_position().y1) * size_h
+
+    assert panel_a_left == pytest.approx(panel_c_left, abs=1e-6)
+    assert abs(wgap_in - hgap_in) < 0.01
+
+
 def test_build_section2_figure_with_delta_lpips(tmp_path: Path):
     import matplotlib
 

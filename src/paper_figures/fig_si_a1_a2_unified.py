@@ -67,6 +67,7 @@ METRIC_DIRECTIONS = {
 INSTABILITY_COLOR = "#c62828"
 INSTABILITY_ALPHA = 0.12
 _TARGET_CONTOUR_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".npy")
+UNIFIED_TILE_GAP = 0.045
 COMPACT_VARIANT_LABELS = {
     "production": "Grouped TME",
     "a1_concat": "Concat enc.",
@@ -200,29 +201,27 @@ def _aggregate_curves(runs: dict[str, list[dict]], metric: str) -> tuple[np.ndar
 def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(13.4, 10.8), constrained_layout=False)
-    fig.subplots_adjust(left=0.090, right=0.990, top=0.985, bottom=0.035)
+    fig = plt.figure(figsize=(13.9, 10.2), constrained_layout=False)
+    fig.subplots_adjust(left=0.045, right=0.990, top=0.965, bottom=0.020)
 
-    outer = fig.add_gridspec(3, 1, height_ratios=[1.78, 1.02, 3.15], hspace=0.30)
-    middle = outer[1].subgridspec(1, 2, width_ratios=[2.25, 1.0], wspace=0.16)
+    outer = fig.add_gridspec(2, 1, height_ratios=[0.92, 5.75], hspace=0.11)
+    middle = outer[0].subgridspec(1, 2, width_ratios=[3.95, 0.95], wspace=0.14)
 
-    _draw_section1_curves(fig, outer[0], cache)
     _draw_section2_table(fig.add_subplot(middle[0]), cache)
     _draw_section4_sensitivity(fig.add_subplot(middle[1]), cache)
-    _draw_section3_tiles(fig, outer[2], cache, tile_dir)
+    _draw_section3_tiles(fig, outer[1], cache, tile_dir)
 
-    _add_panel_label(fig, outer[0], "A")
-    _add_panel_label(fig, middle[0], "B")
-    _add_panel_label(fig, middle[1], "C", x_offset=0.026)
-    _add_panel_label(fig, outer[2], "D")
+    _add_panel_label(fig, middle[0], "A", x_offset=0.028, y_offset=-0.020)
+    _add_panel_label(fig, middle[1], "B", x_offset=0.034, y_offset=-0.020)
+    _add_panel_label(fig, outer[1], "C", x_offset=0.028)
     return fig
 
 
-def _add_panel_label(fig: plt.Figure, slot, label: str, *, x_offset: float = 0.050) -> None:
+def _add_panel_label(fig: plt.Figure, slot, label: str, *, x_offset: float = 0.050, y_offset: float = 0.002) -> None:
     bbox = slot.get_position(fig)
     fig.text(
         bbox.x0 - x_offset,
-        bbox.y1 - 0.002,
+        bbox.y1 - y_offset,
         label,
         ha="left",
         va="top",
@@ -243,7 +242,7 @@ def build_section1_figure(*, cache_path: Path) -> plt.Figure:
 def build_section2_figure(*, cache_path: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(8.9, 1.6), constrained_layout=False)
+    fig = plt.figure(figsize=(8.9, 1.85), constrained_layout=False)
     fig.subplots_adjust(left=0.020, right=0.990, top=0.94, bottom=0.12)
     _draw_section2_table(fig.add_subplot(111), cache)
     return fig
@@ -550,8 +549,8 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
     metrics = _section2_metrics(cache)
     params = cache.get("params", {})
     best_by_metric = _best_metric_variants(metrics)
-    table_fs = FONT_SIZE_TICK
-    col_x = [0.095, 0.255, 0.370, 0.485, 0.600, 0.710, 0.815, 0.950]
+    table_fs = FONT_SIZE_TICK + 2
+    col_x = [0.055, 0.230, 0.350, 0.470, 0.590, 0.705, 0.820, 0.955]
     headers = ["Config", *[col[0] for col in METRIC_COLS], "Params"]
     row_order = sorted(
         [variant for variant in TABLE_ROWS if variant in metrics or variant in VARIANT_SPECS],
@@ -562,7 +561,7 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
     )
 
     for x, header in zip(col_x, headers):
-        ax.text(x, 0.90, header, fontsize=table_fs, va="center", ha="center", transform=ax.transAxes)
+        ax.text(x, 0.90, header, fontsize=table_fs + 1, va="center", ha="center", transform=ax.transAxes)
     ax.axhline(0.97, color="black", linewidth=0.75)
     ax.axhline(0.80, color="black", linewidth=0.45)
 
@@ -583,17 +582,18 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
             ax.text(
                 x,
                 y,
-                _fmt_metric(row_metrics, key, fmt),
+                _fmt_metric_with_std(row_metrics, key, fmt),
                 fontsize=table_fs - 1,
                 fontweight="bold" if variant in best_by_metric.get(key, set()) else "normal",
                 va="center",
                 ha="center",
+                linespacing=0.90,
                 transform=ax.transAxes,
             )
         param_text = _fmt_params(params, variant)
         ax.text(col_x[-1], y, param_text, fontsize=table_fs, va="center", ha="center", transform=ax.transAxes)
 
-    row_y = np.linspace(0.68, 0.12, len(row_order))
+    row_y = np.linspace(0.66, 0.12, len(row_order))
     for y, variant in zip(row_y, row_order, strict=True):
         draw_row(y, variant)
 
@@ -602,11 +602,13 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
 
 def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
     sensitivity = _section4_sensitivity(cache)
-    ax.set_title("TME sensitivity", fontsize=FONT_SIZE_LABEL, loc="left", pad=3)
-    ax.set_xlabel("ΔLPIPS", fontsize=FONT_SIZE_LABEL)
+    local_label_fs = FONT_SIZE_LABEL + 2
+    local_tick_fs = FONT_SIZE_TICK + 1
+    ax.set_title("TME sensitivity", fontsize=local_label_fs + 1, loc="left", pad=3)
+    ax.set_xlabel("ΔLPIPS", fontsize=local_label_fs)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.tick_params(labelsize=FONT_SIZE_TICK, width=0.7, length=3)
+    ax.tick_params(labelsize=local_tick_fs, width=0.7, length=3)
 
     if not sensitivity:
         ax.set_yticks([])
@@ -616,7 +618,7 @@ def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
             "No sensitivity data",
             ha="center",
             va="center",
-            fontsize=FONT_SIZE_ANNOTATION,
+            fontsize=FONT_SIZE_ANNOTATION + 2,
             transform=ax.transAxes,
         )
         return
@@ -647,10 +649,10 @@ def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
             f"{mean:.3f}",
             va="center",
             ha="left",
-            fontsize=FONT_SIZE_ANNOTATION - 1,
+            fontsize=FONT_SIZE_ANNOTATION + 1,
         )
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels, fontsize=FONT_SIZE_TICK)
+    ax.set_yticklabels(labels, fontsize=local_tick_fs)
     ax.set_xlim(0.0, max_extent + label_pad * 12)
     ax.grid(axis="x", color="#d9d9d9", linewidth=0.45)
     ax.invert_yaxis()
@@ -756,7 +758,12 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
         ax.text(0.5, 0.5, "No tile IDs in cache", ha="center", va="center", fontsize=FONT_SIZE_ANNOTATION, transform=ax.transAxes)
         return
 
-    sub = gs_slot.subgridspec(len(TILE_GRID_ORDER), len(tile_ids), wspace=0.010, hspace=0.010)
+    sub = gs_slot.subgridspec(
+        len(TILE_GRID_ORDER),
+        len(tile_ids),
+        wspace=UNIFIED_TILE_GAP,
+        hspace=UNIFIED_TILE_GAP,
+    )
     row_labels = {
         "gt": "Ref H&E",
         **{variant: spec["label"] for variant, spec in VARIANT_SPECS.items()},
@@ -773,7 +780,7 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
             ax.set_xticks([])
             ax.set_yticks([])
             if row_idx == 0:
-                ax.set_title(str(col_idx + 1), fontsize=FONT_SIZE_ANNOTATION - 3, pad=2)
+                ax.set_title(str(col_idx + 1), fontsize=FONT_SIZE_ANNOTATION, pad=3)
             for spine in ax.spines.values():
                 spine.set_linewidth(0.65 if variant != "gt" else 0.55)
                 spine.set_color("black" if variant != "gt" else "#808080")
@@ -781,7 +788,7 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
             if col_idx == 0:
                 ax.set_ylabel(
                     row_labels.get(variant, variant),
-                    fontsize=FONT_SIZE_ANNOTATION,
+                    fontsize=FONT_SIZE_ANNOTATION + 2,
                     rotation=0,
                     ha="right",
                     va="center",

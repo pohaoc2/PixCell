@@ -13,6 +13,7 @@ Entry point: use stage2_train.py (calls main() here).
 """
 import os
 import json
+import math
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -54,6 +55,38 @@ def _conditioning_mode(config) -> str:
     if getattr(config, "channel_groups", None) is not None:
         return "grouped"
     return "non_mask_channels"
+
+
+def _grad_health(parameters) -> dict[str, float | int]:
+    finite_sq_sum = 0.0
+    max_abs = 0.0
+    total_tensors = 0
+    nonfinite_tensors = 0
+    nonfinite_values = 0
+    for param in parameters:
+        grad = param.grad
+        if grad is None:
+            continue
+        total_tensors += 1
+        grad = grad.detach()
+        finite = torch.isfinite(grad)
+        finite_count = int(finite.sum().item())
+        nonfinite_count = grad.numel() - finite_count
+        if nonfinite_count:
+            nonfinite_tensors += 1
+            nonfinite_values += nonfinite_count
+        if finite_count:
+            finite_values = grad[finite].double()
+            finite_norm = torch.linalg.vector_norm(finite_values).item()
+            finite_sq_sum += finite_norm * finite_norm
+            max_abs = max(max_abs, float(finite_values.abs().max().item()))
+    return {
+        "finite_norm": math.sqrt(finite_sq_sum),
+        "max_abs": max_abs,
+        "total_tensors": total_tensors,
+        "nonfinite_tensors": nonfinite_tensors,
+        "nonfinite_values": nonfinite_values,
+    }
 
 
 # ── Initialization ────────────────────────────────────────────────────────────
@@ -239,6 +272,10 @@ def train_controlnet_exp(models_dict):
             # graph is always built after zero_grad(), guaranteeing that
             # optimizer_tme.step() sees non-None gradients on every step.
             grad_norm = None
+            grad_norm_ctrl = None
+            grad_norm_tme = None
+            grad_health_ctrl = None
+            grad_health_tme = None
             with accelerator.accumulate(controlnet, tme_module):
                 optimizer.zero_grad()
                 optimizer_tme.zero_grad()
@@ -280,6 +317,8 @@ def train_controlnet_exp(models_dict):
                                     _g.norm().item(),
                                     _gblock.cross_attn.proj.weight.abs().max().item(),
                                 )
+                    grad_health_ctrl = _grad_health(controlnet.parameters())
+                    grad_health_tme = _grad_health(tme_module.parameters())
                     grad_norm_ctrl = accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
                     optimizer.step()
                     lr_scheduler.step()
@@ -320,6 +359,10 @@ def train_controlnet_exp(models_dict):
                                     "step": int(global_step),
                                     "loss": float(loss.detach().item()),
                                     "grad_norm": grad_norm,
+                                    "grad_norm_ctrl": None if grad_norm_ctrl is None else float(grad_norm_ctrl),
+                                    "grad_norm_tme": None if grad_norm_tme is None else float(grad_norm_tme),
+                                    "grad_health_ctrl": grad_health_ctrl,
+                                    "grad_health_tme": grad_health_tme,
                                 }
                             )
                             + "\n"

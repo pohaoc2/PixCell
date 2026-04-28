@@ -44,8 +44,12 @@ class MultiHeadCrossAttention(nn.Module):
         # query: img tokens; key/value: condition; mask: if padding tokens
         B, N, C = x.shape
 
-        q = self.q_linear(x).view(1, -1, self.num_heads, self.head_dim)
-        kv = self.kv_linear(cond).view(1, -1, 2, self.num_heads, self.head_dim)
+        if mask is not None:
+            q = self.q_linear(x).view(1, -1, self.num_heads, self.head_dim)
+            kv = self.kv_linear(cond).view(1, -1, 2, self.num_heads, self.head_dim)
+        else:
+            q = self.q_linear(x).view(B, N, self.num_heads, self.head_dim)
+            kv = self.kv_linear(cond).view(B, -1, 2, self.num_heads, self.head_dim)
         k, v = kv.unbind(2)
         try:
             attn_bias = None
