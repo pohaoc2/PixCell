@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 
-FONT_FAMILY = "DejaVu Sans"
+FONT_FAMILY = "Nimbus Roman"
 FONT_SIZE_BASE = 12
 FONT_SIZE_TITLE = 13
 FONT_SIZE_LABEL = 12

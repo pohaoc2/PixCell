@@ -158,8 +158,8 @@ def test_section1_production_and_concat_are_dashed(tmp_path: Path):
         for line in ax.lines:
             line_styles.setdefault(line.get_label(), set()).add(line.get_linestyle())
 
-    assert "--" in line_styles["Per-ch. + Attn"]
-    assert "--" in line_styles["Concat TME"]
+    assert "--" in line_styles["Grouped TME only"]
+    assert "--" in line_styles["Concat TME encoder"]
 
 
 def test_section1_excludes_off_shelf_from_legend_and_axes(tmp_path: Path):
@@ -177,7 +177,7 @@ def test_section1_excludes_off_shelf_from_legend_and_axes(tmp_path: Path):
     for ax in fig.axes:
         labels.extend(line.get_label() for line in ax.lines)
 
-    assert "Off-the-shelf PixCell" not in labels
+    assert "Original PixCell mask-only" not in labels
 
 
 def test_read_log_carries_preceding_proj_grad(tmp_path: Path):
@@ -216,14 +216,14 @@ def test_build_section4_figure_handles_missing_data(tmp_path: Path):
     assert fig is not None
 
 
-def test_section4_filters_to_cell_state_and_microenv():
+def test_section4_uses_full_group_summary():
     from src.paper_figures.fig_si_a1_a2_unified import _section4_sensitivity
 
     filtered = _section4_sensitivity(SYNTHETIC_CACHE)
 
-    assert filtered["production"]["mean"] == pytest.approx(0.16)
-    assert filtered["a1_concat"]["mean"] == pytest.approx(0.15)
-    assert filtered["a1_per_channel"]["mean"] == pytest.approx(0.12)
+    assert filtered["production"]["mean"] == pytest.approx(0.11)
+    assert filtered["a1_concat"]["mean"] == pytest.approx(0.09)
+    assert filtered["a1_per_channel"]["mean"] == pytest.approx(0.16)
     assert filtered["a2_bypass_full_tme"]["mean"] == pytest.approx(0.0)
     assert filtered["a2_off_shelf"]["mean"] == pytest.approx(0.0)
 

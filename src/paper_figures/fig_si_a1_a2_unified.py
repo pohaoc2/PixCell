@@ -16,6 +16,7 @@ from src.paper_figures.style import (
     FONT_SIZE_ANNOTATION,
     FONT_SIZE_DENSE_LABEL,
     FONT_SIZE_LABEL,
+    FONT_SIZE_PANEL_LABEL,
     FONT_SIZE_TICK,
     FONT_SIZE_TITLE,
     apply_style,
@@ -25,16 +26,16 @@ from tools.ablation_a1_a2.log_utils import deserialise_float
 
 PRIMARY_A2_VARIANT = "a2_bypass_full_tme"
 LEGACY_A2_VARIANT = "a2_bypass"
-SECTION1_FONT_FAMILY = "DejaVu Serif"
+SECTION1_FONT_FAMILY = "Nimbus Roman"
 
 
 VARIANT_SPECS: dict[str, dict] = {
-    "production": {"label": "Per-ch. + Attn", "color": "#2e7d32", "ls": "--", "lw": 1.8, "unstable": False},
-    "a1_concat": {"label": "Concat TME", "color": "#1565c0", "ls": "--", "lw": 1.5, "unstable": False},
-    "a1_per_channel": {"label": "Per-channel TME", "color": "#e65100", "ls": "-", "lw": 1.5, "unstable": True},
-    "a2_bypass_full_tme": {"label": "Full-TME probe", "color": "#7b1fa2", "ls": "-", "lw": 1.5, "unstable": True},
-    "a2_bypass": {"label": "Bypass probe", "color": "#7b1fa2", "ls": "-", "lw": 1.5, "unstable": True},
-    "a2_off_shelf": {"label": "Off-the-shelf PixCell", "color": "#000000", "ls": "-", "lw": 1.6, "unstable": False},
+    "production": {"label": "Grouped TME only", "color": "#2e7d32", "ls": "--", "lw": 1.8, "unstable": False},
+    "a1_concat": {"label": "Concat TME encoder", "color": "#1565c0", "ls": "--", "lw": 1.5, "unstable": False},
+    "a1_per_channel": {"label": "Per-channel TME encoders", "color": "#e65100", "ls": "-", "lw": 1.5, "unstable": True},
+    "a2_bypass_full_tme": {"label": "Additive mask + TME", "color": "#7b1fa2", "ls": "-", "lw": 1.5, "unstable": True},
+    "a2_bypass": {"label": "Mask-only bypass probe", "color": "#7b1fa2", "ls": "-", "lw": 1.5, "unstable": True},
+    "a2_off_shelf": {"label": "Original PixCell mask-only", "color": "#000000", "ls": "-", "lw": 1.6, "unstable": False},
 }
 
 A1_VARIANTS = ("a1_concat", "a1_per_channel", "production")
@@ -66,7 +67,22 @@ METRIC_DIRECTIONS = {
 INSTABILITY_COLOR = "#c62828"
 INSTABILITY_ALPHA = 0.12
 _TARGET_CONTOUR_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".npy")
-SECTION4_GROUPS = ("cell_state", "microenv")
+COMPACT_VARIANT_LABELS = {
+    "production": "Grouped TME",
+    "a1_concat": "Concat enc.",
+    "a1_per_channel": "Per-ch. enc.",
+    PRIMARY_A2_VARIANT: "Mask + TME",
+    LEGACY_A2_VARIANT: "Mask-only",
+    "a2_off_shelf": "Original mask",
+}
+SENSITIVITY_VARIANT_LABELS = {
+    "production": "Grouped",
+    "a1_concat": "Concat",
+    "a1_per_channel": "Per-ch.",
+    PRIMARY_A2_VARIANT: "Mask+TME",
+    LEGACY_A2_VARIANT: "Mask-only",
+    "a2_off_shelf": "Original",
+}
 
 VARIANT_SOURCE_FALLBACKS: dict[str, tuple[str, ...]] = {
     PRIMARY_A2_VARIANT: (PRIMARY_A2_VARIANT, LEGACY_A2_VARIANT),
@@ -118,33 +134,8 @@ def _normalize_sensitivity(sensitivity: dict) -> dict[str, dict]:
     }
 
 
-def _filtered_sensitivity_summary(record: dict, groups: tuple[str, ...]) -> dict[str, object]:
-    per_group = record.get("per_group", {})
-    selected = {
-        group: dict(per_group[group])
-        for group in groups
-        if isinstance(per_group.get(group), dict)
-    }
-    if not selected:
-        return dict(record)
-
-    mean_values = np.asarray(
-        [float(group_record.get("mean", 0.0)) for group_record in selected.values()],
-        dtype=float,
-    )
-    return {
-        "mean": float(mean_values.mean()),
-        "std": float(mean_values.std()),
-        "per_group": selected,
-    }
-
-
 def _section4_sensitivity(cache: dict) -> dict[str, dict]:
-    sensitivity = _normalize_sensitivity(cache.get("sensitivity", {}))
-    return {
-        variant: _filtered_sensitivity_summary(record, SECTION4_GROUPS)
-        for variant, record in sensitivity.items()
-    }
+    return _normalize_sensitivity(cache.get("sensitivity", {}))
 
 
 def _section2_metrics(cache: dict) -> dict[str, dict]:
@@ -209,23 +200,42 @@ def _aggregate_curves(runs: dict[str, list[dict]], metric: str) -> tuple[np.ndar
 def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(13.4, 12.45), constrained_layout=False)
-    fig.subplots_adjust(left=0.095, right=0.99, top=0.985, bottom=0.045, hspace=0.25, wspace=0.18)
+    fig = plt.figure(figsize=(13.4, 10.8), constrained_layout=False)
+    fig.subplots_adjust(left=0.090, right=0.990, top=0.985, bottom=0.035)
 
-    outer = fig.add_gridspec(4, 1, height_ratios=[1.95, 1.08, 3.0, 0.85], hspace=0.18)
+    outer = fig.add_gridspec(3, 1, height_ratios=[1.78, 1.02, 3.15], hspace=0.30)
+    middle = outer[1].subgridspec(1, 2, width_ratios=[2.25, 1.0], wspace=0.16)
+
     _draw_section1_curves(fig, outer[0], cache)
-    _draw_section2_table(fig.add_subplot(outer[1]), cache)
+    _draw_section2_table(fig.add_subplot(middle[0]), cache)
+    _draw_section4_sensitivity(fig.add_subplot(middle[1]), cache)
     _draw_section3_tiles(fig, outer[2], cache, tile_dir)
-    _draw_section4_sensitivity(fig.add_subplot(outer[3]), cache)
 
+    _add_panel_label(fig, outer[0], "A")
+    _add_panel_label(fig, middle[0], "B")
+    _add_panel_label(fig, middle[1], "C", x_offset=0.026)
+    _add_panel_label(fig, outer[2], "D")
     return fig
+
+
+def _add_panel_label(fig: plt.Figure, slot, label: str, *, x_offset: float = 0.050) -> None:
+    bbox = slot.get_position(fig)
+    fig.text(
+        bbox.x0 - x_offset,
+        bbox.y1 - 0.002,
+        label,
+        ha="left",
+        va="top",
+        fontsize=FONT_SIZE_PANEL_LABEL,
+        fontweight="bold",
+    )
 
 
 def build_section1_figure(*, cache_path: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(8.8, 4.35), constrained_layout=False)
-    fig.subplots_adjust(left=0.08, right=0.995, top=0.92, bottom=0.12, wspace=0.38)
+    fig = plt.figure(figsize=(13.4, 4.35), constrained_layout=False)
+    fig.subplots_adjust(left=0.05, right=0.995, top=0.92, bottom=0.12, wspace=0.38)
     _draw_section1_curves(fig, fig.add_gridspec(1, 1)[0], cache)
     return fig
 
@@ -233,8 +243,8 @@ def build_section1_figure(*, cache_path: Path) -> plt.Figure:
 def build_section2_figure(*, cache_path: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(8.6, 2.25), constrained_layout=False)
-    fig.subplots_adjust(left=0.015, right=0.995, top=0.96, bottom=0.06)
+    fig = plt.figure(figsize=(8.9, 1.6), constrained_layout=False)
+    fig.subplots_adjust(left=0.020, right=0.990, top=0.94, bottom=0.12)
     _draw_section2_table(fig.add_subplot(111), cache)
     return fig
 
@@ -242,8 +252,8 @@ def build_section2_figure(*, cache_path: Path) -> plt.Figure:
 def build_section3_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(9.8, 4.5), constrained_layout=False)
-    fig.subplots_adjust(left=0.12, right=0.995, top=0.965, bottom=0.025)
+    fig = plt.figure(figsize=(13.4, 7.53), constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.995, top=0.965, bottom=0.010)
     _draw_section3_tiles(fig, fig.add_gridspec(1, 1)[0], cache, tile_dir)
     return fig
 
@@ -251,8 +261,8 @@ def build_section3_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
 def build_section4_figure(*, cache_path: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(4.5, 2.2), constrained_layout=False)
-    fig.subplots_adjust(left=0.22, right=0.97, top=0.88, bottom=0.22)
+    fig = plt.figure(figsize=(4.8, 2.15), constrained_layout=False)
+    fig.subplots_adjust(left=0.35, right=0.96, top=0.92, bottom=0.24)
     _draw_section4_sensitivity(fig.add_subplot(111), cache)
     return fig
 
@@ -518,9 +528,19 @@ def _fmt_params(params: dict, variant: str) -> str:
         value = params.get(candidate)
         if value is not None:
             break
+    if value is None and variant == "a2_off_shelf":
+        return "0.0M"
     if value is None:
         return "-"
     return f"{int(value) / 1e6:.1f}M"
+
+
+def _compact_variant_label(variant: str) -> str:
+    return COMPACT_VARIANT_LABELS.get(variant, VARIANT_SPECS[variant]["label"])
+
+
+def _sensitivity_variant_label(variant: str) -> str:
+    return SENSITIVITY_VARIANT_LABELS.get(variant, _compact_variant_label(variant))
 
 
 def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
@@ -530,24 +550,31 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
     metrics = _section2_metrics(cache)
     params = cache.get("params", {})
     best_by_metric = _best_metric_variants(metrics)
-    table_fs = FONT_SIZE_DENSE_LABEL
-    col_x = [0.01, 0.255, 0.375, 0.495, 0.615, 0.735, 0.855, 0.965]
+    table_fs = FONT_SIZE_TICK
+    col_x = [0.095, 0.255, 0.370, 0.485, 0.600, 0.710, 0.815, 0.950]
     headers = ["Config", *[col[0] for col in METRIC_COLS], "Params"]
+    row_order = sorted(
+        [variant for variant in TABLE_ROWS if variant in metrics or variant in VARIANT_SPECS],
+        key=lambda variant: (
+            variant == "a2_off_shelf",
+            -float(metrics.get(variant, {}).get("delta_lpips", float("-inf"))),
+        ),
+    )
 
     for x, header in zip(col_x, headers):
-        ha = "left" if header == "Config" else "center"
-        ax.text(x, 0.88, header, fontsize=table_fs, va="center", ha=ha, transform=ax.transAxes)
+        ax.text(x, 0.90, header, fontsize=table_fs, va="center", ha="center", transform=ax.transAxes)
     ax.axhline(0.97, color="black", linewidth=0.75)
-    ax.axhline(0.76, color="black", linewidth=0.45)
+    ax.axhline(0.80, color="black", linewidth=0.45)
 
     def draw_row(y: float, variant: str) -> None:
         spec = VARIANT_SPECS[variant]
         ax.text(
             col_x[0],
             y,
-            spec["label"],
+            _compact_variant_label(variant),
             fontsize=table_fs,
             va="center",
+            ha="center",
             color="black",
             transform=ax.transAxes,
         )
@@ -556,7 +583,7 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
             ax.text(
                 x,
                 y,
-                _fmt_metric_with_std(row_metrics, key, fmt),
+                _fmt_metric(row_metrics, key, fmt),
                 fontsize=table_fs - 1,
                 fontweight="bold" if variant in best_by_metric.get(key, set()) else "normal",
                 va="center",
@@ -566,16 +593,17 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
         param_text = _fmt_params(params, variant)
         ax.text(col_x[-1], y, param_text, fontsize=table_fs, va="center", ha="center", transform=ax.transAxes)
 
-    for y, variant in zip([0.70, 0.54, 0.38, 0.22, 0.08], TABLE_ROWS):
+    row_y = np.linspace(0.68, 0.12, len(row_order))
+    for y, variant in zip(row_y, row_order, strict=True):
         draw_row(y, variant)
 
-    ax.axhline(0.03, color="black", linewidth=0.75)
+    ax.axhline(0.06, color="black", linewidth=0.75)
 
 
 def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
     sensitivity = _section4_sensitivity(cache)
-    ax.set_title("Config sensitivity to TME perturbations", fontsize=FONT_SIZE_LABEL, loc="left", pad=3)
-    ax.set_xlabel("Mean ΔLPIPS for cell-state + microenv ablations ↑", fontsize=FONT_SIZE_LABEL)
+    ax.set_title("TME sensitivity", fontsize=FONT_SIZE_LABEL, loc="left", pad=3)
+    ax.set_xlabel("ΔLPIPS", fontsize=FONT_SIZE_LABEL)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.tick_params(labelsize=FONT_SIZE_TICK, width=0.7, length=3)
@@ -595,7 +623,7 @@ def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
 
     variants = [variant for variant in TABLE_ROWS if variant in sensitivity]
     variants.sort(key=lambda variant: float(sensitivity[variant].get("mean", 0.0)), reverse=True)
-    labels = [VARIANT_SPECS[variant]["label"] for variant in variants]
+    labels = [_sensitivity_variant_label(variant) for variant in variants]
     means = [float(sensitivity[variant].get("mean", 0.0)) for variant in variants]
     stds = [float(sensitivity[variant].get("std", 0.0)) for variant in variants]
     colors = [VARIANT_SPECS[variant]["color"] for variant in variants]
@@ -610,9 +638,20 @@ def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
         height=0.55,
         error_kw={"linewidth": 0.8, "capsize": 3},
     )
+    max_extent = max((mean + std for mean, std in zip(means, stds, strict=True)), default=0.0)
+    label_pad = max(0.004, max_extent * 0.03)
+    for y, mean, std in zip(y_pos, means, stds, strict=True):
+        ax.text(
+            mean + std + label_pad,
+            y,
+            f"{mean:.3f}",
+            va="center",
+            ha="left",
+            fontsize=FONT_SIZE_ANNOTATION - 1,
+        )
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels, fontsize=FONT_SIZE_TICK)
-    ax.set_xlim(left=0.0)
+    ax.set_xlim(0.0, max_extent + label_pad * 12)
     ax.grid(axis="x", color="#d9d9d9", linewidth=0.45)
     ax.invert_yaxis()
 
@@ -709,7 +748,7 @@ def _generated_tile_path(tile_dir: Path, variant: str, tile_id: str) -> Path:
 
 
 def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) -> None:
-    tile_ids = list(cache.get("tile_ids", [])[:10] or cache.get("metric_tile_ids", [])[:10])
+    tile_ids = list(cache.get("metric_tile_ids", [])[:10] or cache.get("tile_ids", [])[:10])
     if not tile_ids:
         ax = fig.add_subplot(gs_slot)
         ax.axis("off")
@@ -717,7 +756,7 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
         ax.text(0.5, 0.5, "No tile IDs in cache", ha="center", va="center", fontsize=FONT_SIZE_ANNOTATION, transform=ax.transAxes)
         return
 
-    sub = gs_slot.subgridspec(len(TILE_GRID_ORDER), len(tile_ids), wspace=0.025, hspace=0.025)
+    sub = gs_slot.subgridspec(len(TILE_GRID_ORDER), len(tile_ids), wspace=0.010, hspace=0.010)
     row_labels = {
         "gt": "Ref H&E",
         **{variant: spec["label"] for variant, spec in VARIANT_SPECS.items()},

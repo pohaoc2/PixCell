@@ -380,8 +380,8 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
             if record is not None and record.sd is not None:
                 sds[mode_key] = float(record.sd)
         if set(MODE_KEYS).issubset(raw):
-            effects["UNI effect"][metric_key] = raw["uni_plus_tme"] - raw["tme_only"]
-            effects["TME effect"][metric_key] = raw["uni_plus_tme"] - raw["uni_only"]
+            effects["UNI effect"][metric_key] = raw["uni_only"] - raw["neither"]
+            effects["TME effect"][metric_key] = raw["tme_only"] - raw["neither"]
             effects["Interaction"][metric_key] = (
                 raw["uni_plus_tme"] - raw["uni_only"] - raw["tme_only"] + raw["neither"]
             )
@@ -389,8 +389,8 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
             for n in effect_names:
                 effects[n][metric_key] = None
         if set(MODE_KEYS).issubset(sds):
-            effect_sds["UNI effect"][metric_key] = float(np.sqrt(sds["uni_plus_tme"] ** 2 + sds["tme_only"] ** 2))
-            effect_sds["TME effect"][metric_key] = float(np.sqrt(sds["uni_plus_tme"] ** 2 + sds["uni_only"] ** 2))
+            effect_sds["UNI effect"][metric_key] = float(np.sqrt(sds["uni_only"] ** 2 + sds["neither"] ** 2))
+            effect_sds["TME effect"][metric_key] = float(np.sqrt(sds["tme_only"] ** 2 + sds["neither"] ** 2))
             effect_sds["Interaction"][metric_key] = float(np.sqrt(
                 sds["uni_plus_tme"] ** 2 + sds["uni_only"] ** 2 + sds["tme_only"] ** 2 + sds["neither"] ** 2
             ))
