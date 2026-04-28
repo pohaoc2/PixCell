@@ -25,7 +25,7 @@ class _ChannelBlock(nn.Module):
         self.encoder = TMEEncoder(1, base_ch, latent_ch)
         self.norm_kv = nn.LayerNorm(latent_ch)
         self.cross_attn = CrossAttentionWithWeights(d_model=latent_ch, num_heads=num_heads)
-        nn.init.normal_(self.cross_attn.proj.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.cross_attn.proj.weight)
         nn.init.zeros_(self.cross_attn.proj.bias)
 
     def forward(self, q_tokens, channel_input, return_attn_weights=False):

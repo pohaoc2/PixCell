@@ -6,7 +6,7 @@ Each channel group (cell_types, cell_state, vasculature, microenv) gets:
   2. Its own CrossAttentionWithWeights: Q=mask_latent, KV=group_latent → Δ_group
 
 Fusion: fused = mask_latent + Σ(Δ_group) for all active groups.
-Output projections use small normal init (std=0.02) to avoid gradient death with large datasets.
+Output projection is zero-init so fusion is identity at step 0.
 """
 from __future__ import annotations
 import torch
@@ -58,7 +58,7 @@ class _GroupBlock(nn.Module):
         self.encoder = TMEEncoder(n_channels, base_ch, latent_ch)
         self.norm_kv = nn.LayerNorm(latent_ch)
         self.cross_attn = CrossAttentionWithWeights(d_model=latent_ch, num_heads=num_heads)
-        nn.init.normal_(self.cross_attn.proj.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.cross_attn.proj.weight)
         nn.init.zeros_(self.cross_attn.proj.bias)
 
     def forward(self, q_tokens, tme_input, return_attn_weights=False, return_probe=False):

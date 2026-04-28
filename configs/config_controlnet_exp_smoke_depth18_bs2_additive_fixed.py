@@ -9,6 +9,8 @@ num_workers = 0
 log_interval = 1
 save_model_steps = 100000
 save_model_epochs = 1000
+save_final_checkpoint = False
+debug_tme_probe = True
 
 max_train_samples = 10
 data = dict(max_train_samples=10)

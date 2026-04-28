@@ -464,7 +464,9 @@ def train_controlnet_exp(models_dict):
                 logger.info(f"Reached max steps ({total_steps}). Stopping.")
                 break
 
-        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
+        if getattr(config, "save_final_checkpoint", True) and (
+            epoch % config.save_model_epochs == 0 or epoch == config.num_epochs
+        ):
             save_checkpoint_with_tme(
                 accelerator, controlnet, tme_module, model_ema,
                 optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,

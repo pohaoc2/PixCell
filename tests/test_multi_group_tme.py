@@ -39,17 +39,21 @@ class TestMultiGroupTMEModule(unittest.TestCase):
         out = module(mask_latent, tme_dict)
         self.assertEqual(out.shape, (2, 16, 32, 32))
 
-    def test_small_init_nonzero_residuals(self):
-        # proj uses small normal init (std=0.02) — residuals should be non-zero
+    def test_zero_init_residuals_preserve_identity(self):
+        # proj is zero-initialized so TME fusion is identity at step 0.
         module = _make_module()
         mask_latent, tme_dict = _make_inputs()
         with torch.no_grad():
             out, residuals = module(mask_latent, tme_dict, return_residuals=True)
         for name, delta in residuals.items():
-            self.assertFalse(
-                torch.allclose(delta, torch.zeros_like(delta), atol=1e-6),
-                msg=f"group '{name}' residual is unexpectedly zero — proj may have reverted to zero-init",
+            torch.testing.assert_close(
+                delta,
+                torch.zeros_like(delta),
+                atol=1e-6,
+                rtol=1e-6,
+                msg=f"group '{name}' residual should be zero at init",
             )
+        torch.testing.assert_close(out, mask_latent, atol=1e-6, rtol=1e-6)
 
     def test_active_groups_subset(self):
         module = _make_module()

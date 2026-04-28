@@ -62,6 +62,7 @@ class TMEInputNormalizer(nn.Module):
         centered = continuous - mean
         scale = centered.abs().amax(dim=(2, 3), keepdim=True).clamp_min(self.eps)
         std = (centered / scale).std(dim=(2, 3), keepdim=True, unbiased=False) * scale
+        std = std.clamp_min(scale * 1e-3)
         normalized = (centered / (std + self.eps)).to(dtype=x.dtype)
 
         out = x.clone()
@@ -74,9 +75,9 @@ class ResBlock(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(ch, ch, 3, padding=1, bias=False),
-            nn.GroupNorm(8, ch), nn.SiLU(),
+            nn.GroupNorm(8, ch, eps=1e-3), nn.SiLU(),
             nn.Conv2d(ch, ch, 3, padding=1, bias=False),
-            nn.GroupNorm(8, ch),
+            nn.GroupNorm(8, ch, eps=1e-3),
         )
         self.act = nn.SiLU()
 
@@ -88,7 +89,7 @@ class DownBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         self.down = nn.Conv2d(in_ch, out_ch, 3, stride=2, padding=1, bias=False)
-        self.norm = nn.GroupNorm(8, out_ch)
+        self.norm = nn.GroupNorm(8, out_ch, eps=1e-3)
         self.act  = nn.SiLU()
         self.res  = ResBlock(out_ch)
 
@@ -117,7 +118,7 @@ class TMEEncoder(nn.Module):
         c1, c2, c3 = base_ch, base_ch * 2, base_ch * 4
         self.stem  = nn.Sequential(
             nn.Conv2d(n_tme_channels, c1, 3, padding=1, bias=False),
-            nn.GroupNorm(8, c1), nn.SiLU(),
+            nn.GroupNorm(8, c1, eps=1e-3), nn.SiLU(),
         )
         self.down1 = DownBlock(c1, c2)    # 256 → 128
         self.res1  = ResBlock(c2)
