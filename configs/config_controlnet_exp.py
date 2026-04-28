@@ -116,6 +116,7 @@ num_epochs                  = 20
 gradient_accumulation_steps = 1
 grad_checkpointing          = True
 gradient_clip               = 1.0
+debug_tme_probe             = False
 
 optimizer = dict(
     type='AdamW',

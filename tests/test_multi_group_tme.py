@@ -5,10 +5,18 @@ import torch
 def _make_module():
     from diffusion.model.nets.multi_group_tme import MultiGroupTMEModule
     channel_groups = [
-        dict(name="cell_types", n_channels=3),
-        dict(name="cell_state", n_channels=3),
-        dict(name="vasculature", n_channels=1),
-        dict(name="microenv", n_channels=2),
+        dict(
+            name="cell_types",
+            n_channels=3,
+            channels=["cell_type_healthy", "cell_type_cancer", "cell_type_immune"],
+        ),
+        dict(
+            name="cell_state",
+            n_channels=3,
+            channels=["cell_state_prolif", "cell_state_nonprolif", "cell_state_dead"],
+        ),
+        dict(name="vasculature", n_channels=1, channels=["vasculature"]),
+        dict(name="microenv", n_channels=2, channels=["oxygen", "glucose"]),
     ]
     return MultiGroupTMEModule(channel_groups=channel_groups, base_ch=32, latent_ch=16, num_heads=4)
 
@@ -80,6 +88,28 @@ class TestMultiGroupTMEModule(unittest.TestCase):
         partial_dict = {"cell_types": torch.randn(2, 3, 256, 256)}
         out = module(mask_latent, partial_dict)
         self.assertEqual(out.shape, (2, 16, 32, 32))
+
+    def test_extreme_continuous_scale_keeps_post_stem_bounded(self):
+        module = _make_module()
+        module.eval()
+        mask_latent, tme_dict = _make_inputs()
+        tme_dict["microenv"][:, 0:1] = torch.randn_like(tme_dict["microenv"][:, 0:1]) * 1.0e6
+
+        activations = {}
+
+        def capture_post_stem(_module, _inputs, output):
+            activations["post_stem"] = output.detach()
+
+        handle = module.groups["microenv"].encoder.stem.register_forward_hook(capture_post_stem)
+        try:
+            with torch.no_grad():
+                module(mask_latent, tme_dict, active_groups={"microenv"})
+        finally:
+            handle.remove()
+
+        post_stem = activations["post_stem"]
+        self.assertTrue(torch.isfinite(post_stem).all())
+        self.assertLess(float(post_stem.abs().max().item()), 1.0e3)
 
     def test_n_params(self):
         module = _make_module()

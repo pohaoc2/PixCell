@@ -61,7 +61,21 @@ class MultiHeadCrossAttention(nn.Module):
             q_ = q.transpose(1, 2)  # [B, heads, seq, head_dim]
             k_ = k.transpose(1, 2)
             v_ = v.transpose(1, 2)
-            x = F.scaled_dot_product_attention(q_, k_, v_, dropout_p=0.0)
+            attn_mask = None
+            if mask is not None:
+                q_lens = [N] * B
+                kv_lens = [int(length) for length in mask]
+                attn_mask = torch.zeros(
+                    sum(q_lens), sum(kv_lens), device=q.device, dtype=torch.bool
+                )
+                q_start = 0
+                kv_start = 0
+                for q_len, kv_len in zip(q_lens, kv_lens):
+                    attn_mask[q_start:q_start + q_len, kv_start:kv_start + kv_len] = True
+                    q_start += q_len
+                    kv_start += kv_len
+                attn_mask = attn_mask.view(1, 1, sum(q_lens), sum(kv_lens))
+            x = F.scaled_dot_product_attention(q_, k_, v_, attn_mask=attn_mask, dropout_p=0.0)
             x = x.transpose(1, 2)
         x = x.reshape(B, -1, C)
         x = self.proj(x)

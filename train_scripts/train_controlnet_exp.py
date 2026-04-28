@@ -57,13 +57,18 @@ def _conditioning_mode(config) -> str:
     return "non_mask_channels"
 
 
-def _grad_health(parameters) -> dict[str, float | int]:
+def _grad_health(parameters, top_k: int = 0) -> dict[str, float | int]:
     finite_sq_sum = 0.0
     max_abs = 0.0
     total_tensors = 0
     nonfinite_tensors = 0
     nonfinite_values = 0
-    for param in parameters:
+    top_tensors = []
+    for item in parameters:
+        if isinstance(item, tuple):
+            name, param = item
+        else:
+            name, param = None, item
         grad = param.grad
         if grad is None:
             continue
@@ -79,14 +84,59 @@ def _grad_health(parameters) -> dict[str, float | int]:
             finite_values = grad[finite].double()
             finite_norm = torch.linalg.vector_norm(finite_values).item()
             finite_sq_sum += finite_norm * finite_norm
-            max_abs = max(max_abs, float(finite_values.abs().max().item()))
-    return {
+            tensor_max_abs = float(finite_values.abs().max().item())
+            max_abs = max(max_abs, tensor_max_abs)
+            if top_k and name is not None:
+                top_tensors.append(
+                    {
+                        "name": name,
+                        "finite_norm": finite_norm,
+                        "max_abs": tensor_max_abs,
+                    }
+                )
+    stats = {
         "finite_norm": math.sqrt(finite_sq_sum),
         "max_abs": max_abs,
         "total_tensors": total_tensors,
         "nonfinite_tensors": nonfinite_tensors,
         "nonfinite_values": nonfinite_values,
     }
+    if top_k:
+        stats["top_tensors"] = sorted(
+            top_tensors, key=lambda item: item["max_abs"], reverse=True
+        )[:top_k]
+    return stats
+
+
+def _safe_clip_grad_norm_(parameters, max_norm: float, eps: float = 1e-6) -> float:
+    """Clip gradients using a float64 norm so large finite grads do not overflow."""
+    params = [p for p in parameters if p.grad is not None]
+    finite_sq_sum = 0.0
+    for param in params:
+        grad = param.grad.detach()
+        finite = torch.isfinite(grad)
+        if not bool(finite.all().item()):
+            grad[~finite] = 0
+        if bool(finite.any().item()):
+            finite_values = grad[finite].double()
+            finite_norm = torch.linalg.vector_norm(finite_values).item()
+            finite_sq_sum += finite_norm * finite_norm
+
+    total_norm = math.sqrt(finite_sq_sum)
+    if total_norm > max_norm:
+        clip_coef = max_norm / (total_norm + eps)
+        for param in params:
+            param.grad.detach().mul_(clip_coef)
+    return total_norm
+
+
+def _unscale_gradients_if_available(accelerator) -> bool:
+    """Unscale all prepared optimizer gradients once before manual clipping."""
+    unscale = getattr(accelerator, "unscale_gradients", None)
+    if unscale is None:
+        return False
+    unscale()
+    return True
 
 
 # ── Initialization ────────────────────────────────────────────────────────────
@@ -190,6 +240,7 @@ def train_controlnet_exp(models_dict):
     logger.info("Starting ControlNet + TME Fine-tuning (paired experimental data)")
     logger.info(f"cfg_dropout_prob={cfg_dropout_prob}  channel_weights={channel_weights}")
     logger.info(f"start_epoch={start_epoch}  start_step={start_step}  total_steps={total_steps}")
+    logger.info(f"debug_tme_probe={getattr(config, 'debug_tme_probe', False)}")
     logger.info("=" * 80)
 
     train_log_fh = None
@@ -200,6 +251,7 @@ def train_controlnet_exp(models_dict):
 
     _proj_grad_norms: dict = {}
     _tme_residuals:   dict = {}
+    debug_tme_probe_pending = bool(getattr(config, "debug_tme_probe", False))
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         for step, batch in enumerate(train_dataloader):
             if step < skip_step:
@@ -279,6 +331,11 @@ def train_controlnet_exp(models_dict):
             with accelerator.accumulate(controlnet, tme_module):
                 optimizer.zero_grad()
                 optimizer_tme.zero_grad()
+                if debug_tme_probe_pending and accelerator.is_main_process:
+                    probe_target = accelerator.unwrap_model(tme_module)
+                    if hasattr(probe_target, "enable_debug_tme_probe"):
+                        probe_target.enable_debug_tme_probe(logger)
+                    debug_tme_probe_pending = False
 
                 if conditioning_mode == "grouped":
                     fused, _tme_residuals = tme_module(
@@ -308,6 +365,7 @@ def train_controlnet_exp(models_dict):
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
+                    gradients_unscaled = _unscale_gradients_if_available(accelerator)
                     _proj_grad_norms = {}
                     if conditioning_mode == "grouped":
                         for _gname, _gblock in accelerator.unwrap_model(tme_module).groups.items():
@@ -318,11 +376,20 @@ def train_controlnet_exp(models_dict):
                                     _gblock.cross_attn.proj.weight.abs().max().item(),
                                 )
                     grad_health_ctrl = _grad_health(controlnet.parameters())
-                    grad_health_tme = _grad_health(tme_module.parameters())
-                    grad_norm_ctrl = accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
+                    grad_health_tme = _grad_health(tme_module.named_parameters(), top_k=8)
+                    if gradients_unscaled:
+                        grad_norm_ctrl = torch.nn.utils.clip_grad_norm_(
+                            controlnet.parameters(), config.gradient_clip
+                        )
+                    else:
+                        grad_norm_ctrl = accelerator.clip_grad_norm_(
+                            controlnet.parameters(), config.gradient_clip
+                        )
                     optimizer.step()
                     lr_scheduler.step()
-                    grad_norm_tme = accelerator.clip_grad_norm_(tme_module.parameters(), config.gradient_clip)
+                    grad_norm_tme = _safe_clip_grad_norm_(
+                        tme_module.parameters(), config.gradient_clip
+                    )
                     optimizer_tme.step()
                     lr_scheduler_tme.step()
                     grad_norm = max(float(grad_norm_ctrl), float(grad_norm_tme))

@@ -327,3 +327,15 @@ def test_grad_health_counts_nonfinite_values():
     assert stats["nonfinite_values"] == 2
     assert stats["max_abs"] == pytest.approx(4.0)
     assert stats["finite_norm"] == pytest.approx((3.0**2 + 4.0**2 + 1.0**2) ** 0.5)
+
+
+def test_safe_clip_grad_norm_handles_large_finite_values():
+    from train_scripts.train_controlnet_exp import _safe_clip_grad_norm_
+
+    param = torch.nn.Parameter(torch.zeros(2))
+    param.grad = torch.tensor([1.0e30, -1.0e30])
+
+    norm = _safe_clip_grad_norm_([param], max_norm=1.0)
+
+    assert norm == pytest.approx((2.0 ** 0.5) * 1.0e30)
+    assert torch.linalg.vector_norm(param.grad.float()).item() == pytest.approx(1.0)
