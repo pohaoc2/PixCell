@@ -18,10 +18,11 @@
 *.hdf5
 *.log
 *.geojson
-pretrained_models/
+pretrained_models
 checkpoints/
 __pycache__/
 *.html
+data/
 
 # Editors
 .vscode/
