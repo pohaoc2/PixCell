@@ -1,74 +1,291 @@
-# Handover — TME Gradient Explosion Debug
+# Handover — Debug Compare 500 / CellViT Refresh
 
 ## TL;DR
 
-ControlNet + TME training was producing `Infinity` grad norms on depth=18 smoke runs. After an initial "safe clip" patch the `Infinity` was gone but TME pre-clip grad norm was still ~1e31, dominated by `stem.1.bias` (GroupNorm bias right after the first Conv). With clip coef ≈ 1e-31 the TME branch was effectively receiving zero update — symptom hidden, root cause unfixed.
+The compare_500 debug pipeline is now back in a consistent post-CellViT state.
 
-This change adds **input normalization** for continuous TME channels and fixes **AMP unscale ordering** so clipping is no longer the only thing keeping training stable.
+- All 5 compare_500 variants were rendered for the same 500 metric tiles.
+- A flat CellViT export was created and zipped.
+- External CellViT results were imported back into the compare_500 tile cache.
+- Summary metrics were recomputed into `inference_output/debug_compare_500/cache.json`.
+- Unified and split figure outputs were regenerated under `figures/pngs_updated/`.
 
-## What changed
+This handoff is about the debug comparison workflow, not the earlier TME gradient-explosion investigation.
 
-| File | Change |
-|---|---|
-| `diffusion/model/nets/tme_encoder.py` | New `TMEInputNormalizer` (scale-invariant per-sample, per-channel standardization). `TMEEncoder.forward` can return intermediate activations for probe. |
-| `diffusion/model/nets/multi_group_tme.py` | Pipe per-group `channels` names → continuous-channel indices → `TMEInputNormalizer` inside each `_GroupBlock`. Debug probe hook (`enable_debug_tme_probe`). |
-| `diffusion/model/nets/per_channel_tme.py` | Same normalization pattern per channel. |
-| `train_scripts/train_controlnet_exp.py` | `_unscale_gradients_if_available` runs before manual clip (correct AMP ordering). `_grad_health` now accepts `named_parameters` + `top_k` for offender attribution. `_safe_clip_grad_norm_` used for TME params. Debug probe wired to `config.debug_tme_probe`. |
-| `configs/config_controlnet_exp.py` | New flag: `debug_tme_probe = False`. |
-| `tests/test_multi_group_tme.py` | New test: extreme `oxygen × 1e6` → post-stem activations stay finite and `< 1e3`. |
-| `tests/test_train_controlnet_exp.py` | New test: `_safe_clip_grad_norm_` correctly clips 1e30 gradients to unit norm. |
+## What this compare_500 batch contains
 
-## Normalization design
+The standard debug comparison now covers these 5 variants over 500 tiles:
 
-Per-sample, per-channel standardization (InstanceNorm-like) inside the model, **not** in the dataset — so `stage3_inference.py` keeps working unchanged.
+- `production`
+- `a1_concat`
+- `a1_per_channel`
+- `a2_bypass_full_tme`
+- `a2_off_shelf`
 
-Mechanism (`TMEInputNormalizer.forward`):
+Ground-truth H&E tiles are also present under `inference_output/debug_compare_500/tiles/gt`, but they are not part of the CellViT export batch.
 
-1. Center: `centered = x - mean(H,W)`
-2. Rescale-then-std (overflow-safe): divide by `max(|centered|)` before computing std, multiply std back. Avoids fp16/fp32 overflow when input range is ~1e6.
-3. Normalize: `(centered) / (std + eps)`.
+## Important distinction: compare_500 vs full15 concat
 
-Applied only to continuous channels: `{vasculature, oxygen, glucose}`. Binary channels (`cell_masks`, 3 cell-type maps, 3 cell-state maps) pass through untouched.
+Two different downstream pipelines exist under `inference_output/debug_compare_500/`:
 
-## AMP / clip ordering
+1. Standard compare_500 debug batch
+   - Location: `inference_output/debug_compare_500/tiles/`
+   - Variants: the 5 standard debug variants above
+   - Import/export helpers: `tools/ablation_a1_a2/metrics_io.py`
+   - Figure builder: `src/paper_figures/fig_si_a1_a2_unified.py`
 
-Previously `accelerator.clip_grad_norm_` and the manual `_safe_clip_grad_norm_` could run on **scaled** gradients. Now `_unscale_gradients_if_available(accelerator)` is called once on `sync_gradients` before any clip. Reported grad-norm logs are now in true (post-unscale) units.
+2. Full15 concat ablation batch
+   - Location: `inference_output/debug_compare_500/a1_concat_full_ablation/`
+   - Scope: 15 condition combinations for concat only
+   - Import/export helpers: `tools/cellvit/import_results.py`, `tools/cellvit/export_batch.py`
+   - Metrics helper: `tools/compute_ablation_metrics.py`
 
-## Verification
+The user-provided `all_variants` CellViT run belongs to the standard compare_500 debug batch, not the full15 concat ablation batch.
 
-Unit tests (run in `pixcell` conda env):
+## Completed work
+
+### 1. Generated missing compare_500 variants
+
+Previously only `production` and `a1_concat` were present. The following were added to complete the 5-way compare set:
+
+- `a1_per_channel`
+- `a2_bypass_full_tme`
+- `a2_off_shelf`
+
+For `a2_off_shelf`, prior generated H&E was reused where tile IDs overlapped because the off-shelf model weights were unchanged:
+
+- Reused from earlier debug outputs: 300 / 500 tiles
+- Newly generated remainder: 200 / 500 tiles
+
+Final tile coverage is complete for all variants:
+
+- `production`: 500 PNGs
+- `a1_concat`: 500 PNGs
+- `a1_per_channel`: 500 PNGs
+- `a2_bypass_full_tme`: 500 PNGs
+- `a2_off_shelf`: 500 PNGs
+
+### 2. Exported the all-variant CellViT batch
+
+Export location:
+
+- Folder: `inference_output/debug_compare_500/cellvit_all_variants/`
+- Images: `inference_output/debug_compare_500/cellvit_all_variants/images/`
+- Manifest: `inference_output/debug_compare_500/cellvit_all_variants/manifest.json`
+- Zip: `inference_output/debug_compare_500/cellvit_all_variants.zip`
+
+Verified export counts:
+
+- 2500 PNGs total
+- Expected shape: `5 variants x 500 tiles = 2500`
+
+### 3. Consumed external CellViT results
+
+User-provided results were found under:
+
+- `inference_output/debug_compare_500/all_variants/cellvit/`
+
+Matching manifest:
+
+- `inference_output/debug_compare_500/all_variants/cellvit_all_variants/manifest.json`
+
+Validation before import:
+
+- `2500` JSON files found
+- `2500` manifest entries found
+- `0` missing filenames after manifest/result-name comparison
+
+Import step used the standard compare_500 importer in `tools/ablation_a1_a2/metrics_io.py`.
+
+Import report written to:
+
+- `inference_output/debug_compare_500/all_variants/cellvit_all_variants/import_report.json`
+
+### 4. Verified imported CellViT sidecars
+
+After import, every compare_500 variant has full sidecar coverage:
+
+- `production`: 500 sidecars
+- `a1_concat`: 500 sidecars
+- `a1_per_channel`: 500 sidecars
+- `a2_bypass_full_tme`: 500 sidecars
+- `a2_off_shelf`: 500 sidecars
+
+Sidecar naming is the standard:
+
+- `<tile_id>_cellvit_instances.json`
+
+These live beside the generated PNGs in each variant directory under:
+
+- `inference_output/debug_compare_500/tiles/<variant>/`
+
+### 5. Recomputed compare_500 summary metrics
+
+Summary metrics were recomputed with:
 
 ```bash
-conda activate pixcell
-python -m pytest tests/test_multi_group_tme.py \
-                 tests/test_train_controlnet_exp.py \
-                 tests/test_paired_exp_dataset.py \
-                 tests/test_channel_group_utils.py -q
+python -m tools.ablation_a1_a2.metrics_io compute \
+       --cache-dir inference_output/debug_compare_500 \
+       --orion-root data/orion-crc33 \
+       --device cuda \
+       --variants production a1_concat a1_per_channel a2_bypass_full_tme a2_off_shelf
 ```
 
-All 42 pass locally.
+Important note:
 
-GPU smoke (recommended next step — disk was full so not run by Claude):
+- This path uses imported `*_cellvit_instances.json` sidecars.
+- It does not rerun CellViT.
+
+Updated summary now lives in:
+
+- `inference_output/debug_compare_500/cache.json`
+
+## Final metric summary
+
+### production
+
+- `n_tiles`: 500
+- `fud`: 171.87160145288192
+- `dice`: 0.8975547679383322
+- `pq`: 0.7906668635006808
+- `lpips`: 0.34848187780380246
+- `style_hed`: 0.03926316789241031
+
+### a1_concat
+
+- `n_tiles`: 500
+- `fud`: 161.64002588165343
+- `dice`: 0.898415829513277
+- `pq`: 0.7934131734309054
+- `lpips`: 0.3166726744472981
+- `style_hed`: 0.034889157695458375
+
+### a1_per_channel
+
+- `n_tiles`: 500
+- `fud`: 195.83224800839898
+- `dice`: 0.6156159898251067
+- `pq`: 0.4260592438379538
+- `lpips`: 0.40702725905179976
+- `style_hed`: 0.09882909470437808
+
+### a2_bypass_full_tme
+
+- `n_tiles`: 500
+- `fud`: 171.3847321450176
+- `dice`: 0.8987132091882496
+- `pq`: 0.7947529087128214
+- `lpips`: 0.34821229112148283
+- `style_hed`: 0.03911856083868174
+
+### a2_off_shelf
+
+- `n_tiles`: 500
+- `fud`: 214.7971599479886
+- `dice`: 0.8625126287956607
+- `pq`: 0.7007343693446132
+- `lpips`: 0.35224138030409813
+- `style_hed`: 0.34373103087246376
+
+## Figure outputs regenerated
+
+The compare_500 cache was rendered with:
 
 ```bash
-# Free space first if needed (smoke checkpoints are large).
-# Then enable the probe one time to confirm input ranges:
-#   set debug_tme_probe = True in the smoke config
-python train_scripts/train_controlnet_exp.py \
-       --config configs/config_controlnet_exp_smoke_depth18_bs2_grouped_fixed.py
+python -m src.paper_figures.fig_si_a1_a2_unified \
+       --cache-dir inference_output/debug_compare_500 \
+       --out figures/pngs_updated/SI_A1_A2_unified.png
 ```
 
-**Pass criterion:** TME `max finite grad norm < 1e3` across all four variants (concat, additive, grouped, per-channel) at depth=18, bs=2, max_train_samples=10. Compare against prior baseline (~1e31).
+Outputs created:
 
-After confirmation, set `debug_tme_probe = False` (default) — probe logs are first-step only but should not be left enabled in long runs.
+- `figures/pngs_updated/SI_A1_A2_unified.png`
+- `figures/pngs_updated/SI_A1_A2_section1_curves.png`
+- `figures/pngs_updated/SI_A1_A2_section2_metrics.png`
+- `figures/pngs_updated/SI_A1_A2_section3_tiles.png`
+- `figures/pngs_updated/SI_A1_A2_section4_sensitivity.png`
 
-## Known caveats / follow-ups
+Verified nonzero file sizes:
 
-- **GroupNorm in TME stem unchanged.** If grad norm is still elevated after step-1 normalization, consider swapping `nn.GroupNorm(8, c1)` → `nn.InstanceNorm2d(c1, affine=True)` in `tme_encoder.py:75`. Sparse channels (vasculature) violate GroupNorm's within-group stationarity assumption.
-- **TME LR warmup not added.** Optional follow-up: linear 0→`tme_lr` warmup over first ~500 steps so zero-init projections receive sane updates.
-- **Panic-skip on extreme grad.** Optional safety net: if pre-clip TME norm > 1e6, skip optimizer step + log instead of clipping. Prevents silent dead-update mode.
-- **Default-fallback indices.** When `channel_names` is not provided to `_GroupBlock`, `_default_continuous_indices(group_name, n)` treats all channels of `vasculature` and `microenv` groups as continuous. Existing configs do pass `channels`, so this is only a safety net.
-- **Disk full.** Project disk full at handover from accumulated smoke checkpoints. Not deleted; clear under `output/` before next training run.
+- Unified: `13133248`
+- Section 1: `388980`
+- Section 2: `197993`
+- Section 3: `11262282`
+- Section 4: `43752`
+
+## Current known-good artifact paths
+
+### Compare_500 cache and tiles
+
+- `inference_output/debug_compare_500/cache.json`
+- `inference_output/debug_compare_500/metric_tile_ids.txt`
+- `inference_output/debug_compare_500/tiles/production/`
+- `inference_output/debug_compare_500/tiles/a1_concat/`
+- `inference_output/debug_compare_500/tiles/a1_per_channel/`
+- `inference_output/debug_compare_500/tiles/a2_bypass_full_tme/`
+- `inference_output/debug_compare_500/tiles/a2_off_shelf/`
+- `inference_output/debug_compare_500/tiles/gt/`
+
+### Standard compare_500 CellViT export/import artifacts
+
+- Export folder: `inference_output/debug_compare_500/cellvit_all_variants/`
+- Export zip: `inference_output/debug_compare_500/cellvit_all_variants.zip`
+- User-provided result folder: `inference_output/debug_compare_500/all_variants/cellvit/`
+- Matching manifest: `inference_output/debug_compare_500/all_variants/cellvit_all_variants/manifest.json`
+- Import report: `inference_output/debug_compare_500/all_variants/cellvit_all_variants/import_report.json`
+
+### Full15 concat ablation artifacts
+
+These are separate and remain valid:
+
+- `inference_output/debug_compare_500/a1_concat_full_ablation/`
+- `inference_output/debug_compare_500/cellvit_full15_concat/manifest.json`
+- `inference_output/debug_compare_500/cellvit_full15_concat.zip`
+
+## Repro / maintenance commands
+
+### Re-import all-variant CellViT results
+
+```bash
+python -m tools.ablation_a1_a2.metrics_io import-cellvit \
+       --manifest inference_output/debug_compare_500/all_variants/cellvit_all_variants/manifest.json \
+       --results-dir inference_output/debug_compare_500/all_variants/cellvit
+```
+
+### Recompute compare_500 metrics
+
+```bash
+python -m tools.ablation_a1_a2.metrics_io compute \
+       --cache-dir inference_output/debug_compare_500 \
+       --orion-root data/orion-crc33 \
+       --device cuda \
+       --variants production a1_concat a1_per_channel a2_bypass_full_tme a2_off_shelf
+```
+
+### Rebuild the unified and split figures
+
+```bash
+python -m src.paper_figures.fig_si_a1_a2_unified \
+       --cache-dir inference_output/debug_compare_500 \
+       --out figures/pngs_updated/SI_A1_A2_unified.png
+```
+
+## Practical notes for the next person
+
+- The user-reported `all_variants` path was one level above the actual raw CellViT JSON directory. The JSONs were under `all_variants/cellvit/`, not directly under `all_variants/`.
+- The all-variant manifest used for import was nested under `all_variants/cellvit_all_variants/manifest.json`.
+- `metrics_io.compute` is slow and mostly silent after model setup. It can sit for several minutes with no new terminal text while still using the GPU actively.
+- For `a2_off_shelf`, reuse of prior generated H&E is valid when tile IDs overlap, because the off-shelf model weights were unchanged.
+- The compare_500 standard batch and the concat full15 ablation batch are separate. Do not import one batch into the other cache tree.
+
+## If new CellViT results arrive later
+
+1. Identify which pipeline they belong to:
+   - standard compare_500 debug batch, or
+   - full15 concat ablation batch
+2. Match them against the correct manifest before importing.
+3. For standard compare_500, use `tools.ablation_a1_a2.metrics_io.py`.
+4. For full15 concat ablation, use `tools/cellvit/import_results.py` and `tools/compute_ablation_metrics.py`.
 
 ## Files / configs of interest
 

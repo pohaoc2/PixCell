@@ -35,7 +35,7 @@ VARIANT_SPECS: dict[str, dict] = {
     "a1_per_channel": {"label": "Per-channel TME encoders", "color": "#e65100", "ls": "-", "lw": 1.5, "unstable": True},
     "a2_bypass_full_tme": {"label": "Additive mask + TME", "color": "#7b1fa2", "ls": "-", "lw": 1.5, "unstable": True},
     "a2_bypass": {"label": "Mask-only bypass probe", "color": "#7b1fa2", "ls": "-", "lw": 1.5, "unstable": True},
-    "a2_off_shelf": {"label": "Original PixCell mask-only", "color": "#000000", "ls": "-", "lw": 1.6, "unstable": False},
+    "a2_off_shelf": {"label": "Vanilla PixCell ControlNet", "color": "#000000", "ls": "-", "lw": 1.6, "unstable": False},
 }
 
 A1_VARIANTS = ("a1_concat", "a1_per_channel", "production")
@@ -74,7 +74,7 @@ COMPACT_VARIANT_LABELS = {
     "a1_per_channel": "Per-ch. enc.",
     PRIMARY_A2_VARIANT: "Mask + TME",
     LEGACY_A2_VARIANT: "Mask-only",
-    "a2_off_shelf": "Original mask",
+    "a2_off_shelf": "Vanilla PixCell",
 }
 SENSITIVITY_VARIANT_LABELS = {
     "production": "Grouped",
@@ -82,7 +82,7 @@ SENSITIVITY_VARIANT_LABELS = {
     "a1_per_channel": "Per-ch.",
     PRIMARY_A2_VARIANT: "Mask+TME",
     LEGACY_A2_VARIANT: "Mask-only",
-    "a2_off_shelf": "Original",
+    "a2_off_shelf": "Vanilla",
 }
 
 VARIANT_SOURCE_FALLBACKS: dict[str, tuple[str, ...]] = {
