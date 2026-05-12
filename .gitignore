@@ -13,6 +13,7 @@
 *.json
 *.zip
 *.npy
+*.npz
 *.svs
 *.pyc
 *.hdf5
@@ -129,3 +130,4 @@ dmypy.json
 # https://gist.github.com/GhostofGoes/94580e76cd251972b15b4821c8a06f59
 .worktrees/
 inference_output/
+src/a4_uni_probe/out/
