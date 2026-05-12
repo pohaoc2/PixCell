@@ -201,19 +201,21 @@ def _aggregate_curves(runs: dict[str, list[dict]], metric: str) -> tuple[np.ndar
 def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(13.9, 10.2), constrained_layout=False)
-    fig.subplots_adjust(left=0.045, right=0.990, top=0.965, bottom=0.020)
+    fig = plt.figure(figsize=(13.9, 13.7), constrained_layout=False)
+    fig.subplots_adjust(left=0.045, right=0.990, top=0.975, bottom=0.015)
 
-    outer = fig.add_gridspec(2, 1, height_ratios=[0.92, 5.75], hspace=0.11)
-    middle = outer[0].subgridspec(1, 2, width_ratios=[3.95, 0.95], wspace=0.14)
+    outer = fig.add_gridspec(3, 1, height_ratios=[2.1, 0.92, 5.75], hspace=0.12)
+    middle = outer[1].subgridspec(1, 2, width_ratios=[3.95, 0.95], wspace=0.14)
 
+    _draw_section1_curves(fig, outer[0], cache)
     _draw_section2_table(fig.add_subplot(middle[0]), cache)
     _draw_section4_sensitivity(fig.add_subplot(middle[1]), cache)
-    _draw_section3_tiles(fig, outer[1], cache, tile_dir)
+    _draw_section3_tiles(fig, outer[2], cache, tile_dir)
 
-    _add_panel_label(fig, middle[0], "A", x_offset=0.028, y_offset=-0.020)
-    _add_panel_label(fig, middle[1], "B", x_offset=0.034, y_offset=-0.020)
-    _add_panel_label(fig, outer[1], "C", x_offset=0.028)
+    _add_panel_label(fig, outer[0], "A", x_offset=0.028, y_offset=-0.010)
+    _add_panel_label(fig, middle[0], "B", x_offset=0.028, y_offset=-0.020)
+    _add_panel_label(fig, middle[1], "C", x_offset=0.034, y_offset=-0.020)
+    _add_panel_label(fig, outer[2], "D", x_offset=0.028)
     return fig
 
 
@@ -579,10 +581,11 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
         )
         row_metrics = metrics.get(variant, {})
         for x, (_label, key, fmt) in zip(col_x[1:-1], METRIC_COLS):
+            value_text = "N/A" if variant == "a2_off_shelf" and key == "delta_lpips" else _fmt_metric_with_std(row_metrics, key, fmt)
             ax.text(
                 x,
                 y,
-                _fmt_metric_with_std(row_metrics, key, fmt),
+                value_text,
                 fontsize=table_fs - 1,
                 fontweight="bold" if variant in best_by_metric.get(key, set()) else "normal",
                 va="center",

@@ -45,7 +45,7 @@ from train_scripts.exp_config_utils import (
     resolve_exp_active_channels,
     resolve_exp_dataset_kwargs,
 )
-from tools.channel_group_utils import split_channels_to_groups, apply_group_dropout
+from tools.channel_group_utils import split_channels_to_groups
 
 
 def _conditioning_mode(config) -> str:
@@ -220,7 +220,6 @@ def train_controlnet_exp(models_dict):
     # <- EXP: read training knobs from config
     cfg_dropout_prob = getattr(config, "cfg_dropout_prob", 0.15)
     channel_groups = getattr(config, "channel_groups", None)
-    group_dropout_probs = getattr(config, "group_dropout_probs", {})
     use_multi_group = channel_groups is not None
     conditioning_mode = _conditioning_mode(config)
     channel_weights = getattr(config, "channel_reliability_weights", None)
@@ -301,15 +300,6 @@ def train_controlnet_exp(models_dict):
                 tme_channel_dict = split_channels_to_groups(
                     control_input.to(dtype=tme_dtype), active_channels, channel_groups,
                 )
-                active_groups_per_sample = apply_group_dropout(
-                    [g["name"] for g in channel_groups], group_dropout_probs, batch_size=bs,
-                )
-                # Per-sample dropout: zero out channels for groups dropped in each sample
-                for b_idx in range(bs):
-                    for g in channel_groups:
-                        gname = g["name"]
-                        if gname not in active_groups_per_sample[b_idx] and gname in tme_channel_dict:
-                            tme_channel_dict[gname][b_idx] = 0.0
             elif conditioning_mode == "all_channels":
                 tme_inputs = control_input.to(dtype=tme_dtype)
             else:

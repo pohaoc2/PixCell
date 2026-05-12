@@ -31,6 +31,27 @@ from tools.stage3.common import inference_dtype
 
 _MIRROR_BORDER_PX: int = 8  # reflect-pad non-binary channels before resize
 _TILE_ID_EXTS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".tif", ".npy")
+_RAW_CONCAT_ABLATION_GROUPS: tuple[dict[str, tuple[str, ...]], ...] = (
+    {"name": "cell_types", "channels": ("cell_type_healthy", "cell_type_cancer", "cell_type_immune")},
+    {"name": "cell_state", "channels": ("cell_state_prolif", "cell_state_nonprolif", "cell_state_dead")},
+    {"name": "vasculature", "channels": ("vasculature",)},
+    {"name": "microenv", "channels": ("oxygen", "glucose")},
+)
+_RAW_CONCAT_ALWAYS_ON_CHANNELS: tuple[str, ...] = ("cell_masks",)
+
+
+def resolve_ablation_channel_groups(config) -> list[dict]:
+    """Return biological channel groups used for Stage 3 ablation sweeps."""
+    channel_groups = getattr(config, "channel_groups", None)
+    if channel_groups is not None:
+        return [dict(group) for group in channel_groups]
+    if getattr(config, "tme_model", None) == "RawConditioningPassthrough":
+        active = set(getattr(config.data, "active_channels", []))
+        return [
+            {"name": group["name"], "channels": [ch for ch in group["channels"] if ch in active]}
+            for group in _RAW_CONCAT_ABLATION_GROUPS
+        ]
+    raise ValueError("config.channel_groups is required for grouped ablation sweeps")
 
 
 def _conditioning_mode(config) -> str:
@@ -74,6 +95,14 @@ def _prepare_generation_context(
         dtype=dtype,
     )
     channel_groups_cfg = getattr(config, "channel_groups", None)
+    raw_group_channels: dict[str, set[str]] | None = None
+    raw_always_on_channels: set[str] = set()
+    if channel_groups_cfg is None and getattr(config, "tme_model", None) == "RawConditioningPassthrough":
+        raw_group_channels = {
+            str(group["name"]): set(group.get("channels", []))
+            for group in resolve_ablation_channel_groups(config)
+        }
+        raw_always_on_channels = set(_RAW_CONCAT_ALWAYS_ON_CHANNELS).intersection(active_channels)
     conditioning_mode = _conditioning_mode(config)
     if conditioning_mode == "grouped":
         tme_inputs = split_channels_to_groups(
@@ -102,6 +131,8 @@ def _prepare_generation_context(
         zero_mask_latent=getattr(config, "zero_mask_latent", False),
         channel_groups_cfg=channel_groups_cfg,
         conditioning_mode=conditioning_mode,
+        raw_group_channels=raw_group_channels,
+        raw_always_on_channels=raw_always_on_channels,
     )
 
 
@@ -264,6 +295,13 @@ def _fuse_conditioning_latent(
     tme_module = context["tme_module"]
     tme_inputs = context["tme_inputs"]
     active_group_set = None if active_groups is None else set(active_groups)
+    module_active_groups = active_group_set
+    raw_group_channels = context.get("raw_group_channels")
+    if raw_group_channels is not None and active_group_set is not None:
+        expanded = set(context.get("raw_always_on_channels", set()))
+        for group_name in active_group_set:
+            expanded.update(raw_group_channels.get(group_name, {group_name}))
+        module_active_groups = expanded
 
     with torch.no_grad():
         if context["conditioning_mode"] == "grouped":
@@ -292,18 +330,18 @@ def _fuse_conditioning_latent(
                 fused = tme_module(
                     vae_mask,
                     tme_inputs,
-                    active_groups=active_group_set,
+                    active_groups=module_active_groups,
                 )
         else:
             if include_residuals:
                 fused, residuals = tme_module(
                     vae_mask,
                     tme_inputs,
-                    active_groups=active_group_set,
+                    active_groups=module_active_groups,
                     return_residuals=True,
                 )
             else:
-                fused = tme_module(vae_mask, tme_inputs, active_groups=active_group_set)
+                fused = tme_module(vae_mask, tme_inputs, active_groups=module_active_groups)
 
     if context["zero_mask_latent"]:
         fused = fused - vae_mask
@@ -467,7 +505,7 @@ def load_all_models(
             for g in channel_groups_cfg
         ]
         tme_module = build_model(
-            "MultiGroupTMEModule",
+            getattr(config, "tme_model", "MultiGroupTMEModule"),
             False,
             False,
             channel_groups=group_specs,

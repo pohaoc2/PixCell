@@ -108,10 +108,14 @@ def load_pixcell_controlnet_model_from_checkpoint(config_file_path, state_file_p
 
 
 def load_controlnet_model_from_checkpoint(config_file_path, state_file_path, device="cuda"):
+    from pathlib import Path
     from diffusion.utils.misc import read_config
     from diffusion.model.builder import build_model
+    from tools.stage3.common import fix_work_dir
 
     config = read_config(config_file_path)
+    root = Path(__file__).resolve().parents[1]
+    config = fix_work_dir(config, config_path=config_file_path, root=root)
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
     max_length = config.model_max_length
     latent_size = int(config.image_size) // 8

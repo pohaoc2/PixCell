@@ -1,0 +1,1 @@
+The a4 UNI probe pipeline writes cached labels and features during `probe`, then reuses the saved UNI directions for `sweep`, `null`, and `figures`. Generated-tile morphology metrics stay `NaN` until an offline CellViT pass writes JSON sidecars beside the generated PNGs; rerun `python -m src.a4_uni_probe.main figures` after those sidecars land.

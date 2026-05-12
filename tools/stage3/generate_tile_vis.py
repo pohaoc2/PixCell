@@ -284,12 +284,12 @@ def run_vis_suite(
 
 def main():
     parser = argparse.ArgumentParser(description="Stage 3: overview + attention + ablation PNGs for one tile")
-    parser.add_argument("--config", type=str, default=str(ROOT / "configs/config_controlnet_exp.py"))
+    parser.add_argument("--config", type=str, default=str(ROOT / "configs/config_controlnet_exp_a1_concat.py"))
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
         default=None,
-        help="Folder with controlnet_*.pth and tme_module.pth. Default: latest under checkpoints/pixcell_controlnet_exp/checkpoints",
+        help="Folder with controlnet_*.pth and tme_module.pth. Default: latest under checkpoints/concat_95470_0/checkpoints",
     )
     parser.add_argument(
         "--data-root",
@@ -344,7 +344,7 @@ def main():
     data_root = Path(args.exp_root if args.exp_root is not None else args.data_root)
     exp_channels_dir, feat_dir, he_dir = resolve_data_layout(data_root)
 
-    ckpt_parent = Path(args.checkpoint_dir) if args.checkpoint_dir else ROOT / "checkpoints/pixcell_controlnet_exp/checkpoints"
+    ckpt_parent = Path(args.checkpoint_dir) if args.checkpoint_dir else ROOT / "checkpoints/concat_95470_0/checkpoints"
     ckpt_dir = find_latest_checkpoint_dir(ckpt_parent)
     print(f"Using checkpoint dir: {ckpt_dir}")
 

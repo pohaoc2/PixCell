@@ -34,17 +34,17 @@ from tools.ablation_a1_a2.log_utils import extract_all_curves
 INFERENCE_VARIANTS: dict[str, dict] = {
     "production": {
         "config_path": "configs/config_controlnet_exp.py",
-        "ckpt_dir": "checkpoints/pixcell_controlnet_exp/npy_inputs",
+        "ckpt_dir": "checkpoints/production_retrain_post_fix/full_seed_42/checkpoint/step_0002600",
         "variant_type": "standard",
     },
     "a1_concat": {
         "config_path": "configs/config_controlnet_exp_a1_concat.py",
-        "ckpt_dir": "checkpoints/a1_concat/full_seed_42/checkpoint/step_0002600",
+        "ckpt_dir": "checkpoints/concat_95470_0/checkpoints/step_0002600",
         "variant_type": "standard",
     },
     "a1_per_channel": {
-        "config_path": "configs/config_controlnet_exp_a1_per_channel.py",
-        "ckpt_dir": "checkpoints/a1_per_channel/full_seed_42/checkpoint/step_0002600",
+        "config_path": "checkpoints/debug/per_channel_95470_3/config.py",
+        "ckpt_dir": "checkpoints/debug/per_channel_95470_3/checkpoints/step_0002600",
         "variant_type": "standard",
     },
     "a2_bypass": {

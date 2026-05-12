@@ -486,7 +486,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="configs/config_controlnet_exp.py", type=Path)
     parser.add_argument(
         "--checkpoint-dir",
-        default="checkpoints/pixcell_controlnet_exp/npy_inputs",
+        default="checkpoints/production_retrain_post_fix/full_seed_42/checkpoint/step_0002600",
         type=Path,
     )
     parser.add_argument("--tile-id", default="14592_5632")

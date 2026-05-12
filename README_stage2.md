@@ -71,7 +71,6 @@ Key training knobs:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `cfg_dropout_prob` | `0.15` | Fraction of steps where UNI embedding is zeroed |
-| `group_dropout_probs` | `{cell_types: 0.10, cell_state: 0.10, vasculature: 0.15, microenv: 0.20}` | Per-group dropout rates |
 | `tme_lr` | `1e-5` | TME module learning rate |
 | `num_epochs` | `200` | Training epochs |
 | `save_model_steps` | `10000` | Checkpoint every N steps |

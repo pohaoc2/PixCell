@@ -50,7 +50,7 @@
 
 ## Working Assumptions
 
-- Prefer the paired-exp + multi-group path unless the task explicitly targets legacy sim code.
+- Prefer the paired-exp + concat path unless the task explicitly targets legacy grouped or sim code.
 - Preserve `cell_masks`/`cell_mask` compatibility when touching datasets or inference.
 - If changing inference/training group logic, update both code and tests.
 - Read `README.md` only for full setup instructions; this file is the short agent handoff.
