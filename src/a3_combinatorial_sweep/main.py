@@ -368,6 +368,73 @@ def run_anchor_worker(
     return tuple(outputs)
 
 
+def run_generate_worker(
+    config: CombinatorialSweepConfig,
+    *,
+    device: str = DEFAULT_DEVICE,
+    guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
+    num_steps: int = DEFAULT_NUM_STEPS,
+    seed: int = DEFAULT_SEED,
+) -> tuple[Path, ...]:
+    """Generate all planned anchor sweeps in one model-loading pass."""
+    anchors, anchor_error = load_anchor_tile_ids(config)
+    if anchor_error is not None or not anchors:
+        raise FileNotFoundError(anchor_error or "missing_anchor_selection")
+
+    models, runtime_config, scheduler, exp_channels_dir, feat_dir = _load_generation_runtime(
+        config_path=config.config_path,
+        checkpoint_dir=config.checkpoint_dir,
+        data_root=config.data_root,
+        device=device,
+        num_steps=num_steps,
+    )
+    active_channels = list(runtime_config.data.active_channels)
+    conditions = enumerate_conditions()
+
+    outputs: list[Path] = []
+    for index, anchor_id in enumerate(anchors, start=1):
+        anchor_dir = config.out_dir / "generated" / anchor_id
+        expected_paths = tuple(anchor_dir / f"{build_condition_id(condition)}.png" for condition in conditions)
+        if all(path.is_file() for path in expected_paths):
+            outputs.extend(expected_paths)
+            print(f"[{index}/{len(anchors)}] skip {anchor_id} (existing)", flush=True)
+            continue
+
+        base_ctrl = _load_anchor_ctrl(
+            anchor_id,
+            active_channels=active_channels,
+            image_size=runtime_config.image_size,
+            exp_channels_dir=exp_channels_dir,
+        )
+        uni_embeds = _load_anchor_uni(anchor_id, feat_dir=feat_dir)
+        fixed_noise = _make_generation_noise(
+            config=runtime_config,
+            scheduler=scheduler,
+            device=device,
+            seed=seed,
+        )
+        for condition in conditions:
+            out_path = anchor_dir / f"{build_condition_id(condition)}.png"
+            if out_path.is_file():
+                outputs.append(out_path)
+                continue
+            condition_ctrl = _build_condition_ctrl(base_ctrl, active_channels=active_channels, condition=condition)
+            generated = _render_generated_image(
+                condition_ctrl,
+                models=models,
+                config=runtime_config,
+                scheduler=scheduler,
+                uni_embeds=uni_embeds,
+                device=device,
+                guidance_scale=guidance_scale,
+                fixed_noise=fixed_noise,
+                seed=seed,
+            )
+            outputs.append(_save_image(generated, out_path))
+        print(f"[{index}/{len(anchors)}] generated {anchor_id}", flush=True)
+    return tuple(outputs)
+
+
 def _discover_summary_anchors(config: CombinatorialSweepConfig) -> list[str]:
     anchors, _ = load_anchor_tile_ids(config)
     if anchors:
@@ -744,7 +811,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.worker is None:
         _require_args(parser, args, ("config_path", "checkpoint_dir", "data_root", "out_dir"))
-    elif args.worker == "summarize":
+    elif args.worker in {"summarize", "analyze"}:
         _require_args(parser, args, ("out_dir",))
     else:
         _require_args(parser, args, ("config_path", "checkpoint_dir", "data_root", "out_dir"))
@@ -759,8 +826,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.worker is not None:
-        if args.worker == "summarize":
+        if args.worker in {"summarize", "analyze"}:
             run_summary_worker(config)
+            return 0
+        if args.worker == "generate":
+            run_generate_worker(
+                config,
+                device=args.device,
+                guidance_scale=args.guidance_scale,
+                num_steps=args.num_steps,
+                seed=args.seed,
+            )
             return 0
         run_anchor_worker(
             config,

@@ -290,6 +290,59 @@ def run_worker_tile(
     return tuple(outputs)
 
 
+def run_generate_worker(
+    config: DecompositionConfig,
+    *,
+    device: str,
+    num_steps: int,
+    guidance_scale: float,
+    seed: int,
+) -> tuple[Path, ...]:
+    """Generate all planned decomposition tiles in one model-loading pass."""
+    resources = _load_worker_resources(config, device=device, num_steps=num_steps)
+    tile_ids = discover_tile_ids(config.data_root, config.sample_n)
+    outputs: list[Path] = []
+    for index, tile_id in enumerate(tile_ids, start=1):
+        mode_paths = _mode_paths(config.out_dir, tile_id)
+        if all(path.is_file() for path in mode_paths):
+            outputs.extend(mode_paths)
+            print(f"[{index}/{len(tile_ids)}] skip {tile_id} (existing)", flush=True)
+            continue
+
+        ctrl_full = _load_control_tensor(
+            tile_id,
+            resources.inference_config.data.active_channels,
+            resources.inference_config.image_size,
+            resources.exp_channels_dir,
+        )
+        out_dir = ensure_directory(config.out_dir / "generated" / tile_id)
+        for mode in DEFAULT_MODES:
+            output_path = out_dir / f"{mode.name}.png"
+            if output_path.is_file():
+                outputs.append(output_path)
+                continue
+            uni_embeds = _resolve_uni_embedding(
+                tile_id,
+                feat_dir=resources.feat_dir,
+                null_uni=not mode.use_uni,
+            )
+            active_groups = None if mode.use_tme else ()
+            gen_np, _ = _generate_from_control(
+                ctrl_full,
+                models=resources.models,
+                config=resources.inference_config,
+                scheduler=resources.scheduler,
+                uni_embeds=uni_embeds,
+                device=resources.device,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                active_groups=active_groups,
+            )
+            outputs.append(_save_png(gen_np, output_path))
+        print(f"[{index}/{len(tile_ids)}] generated {tile_id}", flush=True)
+    return tuple(outputs)
+
+
 def _safe_relative_path(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root))
@@ -471,8 +524,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.worker is not None:
         device = str(args.device or _default_device())
-        if args.worker == "summarize":
+        if args.worker in {"summarize", "metrics"}:
             summarize_mode_outputs(config)
+        elif args.worker == "generate":
+            run_generate_worker(
+                config,
+                device=device,
+                num_steps=args.num_steps,
+                guidance_scale=args.guidance_scale,
+                seed=args.seed,
+            )
         else:
             run_worker_tile(
                 config,
