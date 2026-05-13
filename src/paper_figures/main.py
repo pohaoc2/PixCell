@@ -23,8 +23,8 @@ from tools.ablation_report.shared import ROOT
 from src.paper_figures.style import apply_style
 
 
-PAIRED_METRICS_ROOT = ROOT / "inference_output" / "paired_ablation" / "ablation_results"
-PAIRED_DATASET_ROOT = ROOT / "inference_output" / "paired_ablation"
+PAIRED_METRICS_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "paired_ablation" / "ablation_results"
+PAIRED_DATASET_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "paired_ablation"
 PAIRED_REFERENCE_ROOT = ROOT / "data" / "orion-crc33"
 PROBE_ENCODERS_OUT = ROOT / "src" / "a1_probe_encoders" / "out"
 T1_UNI_CSV = ROOT / "src" / "a1_probe_linear" / "out" / "linear_probe_results.csv"
@@ -55,23 +55,20 @@ A3_SEEDS_FALSE_LOGS = sorted(
     (ROOT / "checkpoints" / "pixcell_controlnet_exp_a3_no_zero_init").glob("seed_*/train_log.jsonl")
 ) + sorted((ROOT / "checkpoints" / "pixcell_controlnet_exp_a3_no_zero_init").glob("seed_*/train_log.log"))
 
-UNPAIRED_METRICS_ROOT = ROOT / "inference_output" / "unpaired_ablation" / "ablation_results"
-UNPAIRED_DATASET_ROOT = ROOT / "inference_output" / "unpaired_ablation"
+UNPAIRED_METRICS_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "ablation_results"
+UNPAIRED_DATASET_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation"
 UNPAIRED_REFERENCE_ROOT = ROOT / "data" / "orion-crc33"
 
-PNG_DIR = ROOT / "figures" / "pngs"
-PNG_DIR_UPDATED = ROOT / "figures" / "pngs_updated"
+PNG_DIR = ROOT / "figures" / "pngs_updated"
 
 
 def _save_figure_png_outputs(fig, filename: str) -> None:
-    for png_dir in (PNG_DIR, PNG_DIR_UPDATED):
-        save_figure_png(fig, png_dir / filename)
+    save_figure_png(fig, PNG_DIR / filename)
 
 
 def main() -> None:
     apply_style()
     PNG_DIR.mkdir(parents=True, exist_ok=True)
-    PNG_DIR_UPDATED.mkdir(parents=True, exist_ok=True)
 
     paired_summary = load_dataset_summary(
         slug="paired",
@@ -105,30 +102,28 @@ def main() -> None:
     fig_combined = build_combined_performance_figure(summaries)
     _save_figure_png_outputs(fig_combined, "fig_paired_unpaired_performance.png")
 
-    for png_dir in (PNG_DIR, PNG_DIR_UPDATED):
-        build_representative_ablation_grid(
-            metrics_root=PAIRED_METRICS_ROOT,
-            dataset_root=PAIRED_DATASET_ROOT,
-            orion_root=PAIRED_REFERENCE_ROOT,
-            out_png=png_dir / "05_paired_ablation_grid.png",
-            tile_id="10752_13824",
-        )
+    build_representative_ablation_grid(
+        metrics_root=PAIRED_METRICS_ROOT,
+        dataset_root=PAIRED_DATASET_ROOT,
+        orion_root=PAIRED_REFERENCE_ROOT,
+        out_png=PNG_DIR / "05_paired_ablation_grid.png",
+        tile_id="10752_13824",
+    )
 
-    for png_dir in (PNG_DIR, PNG_DIR_UPDATED):
-        build_representative_ablation_grid(
-            metrics_root=UNPAIRED_METRICS_ROOT,
-            dataset_root=UNPAIRED_DATASET_ROOT,
-            orion_root=UNPAIRED_REFERENCE_ROOT,
-            out_png=png_dir / "06_unpaired_ablation_grid.png",
-            tile_id="13056_27392",
-            style_mapping_json=ROOT / "inference_output" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
-        )
-    for png_dir in (PNG_DIR, PNG_DIR_UPDATED):
-        fig_ablation_grids = build_combined_ablation_grids_figure(
-            png_dir / "05_paired_ablation_grid.png",
-            png_dir / "06_unpaired_ablation_grid.png",
-        )
-        save_figure_png(fig_ablation_grids, png_dir / "fig_ablation_grids.png")
+    build_representative_ablation_grid(
+        metrics_root=UNPAIRED_METRICS_ROOT,
+        dataset_root=UNPAIRED_DATASET_ROOT,
+        orion_root=UNPAIRED_REFERENCE_ROOT,
+        out_png=PNG_DIR / "06_unpaired_ablation_grid.png",
+        tile_id="13056_27392",
+        style_mapping_json=ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
+    )
+
+    fig_ablation_grids = build_combined_ablation_grids_figure(
+        PNG_DIR / "05_paired_ablation_grid.png",
+        PNG_DIR / "06_unpaired_ablation_grid.png",
+    )
+    save_figure_png(fig_ablation_grids, PNG_DIR / "fig_ablation_grids.png")
 
     if A2_METRICS_SUMMARY.is_file():
         a2_tile_paths = {
@@ -174,15 +169,13 @@ def main() -> None:
         print("Skipping 07_inverse_decoding.png; missing", T2_MLP_CSV)
 
     if DECOMPOSITION_SUMMARY_CSV.is_file():
-        for png_dir in (PNG_DIR, PNG_DIR_UPDATED):
-            save_uni_tme_decomposition_figure(out_png=png_dir / "08_uni_tme_decomposition.png")
+        save_uni_tme_decomposition_figure(out_png=PNG_DIR / "08_uni_tme_decomposition.png")
     else:
         print("Skipping 08_uni_tme_decomposition.png; missing", DECOMPOSITION_SUMMARY_CSV)
 
     if A3_SIGNATURES_CSV.is_file() and A3_RESIDUALS_CSV.is_file():
-        for png_dir in (PNG_DIR, PNG_DIR_UPDATED):
-            save_combinatorial_grammar_figure(out_png=png_dir / "09_combinatorial_grammar.png")
-            save_combinatorial_grammar_si_figure(out_png=png_dir / "SI_09_combinatorial_grammar_anchors.png")
+        save_combinatorial_grammar_figure(out_png=PNG_DIR / "09_combinatorial_grammar.png")
+        save_combinatorial_grammar_si_figure(out_png=PNG_DIR / "SI_09_combinatorial_grammar_anchors.png")
     else:
         if not A3_SIGNATURES_CSV.is_file():
             print("Skipping 09_combinatorial_grammar.png; missing", A3_SIGNATURES_CSV)
@@ -197,7 +190,6 @@ def main() -> None:
         "09_combinatorial_grammar.png when inputs are available to",
         PNG_DIR,
     )
-    print("Saved updated paper PNGs to", PNG_DIR_UPDATED)
 
 
 if __name__ == "__main__":

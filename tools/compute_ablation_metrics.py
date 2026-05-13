@@ -941,20 +941,29 @@ def main() -> None:
     if "cosine" in metrics_to_compute:
         shared_uni_extractor = _load_uni_extractor(args.uni_model, args.device)
 
+    failed: list[tuple[str, str]] = []
     for idx, tile_id in enumerate(tile_ids, start=1):
         tile_cache_dir = cache_dir / tile_id
-        out_path = compute_metrics_for_cache_dir(
-            tile_cache_dir,
-            orion_root=orion_root,
-            style_mapping=style_mapping,
-            metrics_to_compute=metrics_to_compute,
-            device=args.device,
-            uni_model=args.uni_model,
-            lpips_loss_fn=lpips_loss_fn,
-            lpips_batch_size=args.lpips_batch_size,
-            uni_extractor=shared_uni_extractor,
-        )
-        print(f"[{idx}/{len(tile_ids)}] Wrote metrics → {out_path}")
+        try:
+            out_path = compute_metrics_for_cache_dir(
+                tile_cache_dir,
+                orion_root=orion_root,
+                style_mapping=style_mapping,
+                metrics_to_compute=metrics_to_compute,
+                device=args.device,
+                uni_model=args.uni_model,
+                lpips_loss_fn=lpips_loss_fn,
+                lpips_batch_size=args.lpips_batch_size,
+                uni_extractor=shared_uni_extractor,
+            )
+            print(f"[{idx}/{len(tile_ids)}] Wrote metrics → {out_path}")
+        except Exception as exc:
+            print(f"[{idx}/{len(tile_ids)}] SKIP {tile_id}: {exc}", file=sys.stderr)
+            failed.append((tile_id, str(exc)))
+    if failed:
+        print(f"\n{len(failed)} tile(s) failed:", file=sys.stderr)
+        for tile_id, msg in failed:
+            print(f"  {tile_id}: {msg}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -103,7 +103,12 @@ def _result_to_jsonable(result: ProbeFitResult) -> dict[str, object]:
 def run_probe(args: argparse.Namespace) -> dict[str, Path]:
     out_dir = ensure_directory(args.out_dir)
     tile_ids = list_feature_tile_ids(args.features_dir)
-    labels, attr_names = build_label_matrix(tile_ids, args.exp_channels_dir, args.cellvit_real_dir)
+    labels, attr_names = build_label_matrix(
+        tile_ids,
+        args.exp_channels_dir,
+        args.cellvit_real_dir,
+        he_dir=getattr(args, "he_dir", None),
+    )
     uni_features = build_uni_features(args.features_dir, tile_ids)
     tme_features = build_tme_baseline_features(args.exp_channels_dir, tile_ids)
     groups = spatial_bucket_groups(tile_ids, args.bucket_px)

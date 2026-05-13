@@ -10,8 +10,9 @@ from pathlib import Path
 import numpy as np
 
 from src._tasklib.io import ensure_directory, write_json
+from src.a4_uni_probe.appearance_metrics import appearance_row_for_image
 from src.a4_uni_probe.inference import GenSpec, generate_with_uni_override, load_inference_bundle
-from src.a4_uni_probe.labels import MORPHOLOGY_ATTR_NAMES
+from src.a4_uni_probe.labels import APPEARANCE_ATTR_NAMES, MORPHOLOGY_ATTR_NAMES
 from src.a4_uni_probe.metrics import morphology_row_for_image
 
 
@@ -50,17 +51,25 @@ def _load_bundle(npz_path: Path) -> dict[str, object]:
     return {key: data[key] for key in data.files}
 
 
-def _select_sweep_attrs(probe_csv: Path, top_k: int) -> list[str]:
+def _select_sweep_attrs(probe_csv: Path, top_k: int, attr_pool: str = "morphology") -> list[str]:
+    pool = APPEARANCE_ATTR_NAMES if attr_pool == "appearance" else MORPHOLOGY_ATTR_NAMES
     rows: list[tuple[str, float]] = []
     with probe_csv.open(encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             attr = row["attr"]
-            if attr not in MORPHOLOGY_ATTR_NAMES:
+            if attr not in pool:
                 continue
             rows.append((attr, float(row["delta_r2_uni_minus_tme"])))
     rows.sort(key=lambda item: (float("-inf") if not np.isfinite(item[1]) else item[1]), reverse=True)
     return [attr for attr, _ in rows[:top_k]]
+
+
+def _load_fixed_tile_ids(path: str | Path | None) -> list[str] | None:
+    if path is None:
+        return None
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [str(tile_id) for tile_id in payload["tile_ids"]]
 
 
 def _select_sweep_tiles(labels_npz: Path, attr: str, k: int, seed: int) -> list[str]:
@@ -208,6 +217,23 @@ def _load_probe_direction(out_dir: Path, attr: str) -> np.ndarray:
     return np.asarray(np.load(out_dir / "probe_directions" / f"{attr}_uni_direction.npy"), dtype=np.float32)
 
 
+def _image_metric_rows(image_path: Path) -> tuple[dict[str, float], dict[str, float]]:
+    morph = morphology_row_for_image(image_path)
+    appearance = appearance_row_for_image(image_path)
+    return morph, appearance
+
+
+def _target_value_for_attr(
+    attr: str,
+    *,
+    morph: dict[str, float],
+    appearance: dict[str, float],
+) -> float:
+    if attr in APPEARANCE_ATTR_NAMES:
+        return float(appearance[f"appearance.{attr}"])
+    return float(morph[attr])
+
+
 def run_sweep(args: argparse.Namespace) -> None:
     out_dir = ensure_directory(args.out_dir)
     probe_csv = out_dir / "probe_results.csv"
@@ -216,12 +242,13 @@ def run_sweep(args: argparse.Namespace) -> None:
     if not probe_csv.is_file() or not labels_npz.is_file() or not features_npz.is_file():
         raise FileNotFoundError("run `probe` first so probe_results.csv, labels.npz, and features.npz exist")
 
-    attrs = _select_sweep_attrs(probe_csv, args.top_k_attrs)
+    attrs = _select_sweep_attrs(probe_csv, args.top_k_attrs, attr_pool=getattr(args, "attr_pool", "morphology"))
     features = _load_bundle(features_npz)
     tile_ids = [str(tile_id) for tile_id in features["tile_ids"].tolist()]
     uni_features = np.asarray(features["uni"], dtype=np.float32)
     sweep_root = ensure_directory(out_dir / "sweep")
     tile_shard_index, tile_shard_count = _validate_tile_shard(args.tile_shard_index, args.tile_shard_count)
+    fixed_tile_ids = _load_fixed_tile_ids(getattr(args, "fixed_tile_ids", None))
     bundle = load_inference_bundle(
         checkpoint_dir=args.checkpoint_dir,
         config_path=args.config_path,
@@ -238,11 +265,8 @@ def run_sweep(args: argparse.Namespace) -> None:
         np.save(attr_dir / "w_random.npy", random_direction)
 
         metrics_rows: list[dict[str, object]] = []
-        selected_tile_ids = _shard_tile_ids(
-            _select_sweep_tiles(labels_npz, attr, args.k_tiles, args.seed),
-            tile_shard_index,
-            tile_shard_count,
-        )
+        all_tile_ids = fixed_tile_ids if fixed_tile_ids is not None else _select_sweep_tiles(labels_npz, attr, args.k_tiles, args.seed)
+        selected_tile_ids = _shard_tile_ids(all_tile_ids, tile_shard_index, tile_shard_count)
         for tile_id in selected_tile_ids:
             tile_index = tile_ids.index(tile_id)
             base_uni = uni_features[tile_index]
@@ -261,7 +285,7 @@ def run_sweep(args: argparse.Namespace) -> None:
                         seed=args.seed,
                         bundle=bundle,
                     )
-                    morph = morphology_row_for_image(out_path)
+                    morph, appearance = _image_metric_rows(out_path)
                     metrics_rows.append(
                         {
                             "tile_id": tile_id,
@@ -269,8 +293,9 @@ def run_sweep(args: argparse.Namespace) -> None:
                             "alpha": float(alpha),
                             "target_attr": attr,
                             "image_path": str(out_path),
-                            "target_value": float(morph[attr]),
+                            "target_value": _target_value_for_attr(attr, morph=morph, appearance=appearance),
                             **{f"morpho.{name}": float(value) for name, value in morph.items()},
+                            **{name: float(value) for name, value in appearance.items()},
                         }
                     )
         _write_rows_csv(_metrics_output_path(attr_dir, tile_shard_index, tile_shard_count), metrics_rows)
@@ -287,13 +312,14 @@ def run_null(args: argparse.Namespace) -> None:
     if not probe_csv.is_file() or not labels_npz.is_file() or not features_npz.is_file():
         raise FileNotFoundError("run `probe` first so probe_results.csv, labels.npz, and features.npz exist")
 
-    attrs = _select_sweep_attrs(probe_csv, args.top_k_attrs)
+    attrs = _select_sweep_attrs(probe_csv, args.top_k_attrs, attr_pool=getattr(args, "attr_pool", "morphology"))
     features = _load_bundle(features_npz)
     tile_ids = [str(tile_id) for tile_id in features["tile_ids"].tolist()]
     uni_features = np.asarray(features["uni"], dtype=np.float32)
     null_root = ensure_directory(out_dir / "null")
     full_null_root = Path(args.full_null_root)
     tile_shard_index, tile_shard_count = _validate_tile_shard(args.tile_shard_index, args.tile_shard_count)
+    fixed_tile_ids = _load_fixed_tile_ids(getattr(args, "fixed_tile_ids", None))
     bundle = load_inference_bundle(
         checkpoint_dir=args.checkpoint_dir,
         config_path=args.config_path,
@@ -310,11 +336,8 @@ def run_null(args: argparse.Namespace) -> None:
         np.save(attr_dir / "w_random.npy", random_direction)
 
         metrics_rows: list[dict[str, object]] = []
-        selected_tile_ids = _shard_tile_ids(
-            _select_sweep_tiles(labels_npz, attr, args.k_tiles, args.seed),
-            tile_shard_index,
-            tile_shard_count,
-        )
+        all_tile_ids = fixed_tile_ids if fixed_tile_ids is not None else _select_sweep_tiles(labels_npz, attr, args.k_tiles, args.seed)
+        selected_tile_ids = _shard_tile_ids(all_tile_ids, tile_shard_index, tile_shard_count)
         for tile_id in selected_tile_ids:
             tile_index = tile_ids.index(tile_id)
             base_uni = uni_features[tile_index]
@@ -334,28 +357,30 @@ def run_null(args: argparse.Namespace) -> None:
                     seed=args.seed,
                     bundle=bundle,
                 )
-                morph = morphology_row_for_image(out_path)
+                morph, appearance = _image_metric_rows(out_path)
                 metrics_rows.append(
                     {
                         "tile_id": tile_id,
                         "condition": condition_name,
                         "target_attr": attr,
                         "image_path": str(out_path),
-                        "target_value": float(morph[attr]),
+                        "target_value": _target_value_for_attr(attr, morph=morph, appearance=appearance),
                         **{f"morpho.{name}": float(value) for name, value in morph.items()},
+                        **{name: float(value) for name, value in appearance.items()},
                     }
                 )
             full_null_path = full_null_root / tile_id / "tme_only.png"
             if full_null_path.is_file():
-                morph = morphology_row_for_image(full_null_path)
+                morph, appearance = _image_metric_rows(full_null_path)
                 metrics_rows.append(
                     {
                         "tile_id": tile_id,
                         "condition": "full_uni_null",
                         "target_attr": attr,
                         "image_path": str(full_null_path),
-                        "target_value": float(morph[attr]),
+                        "target_value": _target_value_for_attr(attr, morph=morph, appearance=appearance),
                         **{f"morpho.{name}": float(value) for name, value in morph.items()},
+                        **{name: float(value) for name, value in appearance.items()},
                     }
                 )
         _write_rows_csv(_metrics_output_path(attr_dir, tile_shard_index, tile_shard_count), metrics_rows)

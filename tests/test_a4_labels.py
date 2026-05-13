@@ -11,8 +11,10 @@ import pytest
 
 from src.a4_uni_probe.labels import (
     ALL_ATTR_NAMES,
+    APPEARANCE_ATTR_NAMES,
     CHANNEL_ATTR_NAMES,
     MORPHOLOGY_ATTR_NAMES,
+    build_appearance_label_matrix,
     build_label_matrix,
     compute_channel_attributes,
     compute_morphology_attributes_from_cellvit,
@@ -22,6 +24,11 @@ from src.a4_uni_probe.labels import (
 def _write_binary_png(path: Path, mask: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), (mask.astype(np.uint8) * 255))
+
+
+def _write_he_png(path: Path, rgb: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
 
 
 def _write_float_npy(path: Path, array: np.ndarray) -> None:
@@ -142,6 +149,38 @@ def test_compute_morphology_attributes_from_cellvit_reads_cells_schema(tmp_path:
     assert np.isnan(row["intensity_mean_e"])
 
 
+def test_appearance_attr_names_are_correct_set():
+    expected = {
+        "h_mean",
+        "e_mean",
+        "texture_h_contrast",
+        "texture_h_homogeneity",
+        "texture_h_energy",
+        "texture_e_contrast",
+        "texture_e_homogeneity",
+        "texture_e_energy",
+    }
+    assert set(APPEARANCE_ATTR_NAMES) == expected
+    assert len(APPEARANCE_ATTR_NAMES) == 8
+
+
+def test_build_appearance_label_matrix_returns_finite_values(tmp_path: Path):
+    he_dir = tmp_path / "he"
+    rgb = np.full((32, 32, 3), [180, 140, 170], dtype=np.uint8)
+    _write_he_png(he_dir / "0_0.png", rgb)
+    mat = build_appearance_label_matrix(["0_0"], he_dir)
+    assert mat.shape == (1, len(APPEARANCE_ATTR_NAMES))
+    assert np.all(np.isfinite(mat))
+
+
+def test_build_appearance_label_matrix_missing_he_gives_nan(tmp_path: Path):
+    he_dir = tmp_path / "he"
+    he_dir.mkdir()
+    mat = build_appearance_label_matrix(["missing_tile"], he_dir)
+    assert mat.shape == (1, len(APPEARANCE_ATTR_NAMES))
+    assert np.all(np.isnan(mat))
+
+
 def test_build_label_matrix_combines_channel_and_morphology_rows(tmp_path: Path):
     exp_root = _make_channel_major_exp_channels(tmp_path)
     cellvit_root = tmp_path / "cellvit_real"
@@ -161,3 +200,48 @@ def test_build_label_matrix_combines_channel_and_morphology_rows(tmp_path: Path)
     assert attr_names == list(ALL_ATTR_NAMES)
     assert set(CHANNEL_ATTR_NAMES).issubset(attr_names)
     assert set(MORPHOLOGY_ATTR_NAMES).issubset(attr_names)
+
+
+def test_build_label_matrix_includes_appearance_attrs_when_he_dir_given(tmp_path: Path):
+    exp_root = _make_channel_major_exp_channels(tmp_path)
+    cellvit_root = tmp_path / "cellvit_real"
+    cellvit_root.mkdir()
+    (cellvit_root / "0_0.json").write_text(
+        json.dumps(
+            {
+                "tile_area": 65536.0,
+                "nuclei": [{"area": 100.0, "eccentricity": 0.5, "intensity_h": 0.4, "intensity_e": 0.2}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    he_dir = tmp_path / "he"
+    rgb = np.full((32, 32, 3), [180, 140, 170], dtype=np.uint8)
+    _write_he_png(he_dir / "0_0.png", rgb)
+
+    labels, attr_names = build_label_matrix(["0_0"], exp_root, cellvit_root, he_dir=he_dir)
+    assert labels.shape == (1, len(ALL_ATTR_NAMES))
+    assert "h_mean" in attr_names
+    assert "texture_h_contrast" in attr_names
+    h_mean_idx = attr_names.index("h_mean")
+    assert np.isfinite(labels[0, h_mean_idx])
+
+
+def test_build_label_matrix_appearance_nan_when_no_he_dir(tmp_path: Path):
+    exp_root = _make_channel_major_exp_channels(tmp_path)
+    cellvit_root = tmp_path / "cellvit_real"
+    cellvit_root.mkdir()
+    (cellvit_root / "0_0.json").write_text(
+        json.dumps(
+            {
+                "tile_area": 65536.0,
+                "nuclei": [{"area": 100.0, "eccentricity": 0.5, "intensity_h": 0.4, "intensity_e": 0.2}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    labels, attr_names = build_label_matrix(["0_0"], exp_root, cellvit_root)
+    assert labels.shape == (1, len(ALL_ATTR_NAMES))
+    h_mean_idx = attr_names.index("h_mean")
+    assert np.isnan(labels[0, h_mean_idx])

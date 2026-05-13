@@ -397,10 +397,10 @@ def heatmap_metric_keys(summary: DatasetSummary) -> list[str]:
 def _shared_heatmap_metric_keys(summaries: list[DatasetSummary]) -> list[str]:
     if not summaries:
         return []
-    shared = set(heatmap_metric_keys(summaries[0]))
-    for summary in summaries[1:]:
-        shared &= set(heatmap_metric_keys(summary))
-    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in shared]
+    union: set[str] = set()
+    for summary in summaries:
+        union |= set(heatmap_metric_keys(summary))
+    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in union]
 
 
 def _heatmap_matrix(

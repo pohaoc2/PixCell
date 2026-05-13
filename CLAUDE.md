@@ -55,6 +55,36 @@
 - If changing inference/training group logic, update both code and tests.
 - Read `README.md` only for full setup instructions; this file is the short agent handoff.
 
+## CellViT — Local Execution
+
+CellViT can be run locally. Full runbook: `CELLVIT_LOCAL_RUNBOOK.md`.
+
+- CellViT repo: `/home/ec2-user/CellViT`
+- Checkpoint: `/home/ec2-user/checkpoints/CellViT-256.pth`
+- Runner: `/home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py`
+- Conda env: `cellvit` (separate from `pixcell` — conflicting deps)
+
+**Three-step pattern for any ablation cache:**
+
+```bash
+# 1. Export PNGs to flat batch
+conda run --no-capture-output -n pixcell python tools/cellvit/export_batch.py \
+  --cache-root <cache_dir> --output-dir /tmp/cellvit_batch --overwrite --zip
+
+# 2. Run CellViT (use cellvit env, not pixcell)
+set +u; source /home/ec2-user/miniconda3/etc/profile.d/conda.sh; conda activate cellvit; set -u
+python /home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py \
+  --zip /tmp/cellvit_batch.zip --out /tmp/cellvit_results \
+  --checkpoint /home/ec2-user/checkpoints/CellViT-256.pth \
+  --cellvit-repo /home/ec2-user/CellViT
+
+# 3. Import JSON sidecars back beside source PNGs (default suffix: _cellvit_instances)
+conda run --no-capture-output -n pixcell python tools/cellvit/import_results.py \
+  --manifest /tmp/cellvit_batch/manifest.json --results-dir /tmp/cellvit_results
+```
+
+After import, re-run `compute_ablation_metrics.py --metrics dice` (or `all`) on the cache dir to populate cell metrics.
+
 ## Token Efficiency — Use Codex for Heavy Commands
 
 Before running commands with large output (git diffs, recursive file listings, large log files, full dataset inspection), delegate to the Codex subagent to summarize instead of flooding Claude's context.

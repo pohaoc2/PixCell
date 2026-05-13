@@ -13,6 +13,7 @@ from src.a1_mask_targets.main import (
     get_channel_load_config,
     resolve_channel_dir,
 )
+from src.a4_uni_probe.appearance_metrics import appearance_row_for_image
 
 
 CHANNEL_ATTR_NAMES = (
@@ -33,7 +34,17 @@ MORPHOLOGY_ATTR_NAMES = (
     "intensity_mean_h",
     "intensity_mean_e",
 )
-ALL_ATTR_NAMES = CHANNEL_ATTR_NAMES + MORPHOLOGY_ATTR_NAMES
+APPEARANCE_ATTR_NAMES = (
+    "h_mean",
+    "e_mean",
+    "texture_h_contrast",
+    "texture_h_homogeneity",
+    "texture_h_energy",
+    "texture_e_contrast",
+    "texture_e_homogeneity",
+    "texture_e_energy",
+)
+ALL_ATTR_NAMES = CHANNEL_ATTR_NAMES + MORPHOLOGY_ATTR_NAMES + APPEARANCE_ATTR_NAMES
 
 _FRACTION_CHANNELS = {
     "cancer_fraction": "cell_type_cancer",
@@ -199,11 +210,28 @@ def compute_morphology_attributes_from_cellvit(cellvit_json_path: str | Path) ->
     }
 
 
+def build_appearance_label_matrix(
+    tile_ids: list[str],
+    he_dir: str | Path,
+) -> np.ndarray:
+    he_root = Path(he_dir)
+    rows: list[list[float]] = []
+    for tile_id in tile_ids:
+        he_path = he_root / f"{tile_id}.png"
+        if he_path.is_file():
+            row = appearance_row_for_image(he_path)
+            rows.append([float(row.get(f"appearance.{name}", float("nan"))) for name in APPEARANCE_ATTR_NAMES])
+        else:
+            rows.append([float("nan")] * len(APPEARANCE_ATTR_NAMES))
+    return np.asarray(rows, dtype=np.float32)
+
+
 def build_label_matrix(
     tile_ids: list[str],
     exp_channels_root: str | Path,
     cellvit_real_dir: str | Path,
     *,
+    he_dir: str | Path | None = None,
     resolution: int = 256,
 ) -> tuple[np.ndarray, list[str]]:
     rows: list[list[float]] = []
@@ -212,8 +240,15 @@ def build_label_matrix(
         channel_row = compute_channel_attributes(exp_channels_root, tile_id, resolution=resolution)
         morph_row = compute_morphology_attributes_from_cellvit(cellvit_root / f"{tile_id}.json")
         row = {**channel_row, **morph_row}
-        rows.append([float(row[attr_name]) for attr_name in ALL_ATTR_NAMES])
-    return np.asarray(rows, dtype=np.float32), list(ALL_ATTR_NAMES)
+        rows.append([float(row[attr_name]) for attr_name in CHANNEL_ATTR_NAMES + MORPHOLOGY_ATTR_NAMES])
+    base_labels = np.asarray(rows, dtype=np.float32)
+
+    if he_dir is not None:
+        appearance_labels = build_appearance_label_matrix(tile_ids, he_dir)
+    else:
+        appearance_labels = np.full((len(tile_ids), len(APPEARANCE_ATTR_NAMES)), float("nan"), dtype=np.float32)
+
+    return np.concatenate([base_labels, appearance_labels], axis=1), list(ALL_ATTR_NAMES)
 
 
 def save_label_bundle(
