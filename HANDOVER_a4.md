@@ -25,13 +25,14 @@ I implemented the `src/a4_uni_probe/` package and its tests.
 
 Key modules:
 
-- `src/a4_uni_probe/main.py`: CLI for `probe`, `sweep`, `null`, `figures`
+- `src/a4_uni_probe/main.py`: CLI for `probe`, `sweep`, `null`, `figures`, `appearance`
 - `src/a4_uni_probe/probe.py`: Stage 1 probe fitting and ranking
 - `src/a4_uni_probe/edit.py`: UNI sweep/null edits, summaries, and run orchestration
 - `src/a4_uni_probe/inference.py`: thin wrapper around Stage 3 generation with UNI override
 - `src/a4_uni_probe/labels.py`: channel-derived and CellViT-derived tile attributes
 - `src/a4_uni_probe/metrics.py`: generated-image morphology sidecar reader
 - `src/a4_uni_probe/figures.py`: summary figure generation
+- `src/a4_uni_probe/appearance_metrics.py`: stain, stain-distance, and Haralick texture metrics
 
 Test coverage added under `tests/` for labels, features, probe fitting, edit helpers, and metrics sidecar parsing.
 
@@ -61,6 +62,14 @@ Major execution steps completed:
 12. Patched generated-image metric loading so `.png.json` sidecars are recognized.
 13. Recomputed summaries and regenerated figures after CellViT import.
 14. Wrote a short run summary in `inference_output/a1_concat/a4_uni_probe/RESULTS_SUMMARY.md`.
+15. Added a concat-scoped `uni_null` generation path for the exact a4 null tile set via `run_a2_uni_null.py`.
+16. Added `update_null_full_uni.py` to append `full_uni_null` rows into the null metrics CSVs and regenerate summaries/figures.
+17. Generated the exact concat `uni_null` tile set for the a4 null tiles.
+18. Ran local CellViT on the `tme_only.png` set via `/home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py` and copied the JSONs back beside each original image as `tme_only.png.json`.
+19. Re-ran `update_null_full_uni.py`, so `full_uni_null` is now populated in the a4 null summaries and figures.
+20. Added a post-hoc `appearance` pass that computes stain and texture metrics from the existing generated PNGs without rerunning diffusion generation.
+21. Re-scored the concat a4 outputs with the appearance pass and wrote complete appearance summaries for both sweep and null.
+22. Extended the figure renderer with full-metric appearance bar charts so the summary does not depend on selectively naming a few metrics in prose.
 
 ## Important fixes made during the run
 
@@ -91,6 +100,31 @@ Interpretation:
 - The concat checkpoint shows usable directional control for eccentricity and nuclei density.
 - Nuclear area shows signal, but not cleanly enough relative to the random-direction control to count as a pass.
 - Null effects are modest, which suggests the selected probe axis carries some leverage but morphology is not concentrated in a single isolated UNI direction.
+- The full-UNI-null baseline is now available and is lower than targeted/random for all three null-readout attributes, which supports the broader claim that UNI carries morphology information beyond the selected one-axis probe edits.
+
+## Appearance extension
+
+The a4 run now includes a second layer of readouts on the already-generated images:
+
+- H/E stain statistics: `appearance.h_mean`, `appearance.h_std`, `appearance.e_mean`, `appearance.e_std`
+- stain-vector distance to the paired real patch: `appearance.stain_vector_angle_deg`
+- Haralick texture features on H and E: contrast, homogeneity, energy
+
+These metrics are written by:
+
+- `python -m src.a4_uni_probe.main appearance --out-dir /home/ec2-user/PixCell/inference_output/a1_concat/a4_uni_probe --data-root /home/ec2-user/PixCell/data/orion-crc33`
+
+Output files:
+
+- `inference_output/a1_concat/a4_uni_probe/appearance_sweep_summary.csv`
+- `inference_output/a1_concat/a4_uni_probe/appearance_null_summary.csv`
+- `inference_output/a1_concat/a4_uni_probe/sweep/*/appearance_summary.csv`
+- `inference_output/a1_concat/a4_uni_probe/null/*/appearance_summary.csv`
+
+Important interpretation change:
+
+- The evidence is no longer limited to cell morphology. Full UNI null produces much larger stain-vector shifts than targeted/random null across all three attrs, and it also moves multiple H/E texture metrics in a consistent direction.
+- To avoid cherry-picking a few appearance metrics in prose, the full set is now shown as bar-chart panels instead of only being referenced selectively.
 
 ## Main artifacts to know about
 
@@ -107,6 +141,8 @@ Most useful files:
 - `inference_output/a1_concat/a4_uni_probe/figures/panel_a_probe_R2.png`
 - `inference_output/a1_concat/a4_uni_probe/figures/panel_b_sweep_slope.png`
 - `inference_output/a1_concat/a4_uni_probe/figures/panel_c_null_drop.png`
+- `inference_output/a1_concat/a4_uni_probe/figures/panel_d_appearance_sweep_all_metrics.png`
+- `inference_output/a1_concat/a4_uni_probe/figures/panel_e_appearance_null_all_metrics.png`
 - `inference_output/a1_concat/a4_uni_probe/RESULTS_SUMMARY.md`
 
 Generated-image CellViT exchange artifacts:
@@ -115,18 +151,64 @@ Generated-image CellViT exchange artifacts:
 - `inference_output/a1_concat/a4_uni_probe/cellvit_generated_batch.zip`
 - `inference_output/a1_concat/a4_uni_probe/import_generated_cellvit.sh`
 
-## Remaining limitation
+TME-only CellViT artifacts:
 
-`full_uni_null` is still unavailable for this concat run because the sampled concat decomposition cache did not overlap the selected null tiles. That means the targeted-vs-random null comparison is populated and usable, but the stronger full-UNI-null baseline remained `NaN` for this run.
+- `inference_output/a1_concat/a4_uni_probe/cellvit_tme_only_batch.zip`
+- `inference_output/a1_concat/a4_uni_probe/cellvit_tme_only_results`
+- `inference_output/a1_concat/a4_uni_probe/cellvit_tme_only_results.zip`
+
+`full_uni_null` support artifacts:
+
+- `run_a2_uni_null.py`
+- `update_null_full_uni.py`
+- `inference_output/a1_concat/a4_uni_probe/uni_null/generated`
+
+## `full_uni_null` status
+
+The old limitation was that `full_uni_null` stayed empty because the sampled concat `a2_decomposition` cache did not overlap the selected a4 null tiles.
+
+That is no longer a structural blocker.
+
+There is now a dedicated concat `uni_null` path under:
+
+- `inference_output/a1_concat/a4_uni_probe/uni_null/generated`
+
+and two helper scripts:
+
+- `run_a2_uni_null.py`: generates the exact null-tile `tme_only.png` set using the concat checkpoint while loading the model only once.
+- `update_null_full_uni.py`: appends `full_uni_null` rows into each null metrics CSV, rewrites `null_comparison.json`, and re-renders the a4 figures.
+
+This is now populated for the current concat run. The only remaining edge case is tile `21504_17920`, where CellViT returned an empty `cells` list for `tme_only.png`; that leaves `nuclear_area_mean` with `n = 29` instead of `30` for `full_uni_null`.
 
 ## If someone needs to continue this work
 
 Highest-value next steps:
 
-1. Regenerate concat `a2_decomposition` outputs for the exact null tile set so `full_uni_null` is populated.
+1. Inspect or rerun tile `21504_17920` if you want to eliminate the one remaining non-finite `full_uni_null` value for `nuclear_area_mean`.
+
 2. Re-run `nuclear_area_mean` with either more tiles or another seed to see whether it stabilizes into a clean pass.
+
 3. Keep using the concat-scoped output root for any follow-up so results do not mix with the older default `src/a4_uni_probe/out` path.
-4. If new external CellViT outputs are imported, rerun:
+
+4. If the `uni_null` workflow needs to be rerun from scratch, the sequence is now:
+
+   `conda activate pixcell && cd /home/ec2-user/PixCell && python run_a2_uni_null.py`
+
+   `conda activate he-multiplex && cd /home/ec2-user/PixCell && python update_null_full_uni.py`
+
+   `python /home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py --zip <tme_only_batch.zip> --out <cellvit_out_dir> --checkpoint ~/checkpoints/CellViT-256.pth --cellvit-repo ~/CellViT --batch-size 8`
+
+   then copy outputs back as `tme_only.png.json` and rerun `update_null_full_uni.py`.
+
+5. If new generated-image CellViT outputs are imported anywhere in a4, rerun:
+
+   `python -m src.a4_uni_probe.main figures --out-dir /home/ec2-user/PixCell/inference_output/a1_concat/a4_uni_probe`
+
+6. If the appearance summaries need to be regenerated, rerun:
+
+   `conda activate he-multiplex && cd /home/ec2-user/PixCell && python -m src.a4_uni_probe.main appearance --out-dir /home/ec2-user/PixCell/inference_output/a1_concat/a4_uni_probe --data-root /home/ec2-user/PixCell/data/orion-crc33`
+
+   then rerun:
 
    `python -m src.a4_uni_probe.main figures --out-dir /home/ec2-user/PixCell/inference_output/a1_concat/a4_uni_probe`
 

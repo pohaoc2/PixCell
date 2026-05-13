@@ -73,8 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_null.add_argument("--checkpoint-dir", type=Path, default=DEFAULT_CHECKPOINT_DIR)
     p_null.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
 
-    p_fig = sub.add_parser("figures", help="Render Panel A/B/C")
+    p_fig = sub.add_parser("figures", help="Render Panel A-E")
     p_fig.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+
+    p_app = sub.add_parser("appearance", help="Add stain and texture metrics to existing sweep/null outputs")
+    p_app.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    p_app.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
 
     return parser
 
@@ -99,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
         from src.a4_uni_probe.figures import render_all
 
         render_all(args.out_dir)
+    elif args.command == "appearance":
+        from src.a4_uni_probe.appearance_metrics import run_appearance
+
+        run_appearance(args)
     else:  # pragma: no cover
         parser.error(f"unknown command: {args.command}")
     return 0
