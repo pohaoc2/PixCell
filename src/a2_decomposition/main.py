@@ -15,8 +15,8 @@ from src._tasklib.tile_ids import list_feature_tile_ids
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = ROOT / "configs" / "config_controlnet_exp.py"
-DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "pixcell_controlnet_exp" / "npy_inputs"
+DEFAULT_CONFIG_PATH = ROOT / "configs" / "config_controlnet_exp_a1_concat.py"
+DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "concat_95470_0" / "checkpoints" / "step_0002600"
 DEFAULT_DATA_ROOT = ROOT / "data" / "orion-crc33"
 DEFAULT_OUT_DIR = ROOT / "src" / "a2_decomposition" / "out"
 DEFAULT_GUIDANCE_SCALE = 2.5

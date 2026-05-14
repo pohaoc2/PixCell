@@ -22,6 +22,7 @@ from src.paper_figures.style import (
     apply_style,
 )
 from tools.ablation_a1_a2.log_utils import deserialise_float
+from tools.cellvit.contours import overlay_cellvit_contours
 
 
 PRIMARY_A2_VARIANT = "a2_bypass_full_tme"
@@ -54,7 +55,6 @@ METRIC_COLS = (
     ("PQ↑", "pq", "{:.3f}"),
     ("LPIPS↓", "lpips", "{:.3f}"),
     ("HED↓", "style_hed", "{:.3f}"),
-    ("ΔLPIPS↑", "delta_lpips", "{:.3f}"),
 )
 METRIC_DIRECTIONS = {
     "fud": "min",
@@ -68,6 +68,7 @@ INSTABILITY_COLOR = "#c62828"
 INSTABILITY_ALPHA = 0.12
 _TARGET_CONTOUR_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".npy")
 UNIFIED_TILE_GAP = 0.045
+SECTION1_LINESTYLE = "--"
 COMPACT_VARIANT_LABELS = {
     "production": "Grouped TME",
     "a1_concat": "Concat enc.",
@@ -202,20 +203,30 @@ def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
     fig = plt.figure(figsize=(13.9, 13.7), constrained_layout=False)
-    fig.subplots_adjust(left=0.045, right=0.990, top=0.975, bottom=0.015)
 
-    outer = fig.add_gridspec(3, 1, height_ratios=[2.1, 0.92, 5.75], hspace=0.12)
-    middle = outer[1].subgridspec(1, 2, width_ratios=[3.95, 0.95], wspace=0.14)
+    upper = fig.add_gridspec(
+        2, 1,
+        height_ratios=[2.1, 0.92],
+        hspace=0.08,
+        left=0.045, right=0.990,
+        top=0.975, bottom=0.605,
+    )
+    middle = upper[1].subgridspec(1, 2, width_ratios=[4.15, 1.05], wspace=0.05)
+    lower = fig.add_gridspec(
+        1, 1,
+        left=0.045, right=0.981,
+        top=0.580, bottom=0.015,
+    )
 
-    _draw_section1_curves(fig, outer[0], cache)
+    _draw_section1_curves(fig, upper[0], cache)
     _draw_section2_table(fig.add_subplot(middle[0]), cache)
     _draw_section4_sensitivity(fig.add_subplot(middle[1]), cache)
-    _draw_section3_tiles(fig, outer[2], cache, tile_dir)
+    _draw_section3_tiles(fig, lower[0], cache, tile_dir)
 
-    _add_panel_label(fig, outer[0], "A", x_offset=0.028, y_offset=-0.010)
+    _add_panel_label(fig, upper[0], "A", x_offset=0.028, y_offset=-0.010)
     _add_panel_label(fig, middle[0], "B", x_offset=0.028, y_offset=-0.020)
     _add_panel_label(fig, middle[1], "C", x_offset=0.034, y_offset=-0.020)
-    _add_panel_label(fig, outer[2], "D", x_offset=0.028)
+    _add_panel_label(fig, lower[0], "D", x_offset=0.028)
     return fig
 
 
@@ -328,7 +339,7 @@ def _plot_loss_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], title
                 mean[finite],
                 color=spec["color"],
                 lw=spec["lw"],
-                ls=spec["ls"],
+                ls=SECTION1_LINESTYLE,
                 label=spec["label"],
                 zorder=4 if variant == "production" else 3,
             )
@@ -339,7 +350,7 @@ def _plot_loss_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], title
                 synthetic,
                 color=spec["color"],
                 lw=spec["lw"],
-                ls=spec["ls"],
+                ls=SECTION1_LINESTYLE,
                 label=f"{spec['label']} unstable",
                 zorder=4 if variant == "production" else 3,
             )
@@ -366,7 +377,7 @@ def _plot_gradnorm_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], t
                 mean[finite],
                 color=spec["color"],
                 lw=spec["lw"],
-                ls=spec["ls"],
+                ls=SECTION1_LINESTYLE,
                 label=spec["label"],
                 zorder=5 if variant == "production" else 3,
             )
@@ -426,7 +437,7 @@ def _plot_gradnorm_curves(ax: plt.Axes, curves: dict, variant_keys: list[str], t
 
     for variant in not_logged:
         spec = VARIANT_SPECS[variant]
-        ax.plot([], [], color=spec["color"], lw=spec["lw"], ls=spec["ls"], label=f"{spec['label']} (not logged)")
+        ax.plot([], [], color=spec["color"], lw=spec["lw"], ls=SECTION1_LINESTYLE, label=f"{spec['label']} (not logged)")
 
     ax.set_ylim(ymin, ymax)
 
@@ -441,7 +452,7 @@ def _section1_legend_handles(variant_keys: list[str]) -> list[Line2D]:
                 [0],
                 color=spec["color"],
                 lw=spec["lw"],
-                ls="--" if spec["unstable"] else spec["ls"],
+                ls=SECTION1_LINESTYLE,
                 label=spec["label"],
             )
         )
@@ -449,7 +460,7 @@ def _section1_legend_handles(variant_keys: list[str]) -> list[Line2D]:
 
 
 def _draw_section1_curves(fig: plt.Figure, gs_slot, cache: dict) -> None:
-    sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.18], hspace=0.34, wspace=0.38)
+    sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.18], hspace=0.22, wspace=0.38)
     curves = cache.get("training_curves", {})
     all_variants = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
     _plot_loss_curves(fig.add_subplot(sub[0, 0]), curves, all_variants, "Training loss")
@@ -552,7 +563,14 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
     params = cache.get("params", {})
     best_by_metric = _best_metric_variants(metrics)
     table_fs = FONT_SIZE_TICK + 2
-    col_x = [0.055, 0.230, 0.350, 0.470, 0.590, 0.705, 0.820, 0.955]
+    # Give Config its own left-aligned column so row labels stay inside the rules,
+    # while keeping metric columns evenly spaced.
+    table_left, table_right = 0.02, 0.84
+    config_text_x = table_left + 0.008
+    config_header_x = 0.10
+    metric_x = list(np.linspace(0.27, 0.73, len(METRIC_COLS)))
+    params_x = 0.83
+    col_x = [config_header_x, *metric_x, params_x]
     headers = ["Config", *[col[0] for col in METRIC_COLS], "Params"]
     row_order = sorted(
         [variant for variant in TABLE_ROWS if variant in metrics or variant in VARIANT_SPECS],
@@ -562,26 +580,31 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
         ),
     )
 
+    header_y = 0.88
+    row_top, row_bottom = 0.70, 0.10
+    row_y = np.linspace(row_top, row_bottom, len(row_order))
+
     for x, header in zip(col_x, headers):
-        ax.text(x, 0.90, header, fontsize=table_fs + 1, va="center", ha="center", transform=ax.transAxes)
-    ax.axhline(0.97, color="black", linewidth=0.75)
-    ax.axhline(0.80, color="black", linewidth=0.45)
+        ax.text(x, header_y, header, fontsize=table_fs + 1, va="center", ha="center", transform=ax.transAxes)
+    rule_left = max(table_left - 0.03, 0.0)
+    rule_right = min(table_right + 0.03, 1.0)
+    ax.axhline((header_y + 1.0) / 2 + 0.02, xmin=rule_left, xmax=rule_right, color="black", linewidth=0.75)
+    ax.axhline((header_y + row_top) / 2, xmin=rule_left, xmax=rule_right, color="black", linewidth=0.45)
 
     def draw_row(y: float, variant: str) -> None:
-        spec = VARIANT_SPECS[variant]
         ax.text(
-            col_x[0],
+            config_text_x,
             y,
-            _compact_variant_label(variant),
+            _sensitivity_variant_label(variant),
             fontsize=table_fs,
             va="center",
-            ha="center",
+            ha="left",
             color="black",
             transform=ax.transAxes,
         )
         row_metrics = metrics.get(variant, {})
         for x, (_label, key, fmt) in zip(col_x[1:-1], METRIC_COLS):
-            value_text = "N/A" if variant == "a2_off_shelf" and key == "delta_lpips" else _fmt_metric_with_std(row_metrics, key, fmt)
+            value_text = _fmt_metric_with_std(row_metrics, key, fmt)
             ax.text(
                 x,
                 y,
@@ -596,18 +619,16 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
         param_text = _fmt_params(params, variant)
         ax.text(col_x[-1], y, param_text, fontsize=table_fs, va="center", ha="center", transform=ax.transAxes)
 
-    row_y = np.linspace(0.66, 0.12, len(row_order))
     for y, variant in zip(row_y, row_order, strict=True):
         draw_row(y, variant)
 
-    ax.axhline(0.06, color="black", linewidth=0.75)
+    ax.axhline(max(row_bottom - 0.06, 0.02), xmin=rule_left, xmax=rule_right, color="black", linewidth=0.75)
 
 
 def _draw_section4_sensitivity(ax: plt.Axes, cache: dict) -> None:
     sensitivity = _section4_sensitivity(cache)
     local_label_fs = FONT_SIZE_LABEL + 2
     local_tick_fs = FONT_SIZE_TICK + 1
-    ax.set_title("TME sensitivity", fontsize=local_label_fs + 1, loc="left", pad=3)
     ax.set_xlabel("ΔLPIPS", fontsize=local_label_fs)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -703,34 +724,8 @@ def _overlay_target_contours(ax: plt.Axes, tile_id: str, image_hw: tuple[int, in
     ax.contour(cell_mask, levels=[0.5], colors=["white"], linewidths=0.8, alpha=0.95)
 
 
-def _load_cellvit_contours(image_path: Path) -> list[np.ndarray]:
-    sidecar_path = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
-    if not sidecar_path.is_file():
-        return []
-
-    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    contours: list[np.ndarray] = []
-    for cell in payload.get("cells", []):
-        contour = cell.get("contour")
-        if not isinstance(contour, list) or len(contour) < 3:
-            continue
-        arr = np.asarray(contour, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] < 2:
-            continue
-        contours.append(arr[:, :2])
-    return contours
-
-
 def _overlay_generated_cell_contours(ax: plt.Axes, image_path: Path) -> None:
-    for contour in _load_cellvit_contours(image_path):
-        ax.plot(
-            contour[:, 0],
-            contour[:, 1],
-            color="red",
-            linewidth=0.6,
-            alpha=0.85,
-            zorder=4,
-        )
+    overlay_cellvit_contours(ax, image_path, color="red")
 
 
 def _load_tile(tile_dir: Path, variant: str, tile_id: str) -> np.ndarray:
@@ -752,6 +747,37 @@ def _generated_tile_path(tile_dir: Path, variant: str, tile_id: str) -> Path:
     return tile_dir / variant / f"{tile_id}.png"
 
 
+def _draw_section3_legend(ax: plt.Axes) -> None:
+    """Inline legend row: red = generated CellViT contour, gray = reference cell mask."""
+    ax.axis("off")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    swatch_y = 0.5
+    entries = [
+        ("Generated cell contour (CellViT)", "red", 0.06),
+        ("Reference cell contour (mask)", (0.45, 0.45, 0.45), 0.46),
+    ]
+    for label, color, x in entries:
+        ax.plot(
+            [x, x + 0.025],
+            [swatch_y, swatch_y],
+            color=color,
+            linewidth=1.6,
+            solid_capstyle="butt",
+            transform=ax.transAxes,
+            clip_on=False,
+        )
+        ax.text(
+            x + 0.032,
+            swatch_y,
+            label,
+            fontsize=FONT_SIZE_ANNOTATION + 1,
+            va="center",
+            ha="left",
+            transform=ax.transAxes,
+        )
+
+
 def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) -> None:
     tile_ids = list(cache.get("metric_tile_ids", [])[:10] or cache.get("tile_ids", [])[:10])
     if not tile_ids:
@@ -761,10 +787,37 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
         ax.text(0.5, 0.5, "No tile IDs in cache", ha="center", va="center", fontsize=FONT_SIZE_ANNOTATION, transform=ax.transAxes)
         return
 
-    sub = gs_slot.subgridspec(
-        len(TILE_GRID_ORDER),
+    sensitivity = _section4_sensitivity(cache)
+    variant_order = [variant for variant in TILE_GRID_ORDER if variant != "gt"]
+    variant_order.sort(
+        key=lambda variant: float(sensitivity.get(variant, {}).get("mean", float("-inf"))),
+        reverse=True,
+    )
+    row_order = ["gt", *variant_order]
+
+    # Reserve a thin top row inside D for the contour legend.
+    n_rows = len(row_order)
+    legend_h = 0.35
+    tile_outer = gs_slot.subgridspec(
+        2, 1,
+        height_ratios=[legend_h, n_rows],
+        hspace=0.05,
+    )
+    legend_ax = fig.add_subplot(tile_outer[0])
+    _draw_section3_legend(legend_ax)
+    tile_bbox = tile_outer[1].get_position(fig)
+    fig_w, fig_h = fig.get_size_inches()
+    tile_w = tile_bbox.width * fig_w
+    tile_h = tile_bbox.height * fig_h
+    target_gap = UNIFIED_TILE_GAP * tile_h / (n_rows + max(n_rows - 1, 0) * UNIFIED_TILE_GAP)
+    if tile_w > target_gap * max(len(tile_ids) - 1, 0):
+        tile_wspace = (target_gap * len(tile_ids)) / (tile_w - target_gap * max(len(tile_ids) - 1, 0))
+    else:
+        tile_wspace = UNIFIED_TILE_GAP
+    sub = tile_outer[1].subgridspec(
+        n_rows,
         len(tile_ids),
-        wspace=UNIFIED_TILE_GAP,
+        wspace=tile_wspace,
         hspace=UNIFIED_TILE_GAP,
     )
     row_labels = {
@@ -772,11 +825,11 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
         **{variant: spec["label"] for variant, spec in VARIANT_SPECS.items()},
     }
 
-    for row_idx, variant in enumerate(TILE_GRID_ORDER):
+    for row_idx, variant in enumerate(row_order):
         for col_idx, tile_id in enumerate(tile_ids):
             ax = fig.add_subplot(sub[row_idx, col_idx])
             tile = _load_tile(tile_dir, variant, tile_id)
-            ax.imshow(tile)
+            ax.imshow(tile, aspect="auto")
             _overlay_target_contours(ax, tile_id, (tile.shape[0], tile.shape[1]))
             if variant != "gt":
                 _overlay_generated_cell_contours(ax, _generated_tile_path(tile_dir, variant, tile_id))
@@ -816,6 +869,11 @@ def save_split_figures(*, cache_path: Path, tile_dir: Path, out: Path, dpi: int)
         paths[key].parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(paths[key], dpi=dpi, bbox_inches="tight")
         plt.close(fig)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    unified_fig = build_figure(cache_path=cache_path, tile_dir=tile_dir)
+    unified_fig.savefig(out, dpi=dpi, bbox_inches="tight")
+    plt.close(unified_fig)
+    paths["unified"] = out
     return paths
 
 

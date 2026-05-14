@@ -12,7 +12,15 @@ from typing import Any
 
 from src._tasklib.io import ensure_directory, write_json
 from src._tasklib.runtime import CommandSpec, JobPlan, JobState, RuntimeProbe, TaskPlan, probe_runtime
+from tools.cellvit.contours import load_cellvit_contours
 
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = ROOT / "configs" / "config_controlnet_exp_a1_concat.py"
+DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "concat_95470_0" / "checkpoints" / "step_0002600"
+DEFAULT_DATA_ROOT = ROOT / "data" / "orion-crc33"
+DEFAULT_OUT_DIR = ROOT / "src" / "a3_combinatorial_sweep" / "out"
+DEFAULT_ANCHORS_PATH = ROOT / "src" / "a3_combinatorial_sweep" / "anchors_k20_t1_medoid.txt"
 
 DEFAULT_DEVICE = "cuda"
 DEFAULT_GUIDANCE_SCALE = 2.5
@@ -529,37 +537,14 @@ def _compute_glcm_features(gray_image, tissue_mask, *, levels: int = 8) -> tuple
     return contrast, homogeneity
 
 
-def _load_cellvit_contours(image_path: Path) -> list[list[tuple[float, float]]]:
-    sidecar_path = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
-    if not sidecar_path.is_file():
-        return []
-    try:
-        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-    contours: list[list[tuple[float, float]]] = []
-    for cell in payload.get("cells", []):
-        contour_raw = cell.get("contour")
-        if not isinstance(contour_raw, list) or len(contour_raw) < 3:
-            continue
-        contour: list[tuple[float, float]] = []
-        for point in contour_raw:
-            if not isinstance(point, (list, tuple)) or len(point) < 2:
-                continue
-            contour.append((float(point[0]), float(point[1])))
-        if len(contour) >= 3:
-            contours.append(contour)
-    return contours
-
-
-def _polygon_area(contour: list[tuple[float, float]]) -> float:
+def _polygon_area(contour) -> float:
+    """Shoelace area; accepts ndarray[N, 2] or list[tuple[float, float]]."""
     area_acc = 0.0
     n = len(contour)
     for idx in range(n):
         x1, y1 = contour[idx]
         x2, y2 = contour[(idx + 1) % n]
-        area_acc += x1 * y2 - x2 * y1
+        area_acc += float(x1) * float(y2) - float(x2) * float(y1)
     return abs(area_acc) * 0.5
 
 
@@ -600,7 +585,7 @@ def _compute_signature(image_path: Path) -> dict[str, float]:
         nuclear_density = 0.0
         mean_cell_size = 0.0
 
-    cellvit_contours = _load_cellvit_contours(image_path)
+    cellvit_contours = load_cellvit_contours(image_path)
     if cellvit_contours:
         cellvit_areas = [
             _polygon_area(contour)
@@ -796,12 +781,12 @@ def _require_args(parser: argparse.ArgumentParser, args: argparse.Namespace, nam
 def main(argv: list[str] | None = None) -> int:
     """Write a plan file or execute a sweep worker."""
     parser = argparse.ArgumentParser(description="Plan the combinatorial sweep task")
-    parser.add_argument("--config-path", default=None)
-    parser.add_argument("--checkpoint-dir", default=None)
-    parser.add_argument("--data-root", default=None)
-    parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--config-path", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("--checkpoint-dir", default=str(DEFAULT_CHECKPOINT_DIR))
+    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--anchor-tile-id", action="append", default=None)
-    parser.add_argument("--anchor-tile-ids-path", default=None)
+    parser.add_argument("--anchor-tile-ids-path", default=str(DEFAULT_ANCHORS_PATH))
     parser.add_argument("--worker", default=None)
     parser.add_argument("--device", default=DEFAULT_DEVICE)
     parser.add_argument("--guidance-scale", type=float, default=DEFAULT_GUIDANCE_SCALE)

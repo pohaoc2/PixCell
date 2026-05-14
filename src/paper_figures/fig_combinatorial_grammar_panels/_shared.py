@@ -8,20 +8,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-
-STATES: tuple[str, ...] = ("prolif", "nonprolif", "dead")
-LEVELS: tuple[str, ...] = ("low", "mid", "high")
-MORPHOLOGY_METRICS: tuple[str, ...] = (
-    "nuclear_density",
-    "eosin_ratio",
-    "hematoxylin_ratio",
-    "hematoxylin_burden",
-    "mean_cell_size",
-    "nucleus_area_median",
-    "nucleus_area_iqr",
-    "glcm_contrast",
-    "glcm_homogeneity",
+from src.a3_combinatorial_sweep.main import (
+    CELL_STATE_CHANNELS,
+    LEVEL_VALUES,
+    MORPHOLOGY_METRICS,
 )
+
+STATES: tuple[str, ...] = tuple(CELL_STATE_CHANNELS.keys())
+LEVELS: tuple[str, ...] = tuple(LEVEL_VALUES.keys())
 
 
 def compute_pixel_diff(condition_rgb: np.ndarray, reference_rgb: np.ndarray) -> np.ndarray:

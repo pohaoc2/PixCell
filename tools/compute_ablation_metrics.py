@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.cellvit.contours import cellvit_sidecar_path
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
     condition_metric_key,
@@ -509,7 +510,7 @@ def _label_binary_instances(binary_mask: np.ndarray) -> np.ndarray:
 
 
 def _resolve_precomputed_cellvit_mask(image_path: Path) -> Path | None:
-    candidate = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
+    candidate = cellvit_sidecar_path(image_path)
     return candidate if candidate.is_file() else None
 
 
@@ -553,7 +554,7 @@ def run_cellvit(image_path: Path) -> np.ndarray:
         )
     raise RuntimeError(
         "CellViT JSON sidecar not found next to the generated image. Expected "
-        f"{image_path.with_name(f'{image_path.stem}_cellvit_instances.json')}"
+        f"{cellvit_sidecar_path(image_path)}"
     )
 
 

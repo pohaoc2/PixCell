@@ -59,6 +59,13 @@ def _blank_image(size: tuple[int, int] = (256, 256), value: int = 245) -> Image.
     return Image.fromarray(np.full((size[1], size[0], 3), value, dtype=np.uint8), mode="RGB")
 
 
+def _image_is_visually_blank(image: Image.Image) -> bool:
+    arr = np.asarray(image, dtype=np.float32)
+    if arr.size == 0:
+        return True
+    return float(arr.mean()) >= 245.0 and float(arr.std()) <= 2.0
+
+
 def _resolve_representative_tile(
     *,
     generated_root: Path,
@@ -79,6 +86,33 @@ def _resolve_representative_tile(
     if not tile_ids:
         raise FileNotFoundError(f"no complete decomposition tiles under {generated_root}")
     return tile_ids[0]
+
+
+def _resolve_panel_a_tile(*, generated_root: Path, preferred_tile_id: str) -> str:
+    preferred_dir = generated_root / preferred_tile_id
+    if preferred_dir.is_dir():
+        preferred_neither = _load_rgb(preferred_dir / "neither.png")
+        if not _image_is_visually_blank(preferred_neither):
+            return preferred_tile_id
+
+    best_tile_id = preferred_tile_id
+    best_score: tuple[float, float, float] | None = None
+    for tile_id in complete_generated_tile_ids(generated_root):
+        tile_dir = generated_root / tile_id
+        neither_path = tile_dir / "neither.png"
+        full_path = tile_dir / "uni_plus_tme.png"
+        if not neither_path.is_file() or not full_path.is_file():
+            continue
+        neither = np.asarray(_load_rgb(neither_path), dtype=np.uint8)
+        full = np.asarray(_load_rgb(full_path), dtype=np.uint8)
+        neither_tissue = float(tissue_mask_from_rgb(neither).mean())
+        neither_std = float(neither.std())
+        full_tissue = float(tissue_mask_from_rgb(full).mean())
+        score = (neither_tissue, neither_std, full_tissue)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_tile_id = tile_id
+    return best_tile_id
 
 
 def _load_tme_thumbnail(orion_root: Path, tile_id: str, *, size: tuple[int, int]) -> Image.Image:
@@ -206,6 +240,8 @@ def _render_panel_a(
     outer_ax.axis("off")
     _panel_label(outer_ax, "A")
     _render_panel_a_row_labels(outer_ax)
+
+    tile_id = _resolve_panel_a_tile(generated_root=generated_root, preferred_tile_id=tile_id)
 
     grid = subgrid.subgridspec(3, 2, wspace=0.03, hspace=0.03)
     sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
@@ -437,6 +473,10 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=FONT_SIZE_DENSE_LABEL)
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([_EFFECT_SHORT.get(r, r) for r in rows], fontsize=FONT_SIZE_DENSE_LABEL)
+    ax.set_xticks(np.arange(-0.5, len(cols), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(rows), 1), minor=True)
+    ax.grid(which="minor", color="#F2F0EA", linestyle="-", linewidth=1.2)
+    ax.tick_params(which="minor", bottom=False, left=False)
     for row_idx in range(len(rows)):
         for col_idx in range(len(cols)):
             value = matrix[row_idx, col_idx]

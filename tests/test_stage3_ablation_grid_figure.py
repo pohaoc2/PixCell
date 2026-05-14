@@ -60,7 +60,7 @@ def test_condition_label_single():
     assert _condition_label(("cell_types",)) == "CT"
     assert _condition_label(("cell_state",)) == "CS"
     assert _condition_label(("vasculature",)) == "Vas"
-    assert _condition_label(("microenv",)) == "Env"
+    assert _condition_label(("microenv",)) == "NUT"
 
 
 def test_condition_label_multi_follows_four_group_order():
@@ -69,11 +69,11 @@ def test_condition_label_multi_follows_four_group_order():
 
 
 def test_condition_label_three():
-    assert _condition_label(("cell_types", "cell_state", "microenv")) == "CT+CS+Env"
+    assert _condition_label(("cell_types", "cell_state", "microenv")) == "CT+CS+NUT"
 
 
 def test_condition_label_all_four():
-    assert _condition_label(FOUR_GROUP_ORDER) == "CT+CS+Vas+Env"
+    assert _condition_label(FOUR_GROUP_ORDER) == "CT+CS+Vas+NUT"
 
 
 from tools.stage3.ablation_vis_utils import ordered_subset_condition_tuples, condition_metric_key

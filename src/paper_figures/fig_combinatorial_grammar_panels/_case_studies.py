@@ -5,10 +5,10 @@ import numpy as np
 from matplotlib.patches import Rectangle
 
 from src.paper_figures.style import FONT_SIZE_DENSE_LABEL, FONT_SIZE_DENSE_TITLE, FONT_SIZE_INLINE, FONT_SIZE_LABEL
-from tools.ablation_report.shared import INK, SOFT_GRID, plt
+from tools.ablation_report.shared import INK, OKABE_BLUE, SOFT_GRID, plt
 
 
-_METRIC_LABELS: dict[str, str] = {
+_MORPHOLOGY_LABELS: dict[str, str] = {
     "residual_nuclear_density": "nuclear density",
     "residual_mean_cell_size": "mean cell size",
     "residual_nucleus_area_median": "nucleus area median",
@@ -100,7 +100,7 @@ def render_panel_c(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
         l2_value = float(case_row.get("residual_l2_norm", 0.0) or 0.0)
 
         ranked: list[tuple[float, str, float]] = []
-        for key, label in _METRIC_LABELS.items():
+        for key, label in _MORPHOLOGY_LABELS.items():
             value = case_row.get(key)
             if value in ("", None):
                 continue
@@ -112,7 +112,7 @@ def render_panel_c(fig: plt.Figure, subgrid, *, residual_rows: list[dict[str, st
         values = [value for _, _, value in ranked]
         y = np.arange(len(labels), dtype=np.float64)
 
-        ax.barh(y, values, height=0.66, color="#4C78A8", edgecolor="black", linewidth=0.5)
+        ax.barh(y, values, height=0.66, color=OKABE_BLUE, edgecolor="black", linewidth=0.5)
         ax.axvline(0.0, color="black", linewidth=0.8)
         ax.set_yticks(y)
         ax.set_yticklabels(labels, fontsize=FONT_SIZE_DENSE_LABEL, color=INK)

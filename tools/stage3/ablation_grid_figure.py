@@ -52,6 +52,7 @@ from tools.stage3.ablation_vis_utils import (
     ordered_subset_condition_tuples,
     parse_uni_cosine_scores_json,
 )
+from tools.cellvit.contours import load_cellvit_contours, overlay_cellvit_contours
 from tools.stage3.common import print_progress
 from tools.stage3.style_mapping import load_style_mapping
 
@@ -92,7 +93,7 @@ METRIC_BAR_MAX_BY_NAME: dict[str, float] = {
 }
 
 ALL4CH_KEY: str = condition_metric_key(FOUR_GROUP_ORDER)
-_PAPER_GROUP_LABELS: tuple[str, ...] = ("CT", "CS", "Vas", "Nut")
+_PAPER_GROUP_LABELS: tuple[str, ...] = tuple(GROUP_SHORT_LABELS[g] for g in FOUR_GROUP_ORDER)
 
 
 def _cardinality_color(n: int) -> str:
@@ -464,51 +465,22 @@ def _maybe_contour_cell_mask(
     ax.contour(cell_mask, levels=[0.5], colors=["white"], linewidths=0.8, alpha=0.9)
 
 
-def _load_cellvit_contours(image_path: Path) -> list[np.ndarray]:
-    """Load imported CellViT contour polygons from the JSON sidecar when available."""
-    sidecar_path = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
-    if not sidecar_path.is_file():
-        return []
-
-    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    contours: list[np.ndarray] = []
-    for cell in payload.get("cells", []):
-        contour = cell.get("contour")
-        if not isinstance(contour, list) or len(contour) < 3:
-            continue
-        arr = np.asarray(contour, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] < 2:
-            continue
-        contours.append(arr[:, :2])
-    return contours
+# Re-export for backward compatibility (tests import this name from here).
+_load_cellvit_contours = load_cellvit_contours
 
 
 def _maybe_overlay_cellvit_contours(ax, image_path: Path, *, enabled: bool) -> None:
-    """Overlay imported CellViT contours in yellow for debugging PQ/AJI mismatches."""
     if not enabled:
         return
-    for contour in _load_cellvit_contours(image_path):
-        ax.plot(
-            contour[:, 0],
-            contour[:, 1],
-            color="yellow",
-            linewidth=0.7,
-            alpha=0.95,
-            zorder=4,
-        )
+    overlay_cellvit_contours(ax, image_path, color="yellow", linewidth=0.7, alpha=0.95)
 
 
 def _overlay_cellvit_contours_red(ax, image_path: Path) -> None:
-    """Overlay CellViT contours in red on every ablation panel."""
-    for contour in _load_cellvit_contours(image_path):
-        ax.plot(
-            contour[:, 0],
-            contour[:, 1],
-            color="red",
-            linewidth=0.6,
-            alpha=0.85,
-            zorder=4,
-        )
+    overlay_cellvit_contours(ax, image_path, color="red")
+
+
+def _overlay_cellvit_contours_gray(ax, image_path: Path) -> None:
+    overlay_cellvit_contours(ax, image_path, color=(0.6, 0.6, 0.6))
 
 
 def render_ablation_grid_figure(
@@ -647,6 +619,7 @@ def render_ablation_grid_figure(
         he_arr = np.asarray(Image.open(real_he_path).convert("RGB"))
         image_ax.imshow(he_arr)
         _maybe_contour_cell_mask(image_ax, cell_mask, (he_arr.shape[0], he_arr.shape[1]))
+        _overlay_cellvit_contours_gray(image_ax, real_he_path)
     image_ax.set_xticks([])
     image_ax.set_yticks([])
     for spine in image_ax.spines.values():

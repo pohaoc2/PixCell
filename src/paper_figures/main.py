@@ -7,6 +7,7 @@ from src.paper_figures.fig_combined_performance import build_combined_performanc
 from src.paper_figures.fig_combinatorial_grammar import save_combinatorial_grammar_figure
 from src.paper_figures.fig_combinatorial_grammar_si import save_combinatorial_grammar_si_figure
 from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
+from src.paper_figures.fig_si_a1_a2_unified import save_split_figures as save_si_a1_a2_split_figures
 from src.paper_figures.fig_si_a2_bypass import build_si_a2_bypass_figure
 from src.paper_figures.fig_si_a3_zero_init import build_si_a3_zero_init_figure
 from src.paper_figures.fig_uni_tme_decomposition import save_uni_tme_decomposition_figure
@@ -182,12 +183,23 @@ def main() -> None:
         if not A3_RESIDUALS_CSV.is_file():
             print("Skipping 09_combinatorial_grammar.png; missing", A3_RESIDUALS_CSV)
 
+    SI_A1_A2_CACHE = ROOT / "inference_output" / "si_a1_a2" / "cache.json"
+    if SI_A1_A2_CACHE.is_file():
+        save_si_a1_a2_split_figures(
+            cache_path=SI_A1_A2_CACHE,
+            tile_dir=SI_A1_A2_CACHE.parent / "tiles",
+            out=PNG_DIR / "SI_A1_A2_unified.png",
+            dpi=300,
+        )
+    else:
+        print("Skipping SI_A1_A2_unified.png; missing", SI_A1_A2_CACHE)
+
     print(
         "Saved 01_metric_tradeoffs.png, 02_paired_vs_unpaired.png, "
         "03_channel_effect_sizes.png, 04_leave_one_out_impact.png, "
         "05_paired_ablation_grid.png, 06_unpaired_ablation_grid.png, "
-        "07_inverse_decoding.png, 08_uni_tme_decomposition.png, and "
-        "09_combinatorial_grammar.png when inputs are available to",
+        "07_inverse_decoding.png, 08_uni_tme_decomposition.png, "
+        "09_combinatorial_grammar.png, SI_A1_A2_unified.png when inputs are available to",
         PNG_DIR,
     )
 

@@ -159,7 +159,7 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
     ax.text(
         x_cond,
         header_y,
-        "CT/CS/VAS/NUC",
+        "CT/CS/VAS/NUT",
         ha="center",
         va="center",
         fontsize=_scaled(FONT_SIZE_CELL_TEXT, font_scale),

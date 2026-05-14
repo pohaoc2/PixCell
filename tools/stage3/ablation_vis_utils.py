@@ -22,7 +22,7 @@ GROUP_SHORT_LABELS: dict[str, str] = {
     "cell_types": "CT",
     "cell_state": "CS",
     "vasculature": "Vas",
-    "microenv": "Nutrient",
+    "microenv": "NUT",
 }
 
 _LEGACY_GROUP_ALIASES: dict[str, str] = {

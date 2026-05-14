@@ -23,7 +23,7 @@ def test_null_uni_embed_dtype():
 
 def test_cosine_similarity_range():
     """cosine_similarity values must be in [-1, 1]."""
-    from validate_sim_to_exp import cosine_similarity_matrix
+    from pipeline.validate_sim_to_exp import cosine_similarity_matrix
     a = torch.randn(10, 1536)
     b = torch.randn(10, 1536)
     sims = cosine_similarity_matrix(a, b)
@@ -33,7 +33,7 @@ def test_cosine_similarity_range():
 
 def test_cosine_similarity_identical():
     """Identical vectors should give similarity 1.0."""
-    from validate_sim_to_exp import cosine_similarity_matrix
+    from pipeline.validate_sim_to_exp import cosine_similarity_matrix
     a = torch.randn(5, 1536)
     sims = cosine_similarity_matrix(a, a)
     assert torch.allclose(sims, torch.ones(5), atol=1e-5)
@@ -41,7 +41,7 @@ def test_cosine_similarity_identical():
 
 def test_cosine_similarity_orthogonal():
     """Orthogonal vectors should give similarity 0.0."""
-    from validate_sim_to_exp import cosine_similarity_matrix
+    from pipeline.validate_sim_to_exp import cosine_similarity_matrix
     a = torch.zeros(1, 4)
     b = torch.zeros(1, 4)
     a[0, 0] = 1.0
@@ -54,7 +54,7 @@ def test_load_sim_ctrl_tensor(tmp_path):
     """load_sim_ctrl_tensor returns a [C, H, W] tensor with the correct channel count."""
     import cv2
     import numpy as np
-    from validate_sim_to_exp import load_sim_ctrl_tensor
+    from pipeline.validate_sim_to_exp import load_sim_ctrl_tensor
 
     active_channels = ["cell_mask", "oxygen"]
     sim_id = "snap_0001"

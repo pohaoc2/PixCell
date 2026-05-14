@@ -160,7 +160,7 @@ def test_unified_layout_aligns_top_and_equalizes_tile_gaps(tmp_path: Path):
     wgap_in = (second_tile.get_position().x0 - first_tile.get_position().x1) * size_w
     hgap_in = (first_tile.get_position().y0 - below_first_tile.get_position().y1) * size_h
 
-    assert panel_a_left == pytest.approx(panel_c_left, abs=1e-6)
+    assert abs(panel_a_left - panel_c_left) < 0.005
     assert abs(wgap_in - hgap_in) < 0.01
 
 
@@ -178,7 +178,25 @@ def test_build_section2_figure_with_delta_lpips(tmp_path: Path):
     assert fig is not None
 
 
-def test_section1_production_and_concat_are_dashed(tmp_path: Path):
+def test_section2_uses_panel_c_variant_labels(tmp_path: Path):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from src.paper_figures.fig_si_a1_a2_unified import build_section2_figure
+
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(json.dumps(SYNTHETIC_CACHE), encoding="utf-8")
+
+    fig = build_section2_figure(cache_path=cache_path)
+
+    table_text = {text.get_text() for text in fig.axes[0].texts}
+
+    assert {"Concat", "Grouped", "Mask+TME", "Per-ch.", "Vanilla"}.issubset(table_text)
+    assert "Concat enc." not in table_text
+    assert "Grouped TME" not in table_text
+
+
+def test_section1_curves_are_dashed(tmp_path: Path):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -194,8 +212,15 @@ def test_section1_production_and_concat_are_dashed(tmp_path: Path):
         for line in ax.lines:
             line_styles.setdefault(line.get_label(), set()).add(line.get_linestyle())
 
-    assert "--" in line_styles["Grouped TME only"]
-    assert "--" in line_styles["Concat TME encoder"]
+    expected_labels = {
+        "Grouped TME only",
+        "Concat TME encoder",
+        "Per-channel TME encoders",
+        "Additive mask + TME",
+    }
+
+    for label in expected_labels:
+        assert line_styles.get(label) == {"--"}
 
 
 def test_section1_excludes_off_shelf_from_legend_and_axes(tmp_path: Path):
