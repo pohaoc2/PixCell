@@ -12,7 +12,15 @@ from typing import Any
 
 from src._tasklib.io import ensure_directory, write_json
 from src._tasklib.runtime import CommandSpec, JobPlan, JobState, RuntimeProbe, TaskPlan, probe_runtime
+from tools.cellvit.contours import load_cellvit_contours
 
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = ROOT / "configs" / "config_controlnet_exp_a1_concat.py"
+DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "concat_95470_0" / "checkpoints" / "step_0002600"
+DEFAULT_DATA_ROOT = ROOT / "data" / "orion-crc33"
+DEFAULT_OUT_DIR = ROOT / "src" / "a3_combinatorial_sweep" / "out"
+DEFAULT_ANCHORS_PATH = ROOT / "src" / "a3_combinatorial_sweep" / "anchors_k20_t1_medoid.txt"
 
 DEFAULT_DEVICE = "cuda"
 DEFAULT_GUIDANCE_SCALE = 2.5
@@ -368,6 +376,73 @@ def run_anchor_worker(
     return tuple(outputs)
 
 
+def run_generate_worker(
+    config: CombinatorialSweepConfig,
+    *,
+    device: str = DEFAULT_DEVICE,
+    guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
+    num_steps: int = DEFAULT_NUM_STEPS,
+    seed: int = DEFAULT_SEED,
+) -> tuple[Path, ...]:
+    """Generate all planned anchor sweeps in one model-loading pass."""
+    anchors, anchor_error = load_anchor_tile_ids(config)
+    if anchor_error is not None or not anchors:
+        raise FileNotFoundError(anchor_error or "missing_anchor_selection")
+
+    models, runtime_config, scheduler, exp_channels_dir, feat_dir = _load_generation_runtime(
+        config_path=config.config_path,
+        checkpoint_dir=config.checkpoint_dir,
+        data_root=config.data_root,
+        device=device,
+        num_steps=num_steps,
+    )
+    active_channels = list(runtime_config.data.active_channels)
+    conditions = enumerate_conditions()
+
+    outputs: list[Path] = []
+    for index, anchor_id in enumerate(anchors, start=1):
+        anchor_dir = config.out_dir / "generated" / anchor_id
+        expected_paths = tuple(anchor_dir / f"{build_condition_id(condition)}.png" for condition in conditions)
+        if all(path.is_file() for path in expected_paths):
+            outputs.extend(expected_paths)
+            print(f"[{index}/{len(anchors)}] skip {anchor_id} (existing)", flush=True)
+            continue
+
+        base_ctrl = _load_anchor_ctrl(
+            anchor_id,
+            active_channels=active_channels,
+            image_size=runtime_config.image_size,
+            exp_channels_dir=exp_channels_dir,
+        )
+        uni_embeds = _load_anchor_uni(anchor_id, feat_dir=feat_dir)
+        fixed_noise = _make_generation_noise(
+            config=runtime_config,
+            scheduler=scheduler,
+            device=device,
+            seed=seed,
+        )
+        for condition in conditions:
+            out_path = anchor_dir / f"{build_condition_id(condition)}.png"
+            if out_path.is_file():
+                outputs.append(out_path)
+                continue
+            condition_ctrl = _build_condition_ctrl(base_ctrl, active_channels=active_channels, condition=condition)
+            generated = _render_generated_image(
+                condition_ctrl,
+                models=models,
+                config=runtime_config,
+                scheduler=scheduler,
+                uni_embeds=uni_embeds,
+                device=device,
+                guidance_scale=guidance_scale,
+                fixed_noise=fixed_noise,
+                seed=seed,
+            )
+            outputs.append(_save_image(generated, out_path))
+        print(f"[{index}/{len(anchors)}] generated {anchor_id}", flush=True)
+    return tuple(outputs)
+
+
 def _discover_summary_anchors(config: CombinatorialSweepConfig) -> list[str]:
     anchors, _ = load_anchor_tile_ids(config)
     if anchors:
@@ -462,37 +537,14 @@ def _compute_glcm_features(gray_image, tissue_mask, *, levels: int = 8) -> tuple
     return contrast, homogeneity
 
 
-def _load_cellvit_contours(image_path: Path) -> list[list[tuple[float, float]]]:
-    sidecar_path = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
-    if not sidecar_path.is_file():
-        return []
-    try:
-        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-    contours: list[list[tuple[float, float]]] = []
-    for cell in payload.get("cells", []):
-        contour_raw = cell.get("contour")
-        if not isinstance(contour_raw, list) or len(contour_raw) < 3:
-            continue
-        contour: list[tuple[float, float]] = []
-        for point in contour_raw:
-            if not isinstance(point, (list, tuple)) or len(point) < 2:
-                continue
-            contour.append((float(point[0]), float(point[1])))
-        if len(contour) >= 3:
-            contours.append(contour)
-    return contours
-
-
-def _polygon_area(contour: list[tuple[float, float]]) -> float:
+def _polygon_area(contour) -> float:
+    """Shoelace area; accepts ndarray[N, 2] or list[tuple[float, float]]."""
     area_acc = 0.0
     n = len(contour)
     for idx in range(n):
         x1, y1 = contour[idx]
         x2, y2 = contour[(idx + 1) % n]
-        area_acc += x1 * y2 - x2 * y1
+        area_acc += float(x1) * float(y2) - float(x2) * float(y1)
     return abs(area_acc) * 0.5
 
 
@@ -533,7 +585,7 @@ def _compute_signature(image_path: Path) -> dict[str, float]:
         nuclear_density = 0.0
         mean_cell_size = 0.0
 
-    cellvit_contours = _load_cellvit_contours(image_path)
+    cellvit_contours = load_cellvit_contours(image_path)
     if cellvit_contours:
         cellvit_areas = [
             _polygon_area(contour)
@@ -729,12 +781,12 @@ def _require_args(parser: argparse.ArgumentParser, args: argparse.Namespace, nam
 def main(argv: list[str] | None = None) -> int:
     """Write a plan file or execute a sweep worker."""
     parser = argparse.ArgumentParser(description="Plan the combinatorial sweep task")
-    parser.add_argument("--config-path", default=None)
-    parser.add_argument("--checkpoint-dir", default=None)
-    parser.add_argument("--data-root", default=None)
-    parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--config-path", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("--checkpoint-dir", default=str(DEFAULT_CHECKPOINT_DIR))
+    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--anchor-tile-id", action="append", default=None)
-    parser.add_argument("--anchor-tile-ids-path", default=None)
+    parser.add_argument("--anchor-tile-ids-path", default=str(DEFAULT_ANCHORS_PATH))
     parser.add_argument("--worker", default=None)
     parser.add_argument("--device", default=DEFAULT_DEVICE)
     parser.add_argument("--guidance-scale", type=float, default=DEFAULT_GUIDANCE_SCALE)
@@ -744,7 +796,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.worker is None:
         _require_args(parser, args, ("config_path", "checkpoint_dir", "data_root", "out_dir"))
-    elif args.worker == "summarize":
+    elif args.worker in {"summarize", "analyze"}:
         _require_args(parser, args, ("out_dir",))
     else:
         _require_args(parser, args, ("config_path", "checkpoint_dir", "data_root", "out_dir"))
@@ -759,8 +811,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.worker is not None:
-        if args.worker == "summarize":
+        if args.worker in {"summarize", "analyze"}:
             run_summary_worker(config)
+            return 0
+        if args.worker == "generate":
+            run_generate_worker(
+                config,
+                device=args.device,
+                guidance_scale=args.guidance_scale,
+                num_steps=args.num_steps,
+                seed=args.seed,
+            )
             return 0
         run_anchor_worker(
             config,

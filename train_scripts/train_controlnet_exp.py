@@ -13,6 +13,7 @@ Entry point: use stage2_train.py (calls main() here).
 """
 import os
 import json
+import math
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -44,7 +45,7 @@ from train_scripts.exp_config_utils import (
     resolve_exp_active_channels,
     resolve_exp_dataset_kwargs,
 )
-from tools.channel_group_utils import split_channels_to_groups, apply_group_dropout
+from tools.channel_group_utils import split_channels_to_groups
 
 
 def _conditioning_mode(config) -> str:
@@ -54,6 +55,88 @@ def _conditioning_mode(config) -> str:
     if getattr(config, "channel_groups", None) is not None:
         return "grouped"
     return "non_mask_channels"
+
+
+def _grad_health(parameters, top_k: int = 0) -> dict[str, float | int]:
+    finite_sq_sum = 0.0
+    max_abs = 0.0
+    total_tensors = 0
+    nonfinite_tensors = 0
+    nonfinite_values = 0
+    top_tensors = []
+    for item in parameters:
+        if isinstance(item, tuple):
+            name, param = item
+        else:
+            name, param = None, item
+        grad = param.grad
+        if grad is None:
+            continue
+        total_tensors += 1
+        grad = grad.detach()
+        finite = torch.isfinite(grad)
+        finite_count = int(finite.sum().item())
+        nonfinite_count = grad.numel() - finite_count
+        if nonfinite_count:
+            nonfinite_tensors += 1
+            nonfinite_values += nonfinite_count
+        if finite_count:
+            finite_values = grad[finite].double()
+            finite_norm = torch.linalg.vector_norm(finite_values).item()
+            finite_sq_sum += finite_norm * finite_norm
+            tensor_max_abs = float(finite_values.abs().max().item())
+            max_abs = max(max_abs, tensor_max_abs)
+            if top_k and name is not None:
+                top_tensors.append(
+                    {
+                        "name": name,
+                        "finite_norm": finite_norm,
+                        "max_abs": tensor_max_abs,
+                    }
+                )
+    stats = {
+        "finite_norm": math.sqrt(finite_sq_sum),
+        "max_abs": max_abs,
+        "total_tensors": total_tensors,
+        "nonfinite_tensors": nonfinite_tensors,
+        "nonfinite_values": nonfinite_values,
+    }
+    if top_k:
+        stats["top_tensors"] = sorted(
+            top_tensors, key=lambda item: item["max_abs"], reverse=True
+        )[:top_k]
+    return stats
+
+
+def _safe_clip_grad_norm_(parameters, max_norm: float, eps: float = 1e-6) -> float:
+    """Clip gradients using a float64 norm so large finite grads do not overflow."""
+    params = [p for p in parameters if p.grad is not None]
+    finite_sq_sum = 0.0
+    for param in params:
+        grad = param.grad.detach()
+        finite = torch.isfinite(grad)
+        if not bool(finite.all().item()):
+            grad[~finite] = 0
+        if bool(finite.any().item()):
+            finite_values = grad[finite].double()
+            finite_norm = torch.linalg.vector_norm(finite_values).item()
+            finite_sq_sum += finite_norm * finite_norm
+
+    total_norm = math.sqrt(finite_sq_sum)
+    if total_norm > max_norm:
+        clip_coef = max_norm / (total_norm + eps)
+        for param in params:
+            param.grad.detach().mul_(clip_coef)
+    return total_norm
+
+
+def _unscale_gradients_if_available(accelerator) -> bool:
+    """Unscale all prepared optimizer gradients once before manual clipping."""
+    unscale = getattr(accelerator, "unscale_gradients", None)
+    if unscale is None:
+        return False
+    unscale()
+    return True
 
 
 # ── Initialization ────────────────────────────────────────────────────────────
@@ -137,7 +220,6 @@ def train_controlnet_exp(models_dict):
     # <- EXP: read training knobs from config
     cfg_dropout_prob = getattr(config, "cfg_dropout_prob", 0.15)
     channel_groups = getattr(config, "channel_groups", None)
-    group_dropout_probs = getattr(config, "group_dropout_probs", {})
     use_multi_group = channel_groups is not None
     conditioning_mode = _conditioning_mode(config)
     channel_weights = getattr(config, "channel_reliability_weights", None)
@@ -157,6 +239,7 @@ def train_controlnet_exp(models_dict):
     logger.info("Starting ControlNet + TME Fine-tuning (paired experimental data)")
     logger.info(f"cfg_dropout_prob={cfg_dropout_prob}  channel_weights={channel_weights}")
     logger.info(f"start_epoch={start_epoch}  start_step={start_step}  total_steps={total_steps}")
+    logger.info(f"debug_tme_probe={getattr(config, 'debug_tme_probe', False)}")
     logger.info("=" * 80)
 
     train_log_fh = None
@@ -167,6 +250,7 @@ def train_controlnet_exp(models_dict):
 
     _proj_grad_norms: dict = {}
     _tme_residuals:   dict = {}
+    debug_tme_probe_pending = bool(getattr(config, "debug_tme_probe", False))
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         for step, batch in enumerate(train_dataloader):
             if step < skip_step:
@@ -216,15 +300,6 @@ def train_controlnet_exp(models_dict):
                 tme_channel_dict = split_channels_to_groups(
                     control_input.to(dtype=tme_dtype), active_channels, channel_groups,
                 )
-                active_groups_per_sample = apply_group_dropout(
-                    [g["name"] for g in channel_groups], group_dropout_probs, batch_size=bs,
-                )
-                # Per-sample dropout: zero out channels for groups dropped in each sample
-                for b_idx in range(bs):
-                    for g in channel_groups:
-                        gname = g["name"]
-                        if gname not in active_groups_per_sample[b_idx] and gname in tme_channel_dict:
-                            tme_channel_dict[gname][b_idx] = 0.0
             elif conditioning_mode == "all_channels":
                 tme_inputs = control_input.to(dtype=tme_dtype)
             else:
@@ -239,9 +314,18 @@ def train_controlnet_exp(models_dict):
             # graph is always built after zero_grad(), guaranteeing that
             # optimizer_tme.step() sees non-None gradients on every step.
             grad_norm = None
+            grad_norm_ctrl = None
+            grad_norm_tme = None
+            grad_health_ctrl = None
+            grad_health_tme = None
             with accelerator.accumulate(controlnet, tme_module):
                 optimizer.zero_grad()
                 optimizer_tme.zero_grad()
+                if debug_tme_probe_pending and accelerator.is_main_process:
+                    probe_target = accelerator.unwrap_model(tme_module)
+                    if hasattr(probe_target, "enable_debug_tme_probe"):
+                        probe_target.enable_debug_tme_probe(logger)
+                    debug_tme_probe_pending = False
 
                 if conditioning_mode == "grouped":
                     fused, _tme_residuals = tme_module(
@@ -271,6 +355,7 @@ def train_controlnet_exp(models_dict):
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
+                    gradients_unscaled = _unscale_gradients_if_available(accelerator)
                     _proj_grad_norms = {}
                     if conditioning_mode == "grouped":
                         for _gname, _gblock in accelerator.unwrap_model(tme_module).groups.items():
@@ -280,10 +365,21 @@ def train_controlnet_exp(models_dict):
                                     _g.norm().item(),
                                     _gblock.cross_attn.proj.weight.abs().max().item(),
                                 )
-                    grad_norm_ctrl = accelerator.clip_grad_norm_(controlnet.parameters(), config.gradient_clip)
+                    grad_health_ctrl = _grad_health(controlnet.parameters())
+                    grad_health_tme = _grad_health(tme_module.named_parameters(), top_k=8)
+                    if gradients_unscaled:
+                        grad_norm_ctrl = torch.nn.utils.clip_grad_norm_(
+                            controlnet.parameters(), config.gradient_clip
+                        )
+                    else:
+                        grad_norm_ctrl = accelerator.clip_grad_norm_(
+                            controlnet.parameters(), config.gradient_clip
+                        )
                     optimizer.step()
                     lr_scheduler.step()
-                    grad_norm_tme = accelerator.clip_grad_norm_(tme_module.parameters(), config.gradient_clip)
+                    grad_norm_tme = _safe_clip_grad_norm_(
+                        tme_module.parameters(), config.gradient_clip
+                    )
                     optimizer_tme.step()
                     lr_scheduler_tme.step()
                     grad_norm = max(float(grad_norm_ctrl), float(grad_norm_tme))
@@ -320,6 +416,10 @@ def train_controlnet_exp(models_dict):
                                     "step": int(global_step),
                                     "loss": float(loss.detach().item()),
                                     "grad_norm": grad_norm,
+                                    "grad_norm_ctrl": None if grad_norm_ctrl is None else float(grad_norm_ctrl),
+                                    "grad_norm_tme": None if grad_norm_tme is None else float(grad_norm_tme),
+                                    "grad_health_ctrl": grad_health_ctrl,
+                                    "grad_health_tme": grad_health_tme,
                                 }
                             )
                             + "\n"
@@ -354,7 +454,9 @@ def train_controlnet_exp(models_dict):
                 logger.info(f"Reached max steps ({total_steps}). Stopping.")
                 break
 
-        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
+        if getattr(config, "save_final_checkpoint", True) and (
+            epoch % config.save_model_epochs == 0 or epoch == config.num_epochs
+        ):
             save_checkpoint_with_tme(
                 accelerator, controlnet, tme_module, model_ema,
                 optimizer, optimizer_tme, lr_scheduler, lr_scheduler_tme,

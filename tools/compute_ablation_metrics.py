@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.cellvit.contours import cellvit_sidecar_path
 from tools.stage3.ablation_vis_utils import (
     FOUR_GROUP_ORDER,
     condition_metric_key,
@@ -509,7 +510,7 @@ def _label_binary_instances(binary_mask: np.ndarray) -> np.ndarray:
 
 
 def _resolve_precomputed_cellvit_mask(image_path: Path) -> Path | None:
-    candidate = image_path.with_name(f"{image_path.stem}_cellvit_instances.json")
+    candidate = cellvit_sidecar_path(image_path)
     return candidate if candidate.is_file() else None
 
 
@@ -553,7 +554,7 @@ def run_cellvit(image_path: Path) -> np.ndarray:
         )
     raise RuntimeError(
         "CellViT JSON sidecar not found next to the generated image. Expected "
-        f"{image_path.with_name(f'{image_path.stem}_cellvit_instances.json')}"
+        f"{cellvit_sidecar_path(image_path)}"
     )
 
 
@@ -941,20 +942,29 @@ def main() -> None:
     if "cosine" in metrics_to_compute:
         shared_uni_extractor = _load_uni_extractor(args.uni_model, args.device)
 
+    failed: list[tuple[str, str]] = []
     for idx, tile_id in enumerate(tile_ids, start=1):
         tile_cache_dir = cache_dir / tile_id
-        out_path = compute_metrics_for_cache_dir(
-            tile_cache_dir,
-            orion_root=orion_root,
-            style_mapping=style_mapping,
-            metrics_to_compute=metrics_to_compute,
-            device=args.device,
-            uni_model=args.uni_model,
-            lpips_loss_fn=lpips_loss_fn,
-            lpips_batch_size=args.lpips_batch_size,
-            uni_extractor=shared_uni_extractor,
-        )
-        print(f"[{idx}/{len(tile_ids)}] Wrote metrics → {out_path}")
+        try:
+            out_path = compute_metrics_for_cache_dir(
+                tile_cache_dir,
+                orion_root=orion_root,
+                style_mapping=style_mapping,
+                metrics_to_compute=metrics_to_compute,
+                device=args.device,
+                uni_model=args.uni_model,
+                lpips_loss_fn=lpips_loss_fn,
+                lpips_batch_size=args.lpips_batch_size,
+                uni_extractor=shared_uni_extractor,
+            )
+            print(f"[{idx}/{len(tile_ids)}] Wrote metrics → {out_path}")
+        except Exception as exc:
+            print(f"[{idx}/{len(tile_ids)}] SKIP {tile_id}: {exc}", file=sys.stderr)
+            failed.append((tile_id, str(exc)))
+    if failed:
+        print(f"\n{len(failed)} tile(s) failed:", file=sys.stderr)
+        for tile_id, msg in failed:
+            print(f"  {tile_id}: {msg}", file=sys.stderr)
 
 
 if __name__ == "__main__":

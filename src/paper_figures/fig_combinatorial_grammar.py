@@ -16,7 +16,7 @@ DEFAULT_A3_OUT = ROOT / "src" / "a3_combinatorial_sweep" / "out"
 DEFAULT_GENERATED_ROOT = DEFAULT_A3_OUT / "generated"
 DEFAULT_SIGNATURES_CSV = DEFAULT_A3_OUT / "morphological_signatures.csv"
 DEFAULT_RESIDUALS_CSV = DEFAULT_A3_OUT / "additive_model_residuals.csv"
-DEFAULT_ABLATION_ROOT = ROOT / "inference_output" / "paired_ablation" / "ablation_results"
+DEFAULT_ABLATION_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "paired_ablation" / "ablation_results"
 DEFAULT_OUT_PNG = ROOT / "figures" / "pngs" / "09_combinatorial_grammar.png"
 
 

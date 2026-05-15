@@ -33,6 +33,8 @@ _WORKER_RUNTIME: dict | None = None
 
 from tools.stage3.ablation_cache import load_manifest, resolve_all_image_path
 from tools.stage3.common import (
+    fix_work_dir,
+    load_json,
     make_inference_scheduler,
     print_progress,
     resolve_uni_embedding,
@@ -74,7 +76,7 @@ def _upsert_all_section(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_json(manifest_path)
     if not group_names:
         group_names = tuple(manifest.get("group_names") or ())
     if not group_names:
@@ -195,7 +197,11 @@ def generate_subset_cache_for_tile(
         group_names_from_channel_groups,
     )
     from tools.stage3.ablation_cache import save_subset_condition_cache
-    from tools.stage3.tile_pipeline import generate_ablation_images_with_context, prepare_tile_context
+    from tools.stage3.tile_pipeline import (
+        generate_ablation_images_with_context,
+        prepare_tile_context,
+        resolve_ablation_channel_groups,
+    )
 
     resolved_uni_npy = uni_npy
     if resolved_uni_npy is None and style_mapping:
@@ -218,7 +224,7 @@ def generate_subset_cache_for_tile(
         exp_channels_dir=exp_channels_dir,
     )
     ctrl_full = tile_context["ctrl_full"]
-    group_names = group_names_from_channel_groups(config.channel_groups)
+    group_names = group_names_from_channel_groups(resolve_ablation_channel_groups(config))
 
     single_conditions = build_subset_conditions(group_names, subset_size=1)
     pair_conditions = build_subset_conditions(group_names, subset_size=2)
@@ -382,12 +388,13 @@ def _load_runtime(
     ckpt_parent = (
         Path(checkpoint_dir)
         if checkpoint_dir
-        else ROOT / "checkpoints/pixcell_controlnet_exp/checkpoints"
+        else ROOT / "checkpoints/concat_95470_0/checkpoints"
     )
     ckpt_dir = find_latest_checkpoint_dir(ckpt_parent)
 
     config = read_config(config_path)
     config._filename = config_path
+    config = fix_work_dir(config, config_path=config_path, root=ROOT)
     models = load_all_models(config, config_path, ckpt_dir, device)
     scheduler = _make_scheduler(num_steps=num_steps, device=device)
 
@@ -623,14 +630,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "with missing all/ and optional UNI feature files."
         ),
     )
-    parser.add_argument("--config", type=str, default=str(ROOT / "configs/config_controlnet_exp.py"))
+    parser.add_argument("--config", type=str, default=str(ROOT / "configs/config_controlnet_exp_a1_concat.py"))
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
         default=None,
         help=(
             "Folder with controlnet_*.pth and tme_module.pth. "
-            "Default: latest under checkpoints/pixcell_controlnet_exp/checkpoints"
+            "Default: latest under checkpoints/concat_95470_0/checkpoints"
         ),
     )
     parser.add_argument(
@@ -676,6 +683,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Backfills missing all/ and can cache UNI features."
         ),
     )
+    mode.add_argument(
+        "--tile-list",
+        type=Path,
+        default=None,
+        help=(
+            "Text file with one tile ID per line. Generates only those tiles under "
+            "--output-dir, skipping tile IDs that already have complete caches."
+        ),
+    )
 
     parser.add_argument(
         "--output-dir",
@@ -685,8 +701,8 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="output_dir",
         help=(
             "Preferred name: --output-dir. With --tile-id: output dir for that tile "
-            "(default: inference_output/full_ablation/{tile_id}). With --n-tiles: parent "
-            "directory (default: inference_output/full_ablation). --cache-dir is kept as a "
+            "(default: inference_output/concat/ablation_subset/{tile_id}). With --n-tiles: parent "
+            "directory (default: inference_output/concat/ablation_subset). --cache-dir is kept as a "
             "backward-compatible alias."
         ),
     )
@@ -772,6 +788,8 @@ def main() -> None:
         parser.error("--uni-npy is only supported with --tile-id (single tile)")
     if args.existing_cache_parent is not None and args.uni_npy is not None:
         parser.error("--uni-npy is only supported with --tile-id (single tile)")
+    if args.tile_list is not None and args.uni_npy is not None:
+        parser.error("--uni-npy is only supported with --tile-id (single tile)")
     if args.skip_existing and args.n_tiles is None:
         parser.error("--skip-existing is only supported with --n-tiles")
 
@@ -787,7 +805,7 @@ def main() -> None:
 
     data_root = Path(args.exp_root if args.exp_root is not None else args.data_root)
     exp_channels_dir, feat_dir, _ = resolve_data_layout(data_root)
-    cache_parent_default = ROOT / "inference_output" / "full_ablation"
+    cache_parent_default = ROOT / "inference_output" / "concat" / "ablation_subset"
     device = args.device
     feature_device = args.feature_device or device
     uni_model = Path(args.uni_model)
@@ -834,7 +852,7 @@ def main() -> None:
             print(f"[{args.tile_id}] Cached {written} UNI feature files")
         return
 
-    if args.n_tiles is not None or args.target_total_tiles is not None:
+    if args.n_tiles is not None or args.target_total_tiles is not None or args.tile_list is not None:
         all_ids = list_tile_ids_from_exp_channels(exp_channels_dir)
         cache_parent = Path(args.output_dir) if args.output_dir is not None else cache_parent_default
         existing_ids = list_complete_cached_tile_ids(cache_parent) if cache_parent.is_dir() else []
@@ -848,17 +866,39 @@ def main() -> None:
                     f"Found {len(incomplete_ids)} incomplete cache dirs under {cache_parent}; "
                     "they will be regenerated and will not count toward existing totals."
                 )
-        try:
-            selected, selection_msg = _select_generation_tile_ids(
-                all_ids=all_ids,
-                existing_ids=existing_ids,
-                tile_sample_seed=args.tile_sample_seed,
-                requested_n=args.n_tiles,
-                target_total_tiles=args.target_total_tiles,
-                skip_existing=args.skip_existing,
+        if args.tile_list is not None:
+            requested = [
+                line.strip()
+                for line in Path(args.tile_list).read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+            if not requested:
+                parser.error(f"--tile-list is empty: {args.tile_list}")
+            all_set = set(all_ids)
+            unknown = sorted({tile_id for tile_id in requested if tile_id not in all_set})
+            if unknown:
+                preview = ", ".join(unknown[:8])
+                suffix = "" if len(unknown) <= 8 else f", ... ({len(unknown)} total)"
+                parser.error(f"--tile-list contains tile IDs not found under --data-root: {preview}{suffix}")
+            existing_set = set(existing_ids)
+            selected = [tile_id for tile_id in requested if tile_id not in existing_set]
+            skipped = len(requested) - len(selected)
+            selection_msg = (
+                f"Selected {len(selected)} tile(s) from {args.tile_list}"
+                f" (skipped {skipped} complete existing cache dirs)"
             )
-        except ValueError as exc:
-            parser.error(str(exc))
+        else:
+            try:
+                selected, selection_msg = _select_generation_tile_ids(
+                    all_ids=all_ids,
+                    existing_ids=existing_ids,
+                    tile_sample_seed=args.tile_sample_seed,
+                    requested_n=args.n_tiles,
+                    target_total_tiles=args.target_total_tiles,
+                    skip_existing=args.skip_existing,
+                )
+            except ValueError as exc:
+                parser.error(str(exc))
         print(selection_msg)
         if not selected:
             return

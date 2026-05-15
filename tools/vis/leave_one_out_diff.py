@@ -996,7 +996,8 @@ def render_loo_diff_figure(
         vals: list[np.ndarray] = []
         for map_ in maps[1:]:
             vals.append(map_[cell_mask > 0.5] if cell_mask is not None else map_.ravel())
-        joined = np.concatenate([v for v in vals if len(v) > 0]) if vals else np.array([0.0])
+        nonempty_vals = [v for v in vals if len(v) > 0]
+        joined = np.concatenate(nonempty_vals) if nonempty_vals else np.array([0.0])
         return max(float(np.percentile(joined, 99)), _EPS)
 
     magnitude_maps = delta_maps if metric == "delta_e" else rgb_maps

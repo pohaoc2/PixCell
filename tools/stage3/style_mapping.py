@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
+
+from tools.stage3.common import load_json
 
 
 def load_style_mapping(mapping_json: str | Path | None) -> dict[str, str]:
@@ -11,7 +12,7 @@ def load_style_mapping(mapping_json: str | Path | None) -> dict[str, str]:
         return {}
 
     path = Path(mapping_json)
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = load_json(path)
     raw_mapping = payload.get("style_mapping", payload) if isinstance(payload, dict) else payload
     if not isinstance(raw_mapping, dict):
         raise ValueError(f"style mapping JSON must contain an object: {path}")

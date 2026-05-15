@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from tools.stage3.common import to_uint8_rgb
+from tools.stage3.common import load_json, to_uint8_rgb
 
 
 CACHE_VERSION = 1
@@ -53,7 +53,7 @@ def save_channel_sweep_manifest(cache_dir: Path, manifest: dict[str, Any]) -> Pa
 def load_channel_sweep_manifest(cache_dir: Path) -> dict[str, Any]:
     cache_dir = Path(cache_dir)
     path = cache_dir / "manifest.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_json(path)
 
 
 def save_channel_sweep_cache(

@@ -2,7 +2,7 @@ import unittest
 import torch
 from diffusion.utils.misc import read_config
 from diffusion.model.builder import build_model
-from tools.channel_group_utils import split_channels_to_groups, apply_group_dropout
+from tools.channel_group_utils import split_channels_to_groups
 
 
 class TestMultiGroupIntegration(unittest.TestCase):
@@ -27,31 +27,6 @@ class TestMultiGroupIntegration(unittest.TestCase):
             self.config.data.active_channels,
             self.config.channel_groups,
         )
-
-        with torch.no_grad():
-            fused = self.module(mask_latent, tme_dict)
-        self.assertEqual(fused.shape, (B, 16, 32, 32))
-
-    def test_group_dropout_integration(self):
-        B = 4
-        control_input = torch.randn(B, 10, 256, 256)
-        mask_latent = torch.randn(B, 16, 32, 32)
-
-        tme_dict = split_channels_to_groups(
-            control_input,
-            self.config.data.active_channels,
-            self.config.channel_groups,
-        )
-        active_per_sample = apply_group_dropout(
-            [g["name"] for g in self.config.channel_groups],
-            self.config.group_dropout_probs,
-            batch_size=B,
-        )
-        for b in range(B):
-            for g in self.config.channel_groups:
-                gname = g["name"]
-                if gname not in active_per_sample[b] and gname in tme_dict:
-                    tme_dict[gname][b] = 0.0
 
         with torch.no_grad():
             fused = self.module(mask_latent, tme_dict)

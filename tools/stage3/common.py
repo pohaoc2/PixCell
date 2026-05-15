@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,29 @@ try:
     from diffusers import DDPMScheduler
 except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight CLI paths
     DDPMScheduler = None  # type: ignore[assignment]
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_json(path: str | Path) -> Any:
+    """Load JSON from disk using the repo's standard UTF-8 text handling."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def fix_work_dir(config: Any, *, config_path: str | Path, root: str | Path | None = None) -> Any:
+    """Rewrite unusable config.work_dir values to a local writable stage3 scratch path."""
+    repo_root = Path(root) if root is not None else ROOT
+    fallback = repo_root / "inference_output" / "stage3_work_dirs" / Path(config_path).stem
+    work_dir_value = getattr(config, "work_dir", None)
+    if not work_dir_value:
+        config.work_dir = str(fallback)
+    else:
+        work_dir = Path(str(work_dir_value))
+        if work_dir.is_absolute() and not work_dir.parent.exists():
+            config.work_dir = str(fallback)
+    Path(str(getattr(config, "work_dir", fallback))).mkdir(parents=True, exist_ok=True)
+    return config
 
 
 def inference_dtype(device: str) -> Any:  # pragma: no cover

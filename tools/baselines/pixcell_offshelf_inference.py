@@ -32,6 +32,13 @@ class OffShelfPixCellInference:
         self._base_model = None
         self._controlnet = None
 
+    @staticmethod
+    def _module_dtype(module) -> torch.dtype:
+        try:
+            return next(module.parameters()).dtype
+        except (StopIteration, AttributeError, TypeError):
+            return torch.float32
+
     def _ensure_loaded(self) -> None:  # pragma: no cover - heavyweight model path
         if self._loaded:
             return
@@ -67,13 +74,14 @@ class OffShelfPixCellInference:
         if mask.size and float(np.nanmax(mask)) > 1.0:
             mask = mask / 255.0
         ctrl_full = torch.from_numpy(mask[None, ...])
+        vae_dtype = self._module_dtype(self._vae)
         return encode_ctrl_mask_latent(
             ctrl_full,
             self._vae,
             vae_shift=getattr(self._vae.config, "shift_factor", 0.0609),
             vae_scale=getattr(self._vae.config, "scaling_factor", 1.5305),
             device=self.device,
-            dtype=torch.float16 if self.device.startswith("cuda") else torch.float32,
+            dtype=vae_dtype,
         )
 
     def run_on_tile(
@@ -94,12 +102,13 @@ class OffShelfPixCellInference:
         self._ensure_loaded()
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        mask_latent = self.encode_mask_to_latent(cell_mask)
-        dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
+        dtype = self._module_dtype(self._controlnet)
+        vae_dtype = self._module_dtype(self._vae)
+        mask_latent = self.encode_mask_to_latent(cell_mask).to(device=self.device, dtype=dtype)
         scheduler = make_inference_scheduler(num_steps=num_steps, device=self.device)
         latents = torch.randn_like(mask_latent, device=self.device, dtype=dtype)
         latents = latents * scheduler.init_noise_sigma
-        y = torch.from_numpy(np.asarray(uni_embedding)).view(1, 1, 1, 1536)
+        y = torch.from_numpy(np.asarray(uni_embedding)).view(1, 1, 1, 1536).to(device=self.device, dtype=dtype)
 
         denoised = denoise(
             latents=latents,
@@ -117,7 +126,7 @@ class OffShelfPixCellInference:
             vae=self._vae,
             vae_scale=getattr(self._vae.config, "scaling_factor", 1.5305),
             vae_shift=getattr(self._vae.config, "shift_factor", 0.0609),
-            dtype=dtype,
+            dtype=vae_dtype,
         )
         out_path = out_dir / f"{tile_id}.png"
         Image.fromarray(image).save(out_path)

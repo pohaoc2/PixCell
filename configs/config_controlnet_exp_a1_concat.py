@@ -9,7 +9,6 @@ directly; a pass-through shim preserves the existing training/inference API.
 _base_ = ["./config_controlnet_exp.py"]
 
 channel_groups = None
-group_dropout_probs = {}
 zero_mask_latent = False
 
 tme_input_mode = "all_channels"
@@ -31,5 +30,5 @@ controlnet_model_kwargs = dict(
     conditioning_patch_size=16,
 )
 
-work_dir = "./checkpoints/pixcell_controlnet_exp_a1_concat"
+work_dir = "./checkpoints/concat"
 seed = 42

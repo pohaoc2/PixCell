@@ -148,12 +148,12 @@ def main():
         description="Stage 3 batch inference + visualizations (paired + unpaired)"
     )
     parser.add_argument("--config",
-        default="configs/config_controlnet_exp.py")
+        default="configs/config_controlnet_exp_a1_concat.py")
     parser.add_argument("--checkpoint-dir",
-        default="checkpoints/pixcell_controlnet_exp/checkpoints/zero_out_mask_post",
+        default="checkpoints/concat_95470_0/checkpoints/step_0002600",
         help="Directory containing controlnet_*.pth + tme_module.pth")
     parser.add_argument("--data-root",   default="data/orion-crc33")
-    parser.add_argument("--output-dir",  default="inference_output/zero_out_mask_post")
+    parser.add_argument("--output-dir",  default="inference_output/concat/eval")
     parser.add_argument("--n-tiles",     type=int,   default=3,
         help="Number of tiles to process")
     parser.add_argument("--seed",        type=int,   default=42)

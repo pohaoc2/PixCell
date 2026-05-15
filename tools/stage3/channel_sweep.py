@@ -48,6 +48,7 @@ from tools.stage3.channel_sweep_figures import (
 )
 from tools.stage3.common import (
     inference_dtype,
+    load_json,
     make_inference_scheduler,
     resolve_uni_embedding,
 )
@@ -347,12 +348,12 @@ def main() -> None:
     parser.add_argument("--data-root", required=True, help="Dataset root containing exp_channels/")
     parser.add_argument(
         "--checkpoint-dir",
-        default=str(ROOT / "checkpoints/pixcell_controlnet_exp/checkpoints"),
+        default=str(ROOT / "checkpoints/concat_95470_0/checkpoints/step_0002600"),
         help="Checkpoint directory or parent containing controlnet_*.pth",
     )
     parser.add_argument(
         "--config",
-        default=str(ROOT / "configs/config_controlnet_exp.py"),
+        default=str(ROOT / "configs/config_controlnet_exp_a1_concat.py"),
         help="Config file used to load the checkpointed models",
     )
     parser.add_argument("--out", required=True, help="Output directory for figures")
@@ -416,7 +417,7 @@ def main() -> None:
 
     exp_channels_dir, feat_dir, _ = resolve_data_layout(data_root)
     style_mapping = load_style_mapping(args.style_mapping_json)
-    class_data = json.loads(Path(args.class_json).read_text(encoding="utf-8"))
+    class_data = load_json(args.class_json)
     models, config, scheduler = load_sweep_models(
         args.config,
         checkpoint_dir=Path(args.checkpoint_dir),

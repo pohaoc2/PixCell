@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import torch
 
 
@@ -29,6 +30,58 @@ class TestCrossAttentionWithWeights(unittest.TestCase):
     def test_backward_compat_with_base_class(self):
         from diffusion.model.nets.PixArt_blocks import MultiHeadCrossAttention
         self.assertIsInstance(self.attn, MultiHeadCrossAttention)
+
+    def test_base_attention_is_batch_isolated_without_mask(self):
+        from diffusion.model.nets.PixArt_blocks import MultiHeadCrossAttention
+
+        attn = MultiHeadCrossAttention(d_model=self.d_model, num_heads=self.num_heads)
+        attn.eval()
+
+        x = torch.randn(2, 8, self.d_model)
+        cond = torch.randn(2, 8, self.d_model)
+
+        with torch.no_grad():
+            out1 = attn(x, cond)
+            cond2 = cond.clone()
+            cond2[1].mul_(1000)
+            out2 = attn(x, cond2)
+
+        torch.testing.assert_close(out1[0], out2[0], atol=1e-6, rtol=1e-6)
+        self.assertGreater((out1[1] - out2[1]).abs().max().item(), 1e-3)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "masked xformers path requires CUDA")
+    def test_base_attention_supports_flattened_conditioning_with_lengths(self):
+        from diffusion.model.nets.PixArt_blocks import MultiHeadCrossAttention
+
+        attn = MultiHeadCrossAttention(d_model=self.d_model, num_heads=self.num_heads).cuda()
+        x = torch.randn(2, 8, self.d_model, device="cuda")
+        cond = torch.randn(1, 10, self.d_model, device="cuda")
+        lengths = [5, 5]
+
+        out = attn(x, cond, lengths)
+
+        self.assertEqual(out.shape, (2, 8, self.d_model))
+
+    def test_base_attention_fallback_mask_is_batch_isolated(self):
+        from diffusion.model.nets.PixArt_blocks import MultiHeadCrossAttention
+
+        attn = MultiHeadCrossAttention(d_model=self.d_model, num_heads=self.num_heads)
+        attn.eval()
+        x = torch.randn(2, 8, self.d_model)
+        cond = torch.randn(1, 16, self.d_model)
+        lengths = [8, 8]
+
+        with patch(
+            "diffusion.model.nets.PixArt_blocks.xformers.ops.memory_efficient_attention",
+            side_effect=NotImplementedError,
+        ), torch.no_grad():
+            out1 = attn(x, cond, lengths)
+            cond2 = cond.clone()
+            cond2[:, 8:].mul_(1000)
+            out2 = attn(x, cond2, lengths)
+
+        torch.testing.assert_close(out1[0], out2[0], atol=1e-6, rtol=1e-6)
+        self.assertGreater((out1[1] - out2[1]).abs().max().item(), 1e-3)
 
 
 if __name__ == "__main__":

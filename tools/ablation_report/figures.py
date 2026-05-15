@@ -159,7 +159,7 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
     ax.text(
         x_cond,
         header_y,
-        "CT/CS/VAS/NUC",
+        "CT/CS/VAS/NUT",
         ha="center",
         va="center",
         fontsize=_scaled(FONT_SIZE_CELL_TEXT, font_scale),
@@ -397,10 +397,10 @@ def heatmap_metric_keys(summary: DatasetSummary) -> list[str]:
 def _shared_heatmap_metric_keys(summaries: list[DatasetSummary]) -> list[str]:
     if not summaries:
         return []
-    shared = set(heatmap_metric_keys(summaries[0]))
-    for summary in summaries[1:]:
-        shared &= set(heatmap_metric_keys(summary))
-    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in shared]
+    union: set[str] = set()
+    for summary in summaries:
+        union |= set(heatmap_metric_keys(summary))
+    return [metric for metric in TRADEOFF_METRIC_ORDER if metric in union]
 
 
 def _heatmap_matrix(

@@ -8,7 +8,6 @@ without higher-level grouping.
 _base_ = ["./config_controlnet_exp.py"]
 
 channel_groups = None
-group_dropout_probs = {}
 tme_input_mode = "all_channels"
 tme_model = "PerChannelTMEModule"
 tme_base_ch = 16

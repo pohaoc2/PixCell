@@ -24,14 +24,60 @@ from diffusion.model.builder import MODELS
 
 # ── ResNet building blocks ────────────────────────────────────────────────────
 
+CONTINUOUS_TME_CHANNELS = frozenset({"vasculature", "oxygen", "glucose"})
+
+
+def continuous_channel_indices(channel_names: list[str] | tuple[str, ...] | None) -> list[int]:
+    if channel_names is None:
+        return []
+    return [i for i, name in enumerate(channel_names) if name in CONTINUOUS_TME_CHANNELS]
+
+
+class TMEInputNormalizer(nn.Module):
+    """Per-sample, per-channel standardization for continuous TME planes."""
+
+    def __init__(
+        self,
+        n_channels: int,
+        continuous_indices: list[int] | tuple[int, ...] | None = None,
+        eps: float = 1e-6,
+    ):
+        super().__init__()
+        indices = torch.tensor(list(continuous_indices or []), dtype=torch.long)
+        if indices.numel() and (int(indices.min()) < 0 or int(indices.max()) >= n_channels):
+            raise ValueError("continuous_indices contains an index outside n_channels")
+        self.n_channels = n_channels
+        self.eps = eps
+        self.register_buffer("continuous_indices", indices, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.continuous_indices.numel() == 0:
+            return x
+        if x.shape[1] != self.n_channels:
+            raise ValueError(f"Expected {self.n_channels} TME channels, got {x.shape[1]}")
+
+        idx = self.continuous_indices.to(device=x.device)
+        continuous = x.index_select(1, idx).float()
+        mean = continuous.mean(dim=(2, 3), keepdim=True)
+        centered = continuous - mean
+        scale = centered.abs().amax(dim=(2, 3), keepdim=True).clamp_min(self.eps)
+        std = (centered / scale).std(dim=(2, 3), keepdim=True, unbiased=False) * scale
+        std = std.clamp_min(scale * 1e-3)
+        normalized = (centered / (std + self.eps)).to(dtype=x.dtype)
+
+        out = x.clone()
+        out[:, idx] = normalized
+        return out
+
+
 class ResBlock(nn.Module):
     def __init__(self, ch: int):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(ch, ch, 3, padding=1, bias=False),
-            nn.GroupNorm(8, ch), nn.SiLU(),
+            nn.GroupNorm(8, ch, eps=1e-3), nn.SiLU(),
             nn.Conv2d(ch, ch, 3, padding=1, bias=False),
-            nn.GroupNorm(8, ch),
+            nn.GroupNorm(8, ch, eps=1e-3),
         )
         self.act = nn.SiLU()
 
@@ -43,7 +89,7 @@ class DownBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         self.down = nn.Conv2d(in_ch, out_ch, 3, stride=2, padding=1, bias=False)
-        self.norm = nn.GroupNorm(8, out_ch)
+        self.norm = nn.GroupNorm(8, out_ch, eps=1e-3)
         self.act  = nn.SiLU()
         self.res  = ResBlock(out_ch)
 
@@ -72,7 +118,7 @@ class TMEEncoder(nn.Module):
         c1, c2, c3 = base_ch, base_ch * 2, base_ch * 4
         self.stem  = nn.Sequential(
             nn.Conv2d(n_tme_channels, c1, 3, padding=1, bias=False),
-            nn.GroupNorm(8, c1), nn.SiLU(),
+            nn.GroupNorm(8, c1, eps=1e-3), nn.SiLU(),
         )
         self.down1 = DownBlock(c1, c2)    # 256 → 128
         self.res1  = ResBlock(c2)
@@ -84,12 +130,15 @@ class TMEEncoder(nn.Module):
             if isinstance(m, nn.Conv2d) and m.weight is not None:
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
 
-    def forward(self, tme: torch.Tensor) -> torch.Tensor:
+    def forward(self, tme: torch.Tensor, return_activations: bool = False):
         """[B, C_tme, 256, 256] → [B, 16, 32, 32]"""
-        x = self.stem(tme)
-        x = self.res1(self.down1(x))
+        post_stem = self.stem(tme)
+        x = self.res1(self.down1(post_stem))
         x = self.res2(self.down2(x))
-        x = self.res3(self.down3(x))
+        post_down3 = self.down3(x)
+        x = self.res3(post_down3)
+        if return_activations:
+            return x, {"post_stem": post_stem, "post_down3": post_down3}
         return x
 
 
@@ -125,6 +174,7 @@ class TMEConditioningModule(ModelMixin, ConfigMixin):
         base_ch: int = 32,
         latent_ch: int = 16,
         num_heads: int = 4,
+        channel_names: list[str] | None = None,
     ):
         super().__init__()
         if n_tme_channels < 1:
@@ -137,6 +187,10 @@ class TMEConditioningModule(ModelMixin, ConfigMixin):
 
         self.latent_ch = latent_ch
 
+        self.input_normalizer = TMEInputNormalizer(
+            n_tme_channels,
+            continuous_channel_indices(channel_names),
+        )
         self.tme_encoder = TMEEncoder(n_tme_channels, base_ch, latent_ch)
 
         # MultiHeadCrossAttention: query=mask tokens, key/value=TME tokens
@@ -163,7 +217,9 @@ class TMEConditioningModule(ModelMixin, ConfigMixin):
         B, C, H, W = mask_latent.shape
 
         # Encode TME → [B, 16, 32, 32]
-        tme_latent = self.tme_encoder(tme_channels.to(mask_latent.dtype))
+        tme_latent = self.tme_encoder(
+            self.input_normalizer(tme_channels.to(mask_latent.dtype))
+        )
 
         # Flatten spatial → token sequences: [B, 16, H, W] → [B, H*W, 16]
         q_tokens  = self.norm_q( mask_latent.flatten(2).transpose(1, 2))   # [B, N, C]

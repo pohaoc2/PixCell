@@ -43,34 +43,5 @@ class TestSplitChannelsToGroups(unittest.TestCase):
         self.assertNotIn("cell_mask", result)
 
 
-class TestApplyGroupDropout(unittest.TestCase):
-    def test_returns_set_of_sets(self):
-        from tools.channel_group_utils import apply_group_dropout
-        group_names = ["cell_types", "cell_state", "vasculature", "microenv"]
-        dropout_probs = dict(cell_types=0.0, cell_state=0.0, vasculature=0.0, microenv=0.0)
-        result = apply_group_dropout(group_names, dropout_probs, batch_size=4)
-        self.assertEqual(len(result), 4)
-        for sample_groups in result:
-            self.assertEqual(sample_groups, set(group_names))
-
-    def test_full_dropout(self):
-        from tools.channel_group_utils import apply_group_dropout
-        group_names = ["cell_types", "cell_state", "vasculature", "microenv"]
-        dropout_probs = dict(cell_types=1.0, cell_state=1.0, vasculature=1.0, microenv=1.0)
-        result = apply_group_dropout(group_names, dropout_probs, batch_size=4)
-        for sample_groups in result:
-            self.assertEqual(sample_groups, set())
-
-    def test_partial_dropout_returns_correct_length(self):
-        from tools.channel_group_utils import apply_group_dropout
-        group_names = ["cell_types", "cell_state"]
-        dropout_probs = dict(cell_types=0.5, cell_state=0.5)
-        result = apply_group_dropout(group_names, dropout_probs, batch_size=8)
-        self.assertEqual(len(result), 8)
-        for sample_groups in result:
-            self.assertIsInstance(sample_groups, set)
-            self.assertTrue(sample_groups.issubset(set(group_names)))
-
-
 if __name__ == "__main__":
     unittest.main()

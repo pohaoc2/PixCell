@@ -8,20 +8,30 @@ from diffusers.models.modeling_utils import ModelMixin
 
 from diffusion.model.builder import MODELS
 from diffusion.model.nets.cross_attention_with_weights import CrossAttentionWithWeights
-from diffusion.model.nets.tme_encoder import TMEEncoder
+from diffusion.model.nets.tme_encoder import (
+    TMEEncoder,
+    TMEInputNormalizer,
+    continuous_channel_indices,
+)
 
 
 class _ChannelBlock(nn.Module):
-    def __init__(self, base_ch: int, latent_ch: int, num_heads: int):
+    def __init__(self, base_ch: int, latent_ch: int, num_heads: int, channel_name: str):
         super().__init__()
+        self.input_normalizer = TMEInputNormalizer(
+            1,
+            continuous_channel_indices([channel_name]),
+        )
         self.encoder = TMEEncoder(1, base_ch, latent_ch)
         self.norm_kv = nn.LayerNorm(latent_ch)
         self.cross_attn = CrossAttentionWithWeights(d_model=latent_ch, num_heads=num_heads)
-        nn.init.normal_(self.cross_attn.proj.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.cross_attn.proj.weight)
         nn.init.zeros_(self.cross_attn.proj.bias)
 
     def forward(self, q_tokens, channel_input, return_attn_weights=False):
-        channel_latent = self.encoder(channel_input.to(q_tokens.dtype))
+        channel_latent = self.encoder(
+            self.input_normalizer(channel_input.to(q_tokens.dtype))
+        )
         kv_tokens = self.norm_kv(channel_latent.flatten(2).transpose(1, 2))
         if return_attn_weights:
             delta, attn_weights = self.cross_attn(
@@ -46,7 +56,12 @@ class PerChannelTMEModule(ModelMixin, ConfigMixin):
         self.norm_q = nn.LayerNorm(latent_ch)
         self.channels = nn.ModuleDict(
             {
-                name: _ChannelBlock(base_ch=base_ch, latent_ch=latent_ch, num_heads=num_heads)
+                name: _ChannelBlock(
+                    base_ch=base_ch,
+                    latent_ch=latent_ch,
+                    num_heads=num_heads,
+                    channel_name=name,
+                )
                 for name in self.active_channels
             }
         )

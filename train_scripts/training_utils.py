@@ -44,7 +44,13 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
     if channel_groups_cfg is not None:
         group_specs = []
         for g in channel_groups_cfg:
-            group_specs.append(dict(name=g["name"], n_channels=len(g["channels"])))
+            group_specs.append(
+                dict(
+                    name=g["name"],
+                    n_channels=len(g["channels"]),
+                    channels=list(g["channels"]),
+                )
+            )
         tme_module = build_model(
             getattr(config, "tme_model", "MultiGroupTMEModule"),
             False,
@@ -68,6 +74,7 @@ def _build_tme_module_and_optimizers(config, controlnet, train_dataloader,
             False,
             n_tme_channels=n_tme_channels,
             base_ch=getattr(config, "tme_base_ch", 32),
+            channel_names=active_channels[1:],
         )
     logger.info(
         f"[TME Module: {type(tme_module).__name__}] "
