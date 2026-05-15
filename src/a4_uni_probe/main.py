@@ -12,6 +12,7 @@ DEFAULT_FEATURES_DIR = DEFAULT_DATA_ROOT / "features"
 DEFAULT_EXP_CHANNELS_DIR = DEFAULT_DATA_ROOT / "exp_channels"
 DEFAULT_HE_DIR = DEFAULT_DATA_ROOT / "he"
 DEFAULT_OUT_DIR = ROOT / "src" / "a4_uni_probe" / "out"
+DEFAULT_PNGS_UPDATED_DIR = ROOT / "figures" / "pngs_updated" / "a4_uni_probe"
 DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "concat_95470_0" / "checkpoints" / "step_0002600"
 DEFAULT_CONFIG_PATH = ROOT / "configs" / "config_controlnet_exp_a1_concat.py"
 DEFAULT_CELLVIT_REAL_DIR = DEFAULT_OUT_DIR / "cellvit_real"
@@ -81,9 +82,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_fig = sub.add_parser("figures", help="Render Panel A-E")
     p_fig.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
 
+    p_pngs_updated = sub.add_parser("pngs_updated", help="Render publication-ready a4 UNI probe figures")
+    p_pngs_updated.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    p_pngs_updated.add_argument("--dest-dir", type=Path, default=DEFAULT_PNGS_UPDATED_DIR)
+
     p_app = sub.add_parser("appearance", help="Add stain and texture metrics to existing sweep/null outputs")
     p_app.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     p_app.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+
+    p_spec = sub.add_parser("specificity", help="Per-(edited_attr, measured_metric) slope summary from sweep CSVs")
+    p_spec.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+
+    p_reg = sub.add_parser("regional", help="Recompute appearance metrics per nucleus/stroma compartment and fit slopes")
+    p_reg.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
 
     return parser
 
@@ -108,10 +119,22 @@ def main(argv: list[str] | None = None) -> int:
         from src.a4_uni_probe.figures import render_all
 
         render_all(args.out_dir)
+    elif args.command == "pngs_updated":
+        from src.a4_uni_probe.figures import render_pngs_updated
+
+        render_pngs_updated(args.out_dir, args.dest_dir)
     elif args.command == "appearance":
         from src.a4_uni_probe.appearance_metrics import run_appearance
 
         run_appearance(args)
+    elif args.command == "specificity":
+        from src.a4_uni_probe.specificity import run_specificity
+
+        run_specificity(args)
+    elif args.command == "regional":
+        from src.a4_uni_probe.recompute_regional import run_regional
+
+        run_regional(args)
     else:  # pragma: no cover
         parser.error(f"unknown command: {args.command}")
     return 0

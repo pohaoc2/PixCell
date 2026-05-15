@@ -24,10 +24,23 @@ def cellvit_sidecar_path(image_path: Path) -> Path:
     return Path(image_path).with_name(f"{Path(image_path).stem}{CELLVIT_SIDECAR_SUFFIX}")
 
 
+def _resolve_sidecar(image_path: Path) -> Path | None:
+    path = Path(image_path)
+    candidates = (
+        cellvit_sidecar_path(path),
+        path.with_name(f"{path.name}.json"),
+        path.with_suffix(".json"),
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def load_cellvit_contours(image_path: Path) -> list[np.ndarray]:
     """Load polygon contours from the CellViT sidecar (or return [] if missing/invalid)."""
-    sidecar = cellvit_sidecar_path(image_path)
-    if not sidecar.is_file():
+    sidecar = _resolve_sidecar(image_path)
+    if sidecar is None:
         return []
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -43,6 +56,24 @@ def load_cellvit_contours(image_path: Path) -> list[np.ndarray]:
             continue
         contours.append(arr[:, :2])
     return contours
+
+
+def nucleus_mask_from_cellvit(image_path: Path, image_shape: tuple[int, int]) -> np.ndarray:
+    """Rasterize CellViT polygon contours into a boolean nucleus mask.
+
+    image_shape is (H, W). Contour points are (x, y) = (col, row) pixel coordinates.
+    Returns a bool array of shape image_shape. Empty contours -> all-False mask.
+    """
+    from skimage.draw import polygon as sk_polygon
+
+    height, width = int(image_shape[0]), int(image_shape[1])
+    mask = np.zeros((height, width), dtype=bool)
+    for contour in load_cellvit_contours(image_path):
+        cols = np.clip(contour[:, 0], 0, width - 1)
+        rows = np.clip(contour[:, 1], 0, height - 1)
+        rr, cc = sk_polygon(rows, cols, shape=(height, width))
+        mask[rr, cc] = True
+    return mask
 
 
 def overlay_cellvit_contours(

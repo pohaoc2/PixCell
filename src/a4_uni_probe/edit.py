@@ -14,6 +14,7 @@ from src.a4_uni_probe.appearance_metrics import appearance_row_for_image
 from src.a4_uni_probe.inference import GenSpec, generate_with_uni_override, load_inference_bundle
 from src.a4_uni_probe.labels import APPEARANCE_ATTR_NAMES, MORPHOLOGY_ATTR_NAMES
 from src.a4_uni_probe.metrics import morphology_row_for_image
+from src.a4_uni_probe.slope_stats import bootstrap_slope_summary
 
 
 def sweep_uni(uni: np.ndarray, w: np.ndarray, alphas: list[float] | tuple[float, ...] | np.ndarray) -> np.ndarray:
@@ -143,15 +144,6 @@ def _aggregate_metrics(attr_dir: Path) -> Path | None:
     return metrics_path
 
 
-def _linear_slope(x: np.ndarray, y: np.ndarray) -> float:
-    x_centered = x - float(np.mean(x))
-    denom = float(np.dot(x_centered, x_centered))
-    if denom == 0.0:
-        return 0.0
-    y_centered = y - float(np.mean(y))
-    return float(np.dot(x_centered, y_centered) / denom)
-
-
 def _summarize_slopes(metrics_csv: Path, out_json: Path, attr: str) -> None:
     rows = list(csv.DictReader(metrics_csv.open(encoding="utf-8")))
     summary: dict[str, object] = {"attr": attr}
@@ -161,22 +153,12 @@ def _summarize_slopes(metrics_csv: Path, out_json: Path, attr: str) -> None:
             continue
         alphas = np.asarray([float(row["alpha"]) for row in direction_rows], dtype=np.float32)
         values = np.asarray([float(row["target_value"]) for row in direction_rows], dtype=np.float32)
-        valid = np.isfinite(values)
-        if valid.sum() < 2:
-            summary[direction_name] = {"slope_mean": float("nan"), "slope_ci95": [float("nan"), float("nan")], "n": int(valid.sum())}
-            continue
-        alphas = alphas[valid]
-        values = values[valid]
-        rng = np.random.default_rng(0)
-        slopes = []
-        for _ in range(1000):
-            choice = rng.integers(0, len(alphas), size=len(alphas))
-            slope = _linear_slope(alphas[choice], values[choice])
-            slopes.append(float(slope))
+        stats = bootstrap_slope_summary(alphas, values, n_boot=1000, seed=0)
+        ci = stats["slope_ci95"]
         summary[direction_name] = {
-            "slope_mean": float(np.mean(slopes)),
-            "slope_ci95": [float(np.quantile(slopes, 0.025)), float(np.quantile(slopes, 0.975))],
-            "n": int(len(alphas)),
+            "slope_mean": stats["slope_mean"],
+            "slope_ci95": [ci[0], ci[1]],
+            "n": stats["n"],
         }
 
     targeted = summary.get("targeted")
