@@ -17,16 +17,16 @@ from src.paper_figures.style import FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_T
 _NON_TYPING_MARKERS: frozenset[str] = frozenset({"Hoechst", "AF1", "Argo550", "PD-L1"})
 
 _T1_DISPLAY_LABELS: dict[str, str] = {
-    "cell_density": "density",
-    "prolif_frac": "prolif",
-    "nonprolif_frac": "nonprolif",
-    "glucose_mean": "glucose",
+    "cell_density": "Density",
+    "prolif_frac": "Prolif.",
+    "nonprolif_frac": "Non-prolif.",
+    "glucose_mean": "Glucose",
     "oxygen_mean": r"O$_2$",
-    "healthy_frac": "healthy",
-    "cancer_frac": "cancer",
-    "vasculature_frac": "vasc",
-    "immune_frac": "immune",
-    "dead_frac": "dead",
+    "healthy_frac": "Healthy",
+    "cancer_frac": "Cancer",
+    "vasculature_frac": "Vasculature",
+    "immune_frac": "Immune",
+    "dead_frac": "Dead",
 }
 
 _ENCODER_COLORS: dict[str, str] = {

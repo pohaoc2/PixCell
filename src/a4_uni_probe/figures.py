@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 
 import matplotlib.image as mpimg
@@ -38,6 +39,46 @@ ATTR_TO_PRIMARY_METRIC = {
     "texture_h_contrast": "appearance.texture_h_contrast",
     "texture_h_energy": "appearance.texture_h_energy",
 }
+
+
+ATTR_DISPLAY_NAMES: dict[str, str] = {
+    "eccentricity_mean": "Eccentricity",
+    "nuclear_area_mean": "Nuclear area",
+    "nuclei_density": "Nuclei density",
+    "texture_h_contrast": "H contrast",
+    "texture_e_contrast": "E contrast",
+    "texture_h_energy": "H energy",
+    "texture_e_energy": "E energy",
+    "texture_h_homogeneity": "H homogeneity",
+    "texture_e_homogeneity": "E homogeneity",
+    "texture_h_correlation": "H correlation",
+    "texture_e_correlation": "E correlation",
+    "texture_h_dissimilarity": "H dissimilarity",
+    "texture_e_dissimilarity": "E dissimilarity",
+    "prolif_fraction": "Prolif fraction",
+    "intensity_mean_h": "H intensity",
+    "intensity_mean_e": "E intensity",
+    "h_mean": "H mean",
+    "e_mean": "E mean",
+    "h_std": "H std",
+    "e_std": "E std",
+    "stain_vector_angle_deg": "Stain angle",
+}
+
+
+def _display_attr(attr: str) -> str:
+    """Return a clean display label for an attribute name."""
+    if attr in ATTR_DISPLAY_NAMES:
+        return ATTR_DISPLAY_NAMES[attr]
+    label = attr.replace("_", " ")
+    label = re.sub(r"\btexture\s+", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"\b(h|e)\b", lambda m: m.group().upper(), label)
+    return label
+
+
+def _clean_attr_label(attr: str) -> str:
+    """Backward-compat alias for _display_attr."""
+    return _display_attr(attr)
 
 
 def _read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -276,6 +317,8 @@ def _draw_specificity_diagonal_and_annotations(
     metrics: list[str],
     annot: np.ndarray,
     fontsize: int,
+    grid: np.ndarray | None = None,
+    vlim: float | None = None,
 ) -> None:
     diag_metrics = {
         "eccentricity_mean": "morpho.eccentricity_mean",
@@ -289,9 +332,11 @@ def _draw_specificity_diagonal_and_annotations(
         diag_metric = diag_metrics.get(attr)
         for j, metric in enumerate(metrics):
             if annot[i, j]:
-                ax.text(j, i, annot[i, j], ha="center", va="center", fontsize=fontsize, color="#1a202c")
-            if diag_metric == metric:
-                ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, edgecolor="#1a202c", linewidth=2.0))
+                text_color = "#1a202c"
+                if grid is not None and vlim is not None and np.isfinite(grid[i, j]) and vlim > 0 and abs(float(grid[i, j])) / vlim > 0.5:
+                    text_color = "white"
+                ax.text(j, i, annot[i, j], ha="center", va="center", fontsize=fontsize, color=text_color)
+
 
 
 def _specificity_square_payload(rows: list[dict[str, str]]) -> tuple[list[str], np.ndarray, np.ndarray]:
@@ -458,6 +503,8 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
             -float(row.get("delta_r2_uni_minus_tme") or "nan") if np.isfinite(float(row.get("delta_r2_uni_minus_tme") or "nan")) else 0.0,
         ),
     )
+    # Drop attrs with no valid folds (e.g. intensity* metrics that couldn't be computed)
+    sorted_rows = [row for row in sorted_rows if int(row.get("uni_n_valid_folds") or 0) > 0 or int(row.get("tme_n_valid_folds") or 0) > 0]
 
     attrs = [row["attr"] for row in sorted_rows]
     deltas = np.asarray([float(row.get("delta_r2_uni_minus_tme") or "nan") for row in sorted_rows], dtype=np.float32)
@@ -467,13 +514,15 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     )
     positions = np.arange(len(attrs))
 
-    fig, ax = plt.subplots(figsize=(max(8.0, len(attrs) * 0.5), 4.5))
+    fig, ax = plt.subplots(figsize=(max(8.0, len(attrs) * 0.55), 4.5))
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", linewidth=0.4, color="#E0E0E0", zorder=0)
     ax.bar(positions, deltas, yerr=errors, capsize=3, color="#dd6b20", ecolor="#4a5568")
     ax.axhline(0.0, color="#4a5568", linewidth=0.8)
-    ax.set_ylabel("ΔR² (UNI − TME)", fontsize=10)
+    ax.set_ylabel("ΔR² (UNI − TME)", fontsize=12)
     ax.set_xticks(positions)
-    ax.set_xticklabels(attrs, rotation=45, ha="right", fontsize=9)
-    ax.tick_params(axis="y", labelsize=9)
+    ax.set_xticklabels([_display_attr(a) for a in attrs], rotation=45, ha="right", fontsize=11)
+    ax.tick_params(axis="y", labelsize=11)
     fig.tight_layout()
 
     output_path = ensure_directory(Path(dest_dir)) / "probe_delta_r2.png"
@@ -493,9 +542,8 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
     exp_channels_root = _resolve_exp_channels_root(out_path)
     tile_ids = [tile_dir.name for tile_dir in tile_dirs]
     reference_images = {tile_id: mpimg.imread(_find_reference_he_path(he_root, tile_id)) for tile_id in tile_ids}
-    cell_layouts = {tile_id: _load_cell_layout_image(exp_channels_root, tile_id) for tile_id in tile_ids}
 
-    group_names = ["Reference H&E", "Cell layout", "Targeted", "Random"]
+    group_names = ["Reference H&E", "Attribute-directed", "Random"]
     spacer_width = 0.28
     width_ratios: list[float] = []
     group_offsets: list[int] = []
@@ -508,19 +556,20 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
             width_ratios.append(spacer_width)
             column_index += 1
 
-    fig = plt.figure(figsize=(24.0 * 0.8 + 2.2, 3.0 * 1.0 + 0.8))
+    # figsize computed so each tile subplot is approximately square:
+    # tile_width = fig_w * 0.94 / 18.56  tile_height = fig_h * 0.80 / 3  → equal at (18.0, 3.4)
+    fig = plt.figure(figsize=(18.0, 3.4))
     grid = fig.add_gridspec(
         3,
         len(width_ratios),
         width_ratios=width_ratios,
         wspace=0.05,
-        hspace=0.05,
+        hspace=0.02,
     )
     grouped_axes: dict[str, list[list[plt.Axes]]] = {group_name: [] for group_name in group_names}
 
     for row_index, (alpha, _row_label) in enumerate(SWEEP_ALPHA_ROWS):
         reference_row_axes: list[plt.Axes] = []
-        layout_row_axes: list[plt.Axes] = []
         targeted_row_axes: list[plt.Axes] = []
         random_row_axes: list[plt.Axes] = []
         for col_index, tile_dir in enumerate(tile_dirs):
@@ -534,24 +583,23 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
                 spine.set_visible(False)
             reference_row_axes.append(reference_ax)
 
-            layout_ax = fig.add_subplot(grid[row_index, group_offsets[1] + col_index])
-            layout_ax.imshow(cell_layouts[tile_id], cmap="gray", vmin=0.0, vmax=1.0)
-            layout_ax.set_xticks([])
-            layout_ax.set_yticks([])
-            for spine in layout_ax.spines.values():
-                spine.set_visible(False)
-            layout_row_axes.append(layout_ax)
-
-            targeted_ax = fig.add_subplot(grid[row_index, group_offsets[2] + col_index])
-            targeted_ax.imshow(mpimg.imread(tile_dir / "targeted" / f"alpha_{alpha}.png"))
+            targeted_img_path = tile_dir / "targeted" / f"alpha_{alpha}.png"
+            targeted_ax = fig.add_subplot(grid[row_index, group_offsets[1] + col_index])
+            targeted_ax.imshow(mpimg.imread(targeted_img_path))
             targeted_ax.set_xticks([])
             targeted_ax.set_yticks([])
             for spine in targeted_ax.spines.values():
                 spine.set_visible(False)
             targeted_row_axes.append(targeted_ax)
 
-            random_ax = fig.add_subplot(grid[row_index, group_offsets[3] + col_index])
-            random_ax.imshow(mpimg.imread(tile_dir / "random" / f"alpha_{alpha}.png"))
+            random_img_path = tile_dir / "random" / f"alpha_{alpha}.png"
+            random_ax = fig.add_subplot(grid[row_index, group_offsets[2] + col_index])
+            random_ax.imshow(mpimg.imread(random_img_path))
+            random_ax.set_xticks([])
+            random_ax.set_yticks([])
+            for spine in random_ax.spines.values():
+                spine.set_visible(False)
+            random_row_axes.append(random_ax)
             random_ax.set_xticks([])
             random_ax.set_yticks([])
             for spine in random_ax.spines.values():
@@ -559,11 +607,10 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
             random_row_axes.append(random_ax)
 
         grouped_axes["Reference H&E"].append(reference_row_axes)
-        grouped_axes["Cell layout"].append(layout_row_axes)
-        grouped_axes["Targeted"].append(targeted_row_axes)
+        grouped_axes["Attribute-directed"].append(targeted_row_axes)
         grouped_axes["Random"].append(random_row_axes)
 
-    fig.subplots_adjust(left=0.055, right=0.995, bottom=0.03, top=0.83)
+    fig.subplots_adjust(left=0.055, right=0.995, bottom=0.03, top=0.83, hspace=0.02)
     fig.canvas.draw()
 
     for row_index, (_alpha, row_label) in enumerate(SWEEP_ALPHA_ROWS):
@@ -585,7 +632,7 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
                 linewidth=1.5,
             )
         )
-        fig.text((top_left.x0 + top_right.x1) / 2, text_y, group_name, ha="center", va="bottom", fontsize=11, fontweight="bold")
+        fig.text((top_left.x0 + top_right.x1) / 2, text_y, group_name, ha="center", va="bottom", fontsize=11, fontweight="normal")
 
     output_path = ensure_directory(Path(dest_dir)) / f"sweep_grid_{attr}.png"
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
@@ -596,7 +643,15 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
 def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str | Path) -> Path:
     out_path = Path(out_dir)
     rows = _read_csv_rows(out_path / "specificity_full.csv")
-    edited, grid, annot = _specificity_square_payload(rows)
+    edited, grid, _abs_ratio_annot = _specificity_square_payload(rows)
+
+    # Annotations show the same normalized slope that drives the color
+    annot = np.full((len(edited), len(edited)), "", dtype=object)
+    for i in range(len(edited)):
+        for j in range(len(edited)):
+            v = grid[i, j]
+            if np.isfinite(v):
+                annot[i, j] = f"{v:.2f}"
 
     finite = grid[np.isfinite(grid)]
     vlim = float(np.quantile(np.abs(finite), 0.95)) if finite.size else 1.0
@@ -606,12 +661,15 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     fig, ax = plt.subplots(figsize=(max(7.0, 1.05 * len(edited)), max(6.5, 1.05 * len(edited))))
     im = ax.imshow(grid, cmap="RdBu_r", vmin=-vlim, vmax=vlim, aspect="equal")
     ax.set_xticks(range(len(edited)))
-    ax.set_xticklabels(edited, rotation=35, ha="right", fontsize=9)
+    ax.set_xticklabels([_display_attr(e) for e in edited], rotation=35, ha="right", fontsize=9)
     ax.set_yticks(range(len(edited)))
-    ax.set_yticklabels(edited, fontsize=10)
-    ax.set_xlabel("Edited attribute", fontsize=10)
+    ax.set_yticklabels([_display_attr(e) for e in edited], fontsize=10)
+    ax.set_xticks(np.arange(-0.5, len(edited), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(edited), 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.8)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    ax.set_xlabel("Measured metric (primary metric of each attribute)", fontsize=10)
     ax.set_ylabel("Edited attribute", fontsize=10)
-    ax.set_title("Specificity matrix (normalized targeted slope)", fontsize=12)
 
     _draw_specificity_diagonal_and_annotations(
         ax,
@@ -619,10 +677,15 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
         metrics=[ATTR_TO_PRIMARY_METRIC[attr] for attr in edited],
         annot=annot,
         fontsize=9,
+        grid=grid,
+        vlim=vlim,
     )
 
-    cbar = fig.colorbar(im, ax=ax, shrink=0.9)
-    cbar.set_label("Normalized targeted slope (per metric std)", fontsize=9)
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.12)
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.ax.tick_params(labelsize=9)
     fig.tight_layout()
 
     output_path = ensure_directory(Path(dest_dir)) / "specificity_heatmap.png"
