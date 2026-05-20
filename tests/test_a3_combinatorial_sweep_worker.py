@@ -104,6 +104,8 @@ def test_plan_task_includes_complete_worker_commands(tmp_path: Path):
         str(anchors_path),
         "--worker",
         "0_0",
+        "--seed",
+        "42",
     )
     summary_command = plan.jobs[-1].command
     assert summary_command is not None
