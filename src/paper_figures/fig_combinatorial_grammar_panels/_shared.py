@@ -120,3 +120,16 @@ def select_si_anchors(
                 break
     return picks[:4]
 
+
+def load_variance_partition(path: Path) -> list[dict[str, float]]:
+    """Read variance_partition.csv into a list of dicts (numeric coercion)."""
+    rows = read_csv(path)
+    parsed: list[dict[str, float]] = []
+    for row in rows:
+        parsed.append(
+            {
+                "metric": str(row["metric"]),
+                **{key: float(row[key]) for key in row if key != "metric"},
+            }
+        )
+    return parsed
