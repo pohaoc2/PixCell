@@ -218,6 +218,7 @@ def test_worker_generates_27_condition_images_with_mocked_inference(tmp_path: Pa
 
 def test_summary_worker_writes_csv_outputs_from_synthetic_images(tmp_path: Path):
     from src.a3_combinatorial_sweep import main as sweep_main
+    from src.a3_combinatorial_sweep.main import MORPHOLOGY_METRICS
 
     config_path = tmp_path / "config.py"
     config_path.write_text("cfg = {}\n", encoding="utf-8")
@@ -261,5 +262,5 @@ def test_summary_worker_writes_csv_outputs_from_synthetic_images(tmp_path: Path)
     assert len(signature_rows) == 27
     assert len(residual_rows) == 27
     assert {row["cell_state"] for row in residual_rows} == {"prolif", "nonprolif", "dead"}
-    assert "nuclear_density" in signature_rows[0]
+    assert all(metric in signature_rows[0] for metric in MORPHOLOGY_METRICS)
     assert "residual_l2_norm" in residual_rows[0]

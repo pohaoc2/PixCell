@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from src.a3_combinatorial_sweep.main import MORPHOLOGY_METRICS
 from src.paper_figures.fig_combinatorial_grammar_panels import _shared
 
 
@@ -52,21 +53,19 @@ def _make_signature_rows(anchors_to_n_conditions: dict[str, int]) -> list[dict[s
                 for glucose in levels:
                     if i >= n_conds:
                         break
+                    metric_values = {metric: str(0.01 * (idx + 1) * (i + 1)) for idx, metric in enumerate(MORPHOLOGY_METRICS)}
+                    metric_values["nuclear_area_mean"] = str(10.0 + i + (0 if anchor == "a0" else 5.0))
+                    metric_values["nuclei_density"] = str(0.1 * i)
+                    metric_values["appearance.h_mean"] = "0.5"
+                    metric_values["appearance.texture_h_contrast"] = "1.0"
+                    metric_values["appearance.texture_h_homogeneity"] = "0.8"
                     rows.append(
                         {
                             "anchor_id": anchor,
                             "cell_state": state,
                             "oxygen_label": oxygen,
                             "glucose_label": glucose,
-                            "mean_cell_size": str(10.0 + i + (0 if anchor == "a0" else 5.0)),
-                            "nuclear_density": str(0.1 * i),
-                            "nucleus_area_median": str(20.0 + i),
-                            "nucleus_area_iqr": str(2.0 + i),
-                            "hematoxylin_burden": "0.5",
-                            "hematoxylin_ratio": "0.5",
-                            "eosin_ratio": "0.5",
-                            "glcm_contrast": "1.0",
-                            "glcm_homogeneity": "0.8",
+                            **metric_values,
                         }
                     )
                     i += 1
@@ -81,21 +80,22 @@ def _make_residual_rows() -> list[dict[str, str]]:
     for state in states:
         for oxygen in levels:
             for glucose in levels:
+                residual_values = {
+                    f"residual_{metric}": str(0.001 * (idx + 1) * (i + 1))
+                    for idx, metric in enumerate(MORPHOLOGY_METRICS)
+                }
+                residual_values["residual_nuclear_area_mean"] = str(0.3 - 0.01 * i)
+                residual_values["residual_nuclei_density"] = str(0.001 * i)
+                residual_values["residual_appearance.h_mean"] = "0.001"
+                residual_values["residual_appearance.texture_h_contrast"] = "0.0001"
+                residual_values["residual_appearance.texture_h_homogeneity"] = "0.00005"
                 rows.append(
                     {
                         "cell_state": state,
                         "oxygen_label": oxygen,
                         "glucose_label": glucose,
                         "residual_l2_norm": str(1.0 + i),
-                        "residual_mean_cell_size": str(0.3 - 0.01 * i),
-                        "residual_nucleus_area_median": str(0.2 + 0.01 * i),
-                        "residual_nucleus_area_iqr": str(-0.05 - 0.005 * i),
-                        "residual_nuclear_density": str(0.001 * i),
-                        "residual_hematoxylin_burden": "0.001",
-                        "residual_hematoxylin_ratio": "0.0005",
-                        "residual_eosin_ratio": "-0.001",
-                        "residual_glcm_contrast": "0.0001",
-                        "residual_glcm_homogeneity": "0.00005",
+                        **residual_values,
                     }
                 )
                 i += 1
@@ -134,7 +134,7 @@ def test_residual_lookup_extracts_all_residual_columns() -> None:
             "oxygen_label": "low",
             "glucose_label": "low",
             "residual_l2_norm": "1.5",
-            "residual_mean_cell_size": "-0.4",
+            "residual_nuclear_area_mean": "-0.4",
             "n_anchors": "20",
         }
     ]
@@ -142,7 +142,7 @@ def test_residual_lookup_extracts_all_residual_columns() -> None:
     key = ("prolif", "low", "low")
     assert key in lookup
     assert lookup[key]["residual_l2_norm"] == 1.5
-    assert lookup[key]["residual_mean_cell_size"] == -0.4
+    assert lookup[key]["residual_nuclear_area_mean"] == -0.4
     assert "n_anchors" not in lookup[key]
 
 
