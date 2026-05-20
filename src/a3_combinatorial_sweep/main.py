@@ -26,6 +26,16 @@ DEFAULT_GUIDANCE_SCALE = 2.5
 DEFAULT_NUM_STEPS = 20
 DEFAULT_SEED = 42
 
+
+def _generated_subdir_name(seed: int) -> str:
+    """Output subdir under out_dir for a given seed."""
+    return "generated" if seed == DEFAULT_SEED else f"generated_s{seed}"
+
+
+def _generated_root(out_dir: Path, seed: int) -> Path:
+    return out_dir / _generated_subdir_name(seed)
+
+
 CELL_STATE_CHANNELS = {
     "prolif": "cell_state_prolif",
     "nonprolif": "cell_state_nonprolif",
@@ -153,7 +163,12 @@ def _python_job(job_module: str, *args: str) -> CommandSpec:
     return CommandSpec(argv=("python", "-m", job_module, *args), cwd=Path(__file__).resolve().parents[2])
 
 
-def plan_task(config: CombinatorialSweepConfig, runtime: RuntimeProbe | None = None) -> TaskPlan:
+def plan_task(
+    config: CombinatorialSweepConfig,
+    runtime: RuntimeProbe | None = None,
+    *,
+    seeds=(DEFAULT_SEED,),
+) -> TaskPlan:
     """Plan one sweep batch per anchor plus a summary job."""
     runtime = runtime or probe_runtime()
     out_dir = ensure_directory(config.out_dir)
@@ -163,34 +178,49 @@ def plan_task(config: CombinatorialSweepConfig, runtime: RuntimeProbe | None = N
     common_worker_args = _config_cli_args(config)
 
     for anchor in anchors:
-        output_dir = out_dir / "generated" / anchor
-        outputs = tuple(output_dir / f"{build_condition_id(condition)}.png" for condition in conditions)
-        if not config.config_path.exists() or not config.checkpoint_dir.exists():
-            state = JobState.BLOCKED
-            reason = "missing_checkpoint"
-            command = None
-        elif all(path.is_file() for path in outputs):
-            state = JobState.SKIPPED
-            reason = "existing_output"
-            command = None
-        elif not runtime.has_cuda:
-            state = JobState.DEFERRED
-            reason = "missing_gpu"
-            command = _python_job("src.a3_combinatorial_sweep.main", *common_worker_args, "--worker", anchor)
-        else:
-            state = JobState.READY
-            reason = None
-            command = _python_job("src.a3_combinatorial_sweep.main", *common_worker_args, "--worker", anchor)
-        jobs.append(
-            JobPlan(
-                job_id=f"generate_{anchor}",
-                state=state,
-                reason=reason,
-                inputs=(config.config_path, config.checkpoint_dir, config.data_root),
-                outputs=outputs,
-                command=command,
+        for seed in seeds:
+            output_dir = _generated_root(out_dir, seed) / anchor
+            outputs = tuple(output_dir / f"{build_condition_id(condition)}.png" for condition in conditions)
+            if not config.config_path.exists() or not config.checkpoint_dir.exists():
+                state = JobState.BLOCKED
+                reason = "missing_checkpoint"
+                command = None
+            elif all(path.is_file() for path in outputs):
+                state = JobState.SKIPPED
+                reason = "existing_output"
+                command = None
+            elif not runtime.has_cuda:
+                state = JobState.DEFERRED
+                reason = "missing_gpu"
+                command = _python_job(
+                    "src.a3_combinatorial_sweep.main",
+                    *common_worker_args,
+                    "--worker",
+                    anchor,
+                    "--seed",
+                    str(seed),
+                )
+            else:
+                state = JobState.READY
+                reason = None
+                command = _python_job(
+                    "src.a3_combinatorial_sweep.main",
+                    *common_worker_args,
+                    "--worker",
+                    anchor,
+                    "--seed",
+                    str(seed),
+                )
+            jobs.append(
+                JobPlan(
+                    job_id=f"generate_{anchor}_s{seed}",
+                    state=state,
+                    reason=reason,
+                    inputs=(config.config_path, config.checkpoint_dir, config.data_root),
+                    outputs=outputs,
+                    command=command,
+                )
             )
-        )
 
     summary_outputs = _summary_output_paths(out_dir)
     if anchor_error is not None:
@@ -379,7 +409,7 @@ def run_anchor_worker(
             fixed_noise=fixed_noise,
             seed=seed,
         )
-        out_path = config.out_dir / "generated" / anchor_id / f"{build_condition_id(condition)}.png"
+        out_path = _generated_root(config.out_dir, seed) / anchor_id / f"{build_condition_id(condition)}.png"
         outputs.append(_save_image(generated, out_path))
     return tuple(outputs)
 
@@ -390,7 +420,7 @@ def run_generate_worker(
     device: str = DEFAULT_DEVICE,
     guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
     num_steps: int = DEFAULT_NUM_STEPS,
-    seed: int = DEFAULT_SEED,
+    seeds=(DEFAULT_SEED,),
 ) -> tuple[Path, ...]:
     """Generate all planned anchor sweeps in one model-loading pass."""
     anchors, anchor_error = load_anchor_tile_ids(config)
@@ -408,46 +438,47 @@ def run_generate_worker(
     conditions = enumerate_conditions()
 
     outputs: list[Path] = []
-    for index, anchor_id in enumerate(anchors, start=1):
-        anchor_dir = config.out_dir / "generated" / anchor_id
-        expected_paths = tuple(anchor_dir / f"{build_condition_id(condition)}.png" for condition in conditions)
-        if all(path.is_file() for path in expected_paths):
-            outputs.extend(expected_paths)
-            print(f"[{index}/{len(anchors)}] skip {anchor_id} (existing)", flush=True)
-            continue
-
-        base_ctrl = _load_anchor_ctrl(
-            anchor_id,
-            active_channels=active_channels,
-            image_size=runtime_config.image_size,
-            exp_channels_dir=exp_channels_dir,
-        )
-        uni_embeds = _load_anchor_uni(anchor_id, feat_dir=feat_dir)
-        fixed_noise = _make_generation_noise(
-            config=runtime_config,
-            scheduler=scheduler,
-            device=device,
-            seed=seed,
-        )
-        for condition in conditions:
-            out_path = anchor_dir / f"{build_condition_id(condition)}.png"
-            if out_path.is_file():
-                outputs.append(out_path)
+    for seed in seeds:
+        for index, anchor_id in enumerate(anchors, start=1):
+            anchor_dir = _generated_root(config.out_dir, seed) / anchor_id
+            expected_paths = tuple(anchor_dir / f"{build_condition_id(condition)}.png" for condition in conditions)
+            if all(path.is_file() for path in expected_paths):
+                outputs.extend(expected_paths)
+                print(f"[{index}/{len(anchors)}] skip {anchor_id} (existing)", flush=True)
                 continue
-            condition_ctrl = _build_condition_ctrl(base_ctrl, active_channels=active_channels, condition=condition)
-            generated = _render_generated_image(
-                condition_ctrl,
-                models=models,
+
+            base_ctrl = _load_anchor_ctrl(
+                anchor_id,
+                active_channels=active_channels,
+                image_size=runtime_config.image_size,
+                exp_channels_dir=exp_channels_dir,
+            )
+            uni_embeds = _load_anchor_uni(anchor_id, feat_dir=feat_dir)
+            fixed_noise = _make_generation_noise(
                 config=runtime_config,
                 scheduler=scheduler,
-                uni_embeds=uni_embeds,
                 device=device,
-                guidance_scale=guidance_scale,
-                fixed_noise=fixed_noise,
                 seed=seed,
             )
-            outputs.append(_save_image(generated, out_path))
-        print(f"[{index}/{len(anchors)}] generated {anchor_id}", flush=True)
+            for condition in conditions:
+                out_path = anchor_dir / f"{build_condition_id(condition)}.png"
+                if out_path.is_file():
+                    outputs.append(out_path)
+                    continue
+                condition_ctrl = _build_condition_ctrl(base_ctrl, active_channels=active_channels, condition=condition)
+                generated = _render_generated_image(
+                    condition_ctrl,
+                    models=models,
+                    config=runtime_config,
+                    scheduler=scheduler,
+                    uni_embeds=uni_embeds,
+                    device=device,
+                    guidance_scale=guidance_scale,
+                    fixed_noise=fixed_noise,
+                    seed=seed,
+                )
+                outputs.append(_save_image(generated, out_path))
+            print(f"[{index}/{len(anchors)}] generated {anchor_id}", flush=True)
     return tuple(outputs)
 
 
@@ -455,10 +486,14 @@ def _discover_summary_anchors(config: CombinatorialSweepConfig) -> list[str]:
     anchors, _ = load_anchor_tile_ids(config)
     if anchors:
         return anchors
-    generated_root = config.out_dir / "generated"
-    if not generated_root.is_dir():
-        return []
-    return sorted(path.name for path in generated_root.iterdir() if path.is_dir())
+    found: set[str] = set()
+    if config.out_dir.is_dir():
+        for subdir in config.out_dir.iterdir():
+            if subdir.is_dir() and subdir.name.startswith("generated"):
+                for anchor_dir in subdir.iterdir():
+                    if anchor_dir.is_dir():
+                        found.add(anchor_dir.name)
+    return sorted(found)
 
 
 def _condition_lookup() -> dict[str, SweepCondition]:
@@ -492,25 +527,30 @@ def _iter_signature_rows(config: CombinatorialSweepConfig) -> list[dict[str, Any
     anchors = _discover_summary_anchors(config)
     condition_lookup = _condition_lookup()
     rows: list[dict[str, Any]] = []
-    for anchor_id in anchors:
-        anchor_dir = config.out_dir / "generated" / anchor_id
-        if not anchor_dir.is_dir():
+    for subdir in sorted(config.out_dir.iterdir() if config.out_dir.is_dir() else []):
+        if not subdir.is_dir() or not subdir.name.startswith("generated"):
             continue
-        for condition_id, condition in condition_lookup.items():
-            image_path = anchor_dir / f"{condition_id}.png"
-            if not image_path.is_file():
+        seed = DEFAULT_SEED if subdir.name == "generated" else int(subdir.name.removeprefix("generated_s"))
+        for anchor_id in anchors:
+            anchor_dir = subdir / anchor_id
+            if not anchor_dir.is_dir():
                 continue
-            row = {
-                "anchor_id": anchor_id,
-                "cell_state": condition.cell_state,
-                "oxygen_label": condition.oxygen_label,
-                "oxygen_value": condition.oxygen_value,
-                "glucose_label": condition.glucose_label,
-                "glucose_value": condition.glucose_value,
-                "image_path": str(image_path),
-            }
-            row.update(_compute_signature(image_path))
-            rows.append(row)
+            for condition_id, condition in condition_lookup.items():
+                image_path = anchor_dir / f"{condition_id}.png"
+                if not image_path.is_file():
+                    continue
+                row = {
+                    "anchor_id": anchor_id,
+                    "cell_state": condition.cell_state,
+                    "oxygen_label": condition.oxygen_label,
+                    "oxygen_value": condition.oxygen_value,
+                    "glucose_label": condition.glucose_label,
+                    "glucose_value": condition.glucose_value,
+                    "seed": seed,
+                    "image_path": str(image_path),
+                }
+                row.update(_compute_signature(image_path))
+                rows.append(row)
     return rows
 
 
@@ -616,6 +656,7 @@ def run_summary_worker(config: CombinatorialSweepConfig) -> tuple[Path, Path, Pa
         "oxygen_value",
         "glucose_label",
         "glucose_value",
+        "seed",
         "image_path",
         *MORPHOLOGY_METRICS,
     )
@@ -658,8 +699,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default=DEFAULT_DEVICE)
     parser.add_argument("--guidance-scale", type=float, default=DEFAULT_GUIDANCE_SCALE)
     parser.add_argument("--num-steps", type=int, default=DEFAULT_NUM_STEPS)
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--seed", action="append", type=int, default=None,
+                        help="Repeat for multi-seed renders. Default: [42].")
     args = parser.parse_args(argv)
+    seeds = tuple(args.seed) if args.seed else (DEFAULT_SEED,)
 
     if args.worker is None:
         _require_args(parser, args, ("config_path", "checkpoint_dir", "data_root", "out_dir"))
@@ -687,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 guidance_scale=args.guidance_scale,
                 num_steps=args.num_steps,
-                seed=args.seed,
+                seeds=seeds,
             )
             return 0
         run_anchor_worker(
@@ -696,11 +739,11 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             guidance_scale=args.guidance_scale,
             num_steps=args.num_steps,
-            seed=args.seed,
+            seed=seeds[-1],
         )
         return 0
 
-    plan = plan_task(config)
+    plan = plan_task(config, seeds=seeds)
     write_json(
         {
             "task_name": plan.task_name,
