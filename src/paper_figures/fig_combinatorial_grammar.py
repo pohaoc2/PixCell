@@ -5,11 +5,6 @@ from pathlib import Path
 
 from tools.ablation_report.shared import plt
 
-from src.paper_figures.fig_combinatorial_grammar_panels import _shared
-from src.paper_figures.fig_combinatorial_grammar_panels._case_studies import render_panel_c
-from src.paper_figures.fig_combinatorial_grammar_panels._diff_grid import render_panel_a
-from src.paper_figures.fig_combinatorial_grammar_panels._l2_heatmap import render_panel_b
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_A3_OUT = ROOT / "src" / "a3_combinatorial_sweep" / "out"
@@ -17,63 +12,68 @@ DEFAULT_GENERATED_ROOT = DEFAULT_A3_OUT / "generated"
 DEFAULT_SIGNATURES_CSV = DEFAULT_A3_OUT / "morphological_signatures.csv"
 DEFAULT_RESIDUALS_CSV = DEFAULT_A3_OUT / "additive_model_residuals.csv"
 DEFAULT_ABLATION_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "paired_ablation" / "ablation_results"
-DEFAULT_OUT_PNG = ROOT / "figures" / "pngs" / "09_combinatorial_grammar.png"
+DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "09_combinatorial_grammar.png"
 
 
 def _reference_path(ablation_root: Path, anchor_id: str) -> Path:
     return Path(ablation_root) / anchor_id / "all" / "generated_he.png"
 
 
+def _draw_anchor_sweep_grid(fig, subgrid, *, anchor_id: str, generated_root: Path) -> None:
+    from src.paper_figures.fig_combinatorial_grammar_panels._shared import STATES, LEVELS, condition_id, load_rgb
+
+    outer = subgrid.subgridspec(3, 9, hspace=0.04, wspace=0.04)
+    for state_idx, state in enumerate(STATES):
+        for ox_idx, ox in enumerate(LEVELS):
+            for gluc_idx, gluc in enumerate(LEVELS):
+                col = ox_idx * len(LEVELS) + gluc_idx
+                ax = fig.add_subplot(outer[state_idx, col])
+                tile_path = generated_root / anchor_id / f"{condition_id(state, ox, gluc)}.png"
+                ax.imshow(load_rgb(tile_path))
+                ax.set_xticks([])
+                ax.set_yticks([])
+                if col == 0:
+                    ax.set_ylabel(state, fontsize=8)
+                if state_idx == 0:
+                    ax.set_title(f"{ox}/{gluc}", fontsize=7, pad=1.0)
+                for spine in ax.spines.values():
+                    spine.set_linewidth(0.25)
+                    spine.set_edgecolor("#8A8A8A")
+
+
 def build_combinatorial_grammar_figure(
     *,
     generated_root: Path = DEFAULT_GENERATED_ROOT,
     signatures_csv: Path = DEFAULT_SIGNATURES_CSV,
-    residuals_csv: Path = DEFAULT_RESIDUALS_CSV,
-    ablation_root: Path = DEFAULT_ABLATION_ROOT,
+    variance_csv: Path | None = None,
+    residuals_csv: Path | None = None,
+    ablation_root: Path | None = None,
 ) -> plt.Figure:
+    from src.paper_figures.fig_combinatorial_grammar_panels._variance_bars import draw_variance_bars
+    from src.paper_figures.fig_combinatorial_grammar_panels._shared import (
+        compute_anchor_sweep_magnitude,
+        pick_representative_anchor,
+        read_csv,
+    )
+
     generated_root = Path(generated_root)
     signatures_csv = Path(signatures_csv)
-    residuals_csv = Path(residuals_csv)
-    ablation_root = Path(ablation_root)
+    variance_csv = variance_csv if variance_csv is not None else signatures_csv.parent / "variance_partition.csv"
+    signature_rows = read_csv(signatures_csv)
+    magnitudes = compute_anchor_sweep_magnitude(signature_rows)
+    representative = pick_representative_anchor(signature_rows)
+    # Anchor pick: max magnitude that is also the representative; if not the same, prefer max magnitude.
+    panel_b_anchor = max(magnitudes.items(), key=lambda pair: (pair[1], pair[0] == representative, pair[0]))[0]
 
-    if not signatures_csv.is_file():
-        raise FileNotFoundError(f"missing signatures csv: {signatures_csv}")
-    if not residuals_csv.is_file():
-        raise FileNotFoundError(f"missing residuals csv: {residuals_csv}")
+    fig = plt.figure(figsize=(7.5, 9.0), facecolor="white")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.2], hspace=0.28)
 
-    signature_rows = _shared.read_csv(signatures_csv)
-    residual_rows = _shared.read_csv(residuals_csv)
-    anchor_id = _shared.pick_representative_anchor(signature_rows)
-    reference_path = _reference_path(ablation_root, anchor_id)
-    if not reference_path.is_file():
-        raise FileNotFoundError(
-            f"missing reference render for representative anchor {anchor_id}: {reference_path}\n"
-            "Run: python -m src.a3_combinatorial_sweep.generate_references "
-            "--anchors src/a3_combinatorial_sweep/anchors_k20_t1_medoid.txt "
-            f"--output-root {ablation_root} ..."
-        )
+    ax_bars = fig.add_subplot(gs[0, 0])
+    draw_variance_bars(ax_bars, Path(variance_csv))
 
-    fig = plt.figure(figsize=(12.0, 9.0), facecolor="white")
-    outer = fig.add_gridspec(
-        2,
-        2,
-        width_ratios=[1.6, 1.0],
-        height_ratios=[1.0, 1.0],
-        wspace=0.22,
-        hspace=0.30,
-    )
+    sub_b = gs[1, 0].subgridspec(1, 1)
+    _draw_anchor_sweep_grid(fig, sub_b[0, 0], anchor_id=panel_b_anchor, generated_root=generated_root)
 
-    render_panel_a(
-        fig,
-        outer[0, 0],
-        anchor_id=anchor_id,
-        generated_root=generated_root,
-        reference_path=reference_path,
-    )
-    render_panel_b(fig, outer[1, 0], residual_rows=residual_rows)
-    render_panel_c(fig, outer[:, 1], residual_rows=residual_rows)
-
-    fig.subplots_adjust(left=0.04, right=0.97, bottom=0.06, top=0.95)
     return fig
 
 
@@ -82,13 +82,15 @@ def save_combinatorial_grammar_figure(
     out_png: Path = DEFAULT_OUT_PNG,
     generated_root: Path = DEFAULT_GENERATED_ROOT,
     signatures_csv: Path = DEFAULT_SIGNATURES_CSV,
-    residuals_csv: Path = DEFAULT_RESIDUALS_CSV,
-    ablation_root: Path = DEFAULT_ABLATION_ROOT,
+    variance_csv: Path | None = None,
+    residuals_csv: Path | None = None,
+    ablation_root: Path | None = None,
     dpi: int = 300,
 ) -> Path:
     fig = build_combinatorial_grammar_figure(
         generated_root=generated_root,
         signatures_csv=signatures_csv,
+        variance_csv=variance_csv,
         residuals_csv=residuals_csv,
         ablation_root=ablation_root,
     )
@@ -98,3 +100,6 @@ def save_combinatorial_grammar_figure(
     plt.close(fig)
     return out_png
 
+
+if __name__ == "__main__":
+    save_combinatorial_grammar_figure()

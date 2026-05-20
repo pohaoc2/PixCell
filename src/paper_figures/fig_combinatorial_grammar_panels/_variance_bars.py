@@ -33,13 +33,27 @@ def _collapse(row: dict[str, float]) -> dict[str, float]:
 
 
 def draw_variance_bars(ax: plt.Axes, variance_csv: Path) -> None:
+    variance_csv = Path(variance_csv)
+    if not variance_csv.is_file():
+        ax.text(0.5, 0.5, "no variance data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        return
     rows = load_variance_partition(variance_csv)
+    collapsed = [(row["metric"], _collapse(row)) for row in rows]
+    collapsed = [
+        (metric, shares)
+        for metric, shares in collapsed
+        if sum(shares[key] for key in _SEG_ORDER) >= 1e-9
+    ]
     if not rows:
         ax.text(0.5, 0.5, "no variance data", ha="center", va="center", transform=ax.transAxes)
         ax.set_axis_off()
         return
+    if not collapsed:
+        ax.text(0.5, 0.5, "no nonzero variance data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        return
 
-    collapsed = [(row["metric"], _collapse(row)) for row in rows]
     collapsed.sort(key=lambda pair: pair[1]["interactions"], reverse=True)
 
     metrics = [name for name, _ in collapsed]
