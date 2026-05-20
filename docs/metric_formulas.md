@@ -109,3 +109,42 @@ The HED style score compares stain-channel mean and standard deviation differenc
 - The mask is `tissue_mask_ref OR tissue_mask_gen`.
 - Implemented in [`tools/compute_ablation_metrics.py`](/home/ec2-user/PixCell/tools/compute_ablation_metrics.py) and reused by [`tools/ablation_report/data.py`](/home/ec2-user/PixCell/tools/ablation_report/data.py).
 - Lower is better.
+
+---
+
+## a4 UNI Probe — Appearance Attributes
+
+These attributes appear as probe targets in `probe_delta_r2.png` (and related a4 figures). They are computed per tile in [`src/a4_uni_probe/appearance_metrics_regional.py`](/home/ec2-user/PixCell/src/a4_uni_probe/appearance_metrics_regional.py) after separating the H&E image into Hematoxylin (`H`) and Eosin (`E`) channels via the Ruifrok–Johnston colour-deconvolution matrix (`skimage.color.rgb2hed`). Metrics are computed independently for two compartments — `nuc` (CellViT nucleus pixels) and `stroma` (non-nucleus pixels) — and prefixed accordingly (e.g. `appearance.nuc.h_mean`). Compartments with fewer than 500 pixels yield NaN.
+
+### Stain-intensity attributes
+
+| Key | Formula | Unit |
+|-----|---------|------|
+| `h_mean` | Mean of H-channel pixel values over the compartment mask | OD (optical density, ≥ 0) |
+| `h_std` | Standard deviation of H-channel pixel values | OD |
+| `e_mean` | Mean of E-channel pixel values over the compartment mask | OD |
+| `e_std` | Standard deviation of E-channel pixel values | OD |
+
+### GLCM texture attributes
+
+Computed using a Gray-Level Co-occurrence Matrix (GLCM) on the quantized stain channel. Parameters: `levels = 32`, `distances = (1,)`, `angles = (0°, 45°, 90°, 135°)`, symmetric, normalised. The value reported is the mean over the four angles. Masked-out pixels are filled with the compartment median before quantization so the GLCM covers the full bounding box.
+
+Let $p(i,j)$ be the normalised GLCM entry at grey levels $(i, j)$ and $\mu_i$, $\mu_j$ the marginal means.
+
+| Key | Formula | Interpretation |
+|-----|---------|---------------|
+| `texture_{c}_contrast` | $\sum_{i,j} (i-j)^2 \, p(i,j)$ | Local intensity variation; higher = more textured |
+| `texture_{c}_homogeneity` | $\sum_{i,j} \dfrac{p(i,j)}{1 + (i-j)^2}$ | Closeness of distribution to diagonal; higher = smoother |
+| `texture_{c}_energy` | $\sqrt{\sum_{i,j} p(i,j)^2}$ | Angular second moment (square root form); higher = more uniform/repetitive |
+
+where `{c}` is `h` (Hematoxylin) or `e` (Eosin). All three are dimensionless scalars in $[0, 1]$ for homogeneity/energy; contrast is unbounded above (depends on `levels`).
+
+### Morphology attributes
+
+These come from CellViT instance segmentation results (also used as probe targets in `probe_results.csv`).
+
+| Key | Formula | Unit |
+|-----|---------|------|
+| `nuclei_density` | Number of detected nuclei / tile area in µm² | nuclei / µm² |
+| `nuclear_area_mean` | Mean nucleus area across all instances | µm² |
+| `eccentricity_mean` | Mean eccentricity of fitted ellipses: $\sqrt{1 - (b/a)^2}$, where $a \ge b$ are semi-axes | dimensionless, $[0, 1)$ |

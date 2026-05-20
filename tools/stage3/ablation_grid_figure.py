@@ -69,19 +69,19 @@ COLOR_ACTIVE = "#000000"
 BEST_BG = "#FFFBE6"
 METRIC_BAR_FILL = "#111111"
 METRIC_BAR_LABELS: dict[str, str] = {
-    "cosine": "Cosine",
-    "lpips": "LPIPS",
-    "aji": "AJI",
-    "pq": "PQ",
-    "dice": "DICE",
-    "fud": "FUD",
-    "style_hed": "HED",
+    "cosine": "Cosine ↑",
+    "lpips": "LPIPS ↓",
+    "aji": "AJI ↑",
+    "pq": "PQ ↑",
+    "dice": "DICE ↑",
+    "fud": "FUD ↓",
+    "style_hed": "HED ↓",
 }
-METRIC_ORDER: tuple[str, ...] = ("lpips", "pq", "dice", "style_hed")
+METRIC_ORDER: tuple[str, ...] = ("pq", "lpips", "dice", "style_hed")
 SORTABLE_METRICS: tuple[str, ...] = ("cosine", "lpips", "aji", "pq", "dice", "fud", "style_hed")
 METRIC_BAR_PRESETS: dict[str, tuple[str, ...]] = {
-    "paired": ("lpips", "pq", "dice", "style_hed"),
-    "unpaired": ("lpips", "pq", "dice", "style_hed"),
+    "paired": ("pq", "lpips", "dice", "style_hed"),
+    "unpaired": ("pq", "lpips", "dice", "style_hed"),
     "legacy-paired": ("cosine", "lpips", "aji", "pq"),
     "legacy-unpaired": ("aji", "pq", "style_hed"),
 }

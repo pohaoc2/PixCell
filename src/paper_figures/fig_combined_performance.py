@@ -70,7 +70,7 @@ def build_combined_performance_figure(summaries: list[DatasetSummary]) -> plt.Fi
             label,
             transform=ax.transAxes,
             # Overlay is drawn on 220 DPI raster panels, so this remains in raster-pixel scale.
-            fontsize=28,
+            fontsize=40,
             fontweight="bold",
             va="top",
             ha="left",

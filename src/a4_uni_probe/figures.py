@@ -11,9 +11,15 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
+from adjustText import adjust_text
 
 from src._tasklib.io import ensure_directory
-from src.a4_uni_probe.labels import _load_channel_array
+from src.a4_uni_probe.labels import (
+    _load_channel_array,
+    CHANNEL_ATTR_NAMES,
+    MORPHOLOGY_ATTR_NAMES,
+    APPEARANCE_ATTR_NAMES,
+)
 
 
 PREFERRED_SWEEP_ATTRS = [
@@ -165,10 +171,13 @@ def render_panel_a(out_dir: str | Path) -> Path:
 
     fig, ax = plt.subplots(figsize=(max(8.0, len(attrs) * 0.5), 4.5))
     ax.bar(positions - 0.18, uni, width=0.36, label="UNI", color="#2b6cb0")
-    ax.bar(positions + 0.18, tme, width=0.36, label="TME", color="#dd6b20")
+    ax.bar(positions + 0.18, tme, width=0.36, label="O₂/Glc", color="#dd6b20")
     ax.set_ylabel("CV R^2")
     ax.set_xticks(positions)
-    ax.set_xticklabels(attrs, rotation=45, ha="right")
+    def _panel_a_label(attr: str) -> str:
+        lbl = _display_attr(attr).lower().replace(" fraction", " frac")
+        return re.sub(r"\b(h|e)\b", lambda m: m.group().upper(), lbl)
+    ax.set_xticklabels([_panel_a_label(a) for a in attrs], rotation=45, ha="right")
     ax.legend(frameon=False)
     ax.set_title("Panel A: UNI vs TME Probe Performance")
     fig.tight_layout()
@@ -496,33 +505,115 @@ def render_panel_g(out_dir: str | Path) -> Path:
 def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -> Path:
     out_path = Path(out_dir)
     rows = _read_csv_rows(out_path / "probe_results.csv")
-    sorted_rows = sorted(
-        rows,
-        key=lambda row: (
-            not np.isfinite(float(row.get("delta_r2_uni_minus_tme") or "nan")),
-            -float(row.get("delta_r2_uni_minus_tme") or "nan") if np.isfinite(float(row.get("delta_r2_uni_minus_tme") or "nan")) else 0.0,
-        ),
-    )
-    # Drop attrs with no valid folds (e.g. intensity* metrics that couldn't be computed)
-    sorted_rows = [row for row in sorted_rows if int(row.get("uni_n_valid_folds") or 0) > 0 or int(row.get("tme_n_valid_folds") or 0) > 0]
+    # Drop attrs with no valid folds
+    rows = [row for row in rows if int(row.get("uni_n_valid_folds") or 0) > 0 or int(row.get("tme_n_valid_folds") or 0) > 0]
 
-    attrs = [row["attr"] for row in sorted_rows]
-    deltas = np.asarray([float(row.get("delta_r2_uni_minus_tme") or "nan") for row in sorted_rows], dtype=np.float32)
-    errors = np.sqrt(
-        np.square(np.asarray([float(row.get("uni_r2_std") or "nan") for row in sorted_rows], dtype=np.float32))
-        + np.square(np.asarray([float(row.get("tme_r2_std") or "nan") for row in sorted_rows], dtype=np.float32))
-    )
-    positions = np.arange(len(attrs))
+    _APPEARANCE_SET = set(APPEARANCE_ATTR_NAMES)
+    _MORPHOLOGY_SET = set(MORPHOLOGY_ATTR_NAMES)
+    # Exclude attrs trivially predicted by their own channel mean (TME R² ≈ 1 by construction)
+    _EXCLUDE_ATTRS = {"vessel_area_pct", "mean_oxygen", "mean_glucose"}
 
-    fig, ax = plt.subplots(figsize=(max(8.0, len(attrs) * 0.55), 4.5))
+    # category → (color, hollow marker shape)
+    _CAT_STYLE: dict[str, tuple[str, str]] = {
+        "appearance": ("#dd6b20", "o"),
+        "morphology": ("#4a90d9", "s"),
+        "cell composition": ("#52b788", "^"),
+    }
+
+    def _attr_category(attr: str) -> str:
+        if attr in _APPEARANCE_SET:
+            return "appearance"
+        if attr in _MORPHOLOGY_SET:
+            return "morphology"
+        return "cell composition"
+
+    # Collect valid points first so we can compute axis limits
+    points: list[tuple[str, str, float, float, float, float]] = []
+    for row in rows:
+        attr = row["attr"]
+        uni_r2 = float(row.get("uni_r2_mean") or "nan")
+        tme_r2 = float(row.get("tme_r2_mean") or "nan")
+        uni_std = float(row.get("uni_r2_std") or "nan")
+        tme_std = float(row.get("tme_r2_std") or "nan")
+        if not (np.isfinite(uni_r2) and np.isfinite(tme_r2)):
+            continue
+        if attr in _EXCLUDE_ATTRS:
+            continue
+        points.append((_attr_category(attr), attr, tme_r2, uni_r2,
+                       tme_std if np.isfinite(tme_std) else 0.0,
+                       uni_std if np.isfinite(uni_std) else 0.0))
+
+    all_y = [p[3] for p in points]
+    all_x = [p[2] for p in points]
+    # Single shared range for both axes so the diagonal is exactly 45° and axes are square
+    all_vals = all_x + all_y
+    ax_lo = min(all_vals) - 0.1
+    ax_hi = max(all_vals) + 0.05
+
+    font_name = "Nimbus Roman"
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    ax.set_aspect("equal")
     ax.set_axisbelow(True)
-    ax.grid(axis="y", linewidth=0.4, color="#E0E0E0", zorder=0)
-    ax.bar(positions, deltas, yerr=errors, capsize=3, color="#dd6b20", ecolor="#4a5568")
-    ax.axhline(0.0, color="#4a5568", linewidth=0.8)
-    ax.set_ylabel("ΔR² (UNI − TME)", fontsize=12)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([_display_attr(a) for a in attrs], rotation=45, ha="right", fontsize=11)
-    ax.tick_params(axis="y", labelsize=11)
+    ax.grid(linewidth=0.4, color="#E0E0E0", zorder=0)
+    ax.plot([ax_lo, ax_hi], [ax_lo, ax_hi],
+            color="black", linewidth=0.8, linestyle="--", zorder=1)
+
+    plotted_categories: set[str] = set()
+    texts: list = []
+    for cat, attr, tme_r2, uni_r2, tme_std, uni_std in points:
+        color, marker = _CAT_STYLE[cat]
+        legend_label = cat if cat not in plotted_categories else None
+        plotted_categories.add(cat)
+        ax.errorbar(
+            tme_r2, uni_r2,
+            xerr=tme_std, yerr=uni_std,
+            fmt=marker, color=color, ecolor=color,
+            markerfacecolor="white", markeredgecolor=color,
+            markeredgewidth=1.2, elinewidth=0.7,
+            capsize=2, markersize=5, label=legend_label, zorder=3,
+        )
+        _label = _display_attr(attr).lower().replace(" fraction", " frac")
+        _label = re.sub(r"\b(h|e)\b", lambda m: m.group().upper(), _label)
+        txt = ax.text(
+            tme_r2, uni_r2, _label,
+            fontsize=6.5, color="black",
+            fontfamily=font_name, zorder=4,
+        )
+        texts.append(txt)
+
+    adjust_text(
+        texts, ax=ax,
+        expand=(1.15, 1.3),
+        arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5),
+    )
+
+    ax.set_xlim(ax_lo, ax_hi)
+    ax.set_ylim(ax_lo, ax_hi)
+    _bundle_path = out_path / "features.npz"
+    _tme_label = "TME"
+    if _bundle_path.is_file():
+        _bundle = np.load(_bundle_path, allow_pickle=True)
+        if "tme_label" in _bundle:
+            _tme_label = str(_bundle["tme_label"])
+    ax.set_xlabel(f"{_tme_label} R²", fontsize=9, fontfamily=font_name)
+    ax.set_ylabel("UNI R²", fontsize=9, fontfamily=font_name)
+    ax.tick_params(labelsize=8)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontfamily(font_name)
+    handles = [
+        Line2D([0], [0], marker=_CAT_STYLE[cat][1], color=_CAT_STYLE[cat][0],
+               markerfacecolor="white", markeredgecolor=_CAT_STYLE[cat][0],
+               markeredgewidth=1.2, markersize=6, linestyle="none", label=cat)
+        for cat in ("appearance", "morphology", "cell composition")
+        if cat in plotted_categories
+    ]
+    if handles:
+        ax.legend(handles=handles, fontsize=7.0,
+                  loc="upper center", bbox_to_anchor=(0.5, -0.12),
+                  ncol=len(handles),
+                  prop={"family": font_name, "size": 7.0},
+                  frameon=False,
+                  handlelength=1.4, columnspacing=0.5, handletextpad=0.3)
     fig.tight_layout()
 
     output_path = ensure_directory(Path(dest_dir)) / "probe_delta_r2.png"
@@ -658,25 +749,25 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     if vlim == 0.0:
         vlim = 1.0
 
-    fig, ax = plt.subplots(figsize=(max(7.0, 1.05 * len(edited)), max(6.5, 1.05 * len(edited))))
+    fig, ax = plt.subplots(figsize=(max(6.0, 0.9 * len(edited)), max(6.0, 0.9 * len(edited))))
     im = ax.imshow(grid, cmap="RdBu_r", vmin=-vlim, vmax=vlim, aspect="equal")
     ax.set_xticks(range(len(edited)))
-    ax.set_xticklabels([_display_attr(e) for e in edited], rotation=35, ha="right", fontsize=9)
+    ax.set_xticklabels([_display_attr(e) for e in edited], rotation=35, ha="right", fontsize=12)
     ax.set_yticks(range(len(edited)))
-    ax.set_yticklabels([_display_attr(e) for e in edited], fontsize=10)
+    ax.set_yticklabels([_display_attr(e) for e in edited], fontsize=12)
     ax.set_xticks(np.arange(-0.5, len(edited), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(edited), 1), minor=True)
     ax.grid(which="minor", color="white", linewidth=0.8)
     ax.tick_params(which="minor", bottom=False, left=False)
-    ax.set_xlabel("Measured metric (primary metric of each attribute)", fontsize=10)
-    ax.set_ylabel("Edited attribute", fontsize=10)
+    ax.set_xlabel("Measured metric", fontsize=13)
+    ax.set_ylabel("Edited attribute", fontsize=13)
 
     _draw_specificity_diagonal_and_annotations(
         ax,
         edited=edited,
         metrics=[ATTR_TO_PRIMARY_METRIC[attr] for attr in edited],
         annot=annot,
-        fontsize=9,
+        fontsize=11,
         grid=grid,
         vlim=vlim,
     )
@@ -685,11 +776,12 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.12)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.ax.tick_params(labelsize=9)
+    cbar.set_ticks([-8, -4, 0, 4, 8])
+    cbar.ax.tick_params(labelsize=11)
     fig.tight_layout()
 
     output_path = ensure_directory(Path(dest_dir)) / "specificity_heatmap.png"
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    fig.savefig(output_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
     return output_path
 

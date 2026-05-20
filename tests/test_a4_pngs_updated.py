@@ -146,16 +146,16 @@ def test_render_pngs_updated_outputs(tmp_path: Path) -> None:
         assert path.stat().st_size > 1000
 
     probe_image = mpimg.imread(dest_dir / "probe_delta_r2.png")
-    assert probe_image.shape[1] >= 1200
-    assert probe_image.shape[0] >= 700
+    assert probe_image.shape[1] >= 600
+    assert probe_image.shape[0] >= 600
 
     sweep_image = mpimg.imread(dest_dir / f"sweep_grid_{SWEEP_ATTRS[0]}.png")
     assert sweep_image.shape[1] >= 3200
     assert sweep_image.shape[0] >= 500
 
     heatmap_image = mpimg.imread(dest_dir / "specificity_heatmap.png")
-    assert heatmap_image.shape[1] >= 1100
-    assert heatmap_image.shape[0] >= 1100
+    assert heatmap_image.shape[1] >= 900
+    assert heatmap_image.shape[0] >= 900
 
 
 def test_main_pngs_updated_command(tmp_path: Path) -> None:

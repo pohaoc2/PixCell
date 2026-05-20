@@ -11,11 +11,15 @@ DEFAULT_DATA_ROOT = ROOT / "data" / "orion-crc33"
 DEFAULT_FEATURES_DIR = DEFAULT_DATA_ROOT / "features"
 DEFAULT_EXP_CHANNELS_DIR = DEFAULT_DATA_ROOT / "exp_channels"
 DEFAULT_HE_DIR = DEFAULT_DATA_ROOT / "he"
-DEFAULT_OUT_DIR = ROOT / "src" / "a4_uni_probe" / "out"
+DEFAULT_OUT_DIR = ROOT / "inference_output" / "a1_concat" / "a4_uni_probe"
 DEFAULT_PNGS_UPDATED_DIR = ROOT / "figures" / "pngs_updated" / "a4_uni_probe"
 DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "concat_95470_0" / "checkpoints" / "step_0002600"
 DEFAULT_CONFIG_PATH = ROOT / "configs" / "config_controlnet_exp_a1_concat.py"
-DEFAULT_CELLVIT_REAL_DIR = DEFAULT_OUT_DIR / "cellvit_real"
+DEFAULT_CELLVIT_REAL_DIR = DEFAULT_OUT_DIR / "cellvit"
+DEFAULT_CONTROLNET_CHECKPOINT = (
+    ROOT / "checkpoints" / "concat_95470_0" / "checkpoints" / "step_0002600"
+    / "controlnet_epoch_20_step_2600.pth"
+)
 DEFAULT_FULL_NULL_ROOT = ROOT / "src" / "a2_decomposition" / "out" / "generated"
 
 DEFAULT_SEED = 42
@@ -39,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_probe.add_argument("--exp-channels-dir", type=Path, default=DEFAULT_EXP_CHANNELS_DIR)
     p_probe.add_argument("--cellvit-real-dir", type=Path, default=DEFAULT_CELLVIT_REAL_DIR)
     p_probe.add_argument("--he-dir", type=Path, default=DEFAULT_HE_DIR)
+    p_probe.add_argument("--controlnet-checkpoint", type=Path, default=DEFAULT_CONTROLNET_CHECKPOINT)
     p_probe.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p_probe.add_argument("--cv-folds", type=int, default=DEFAULT_CV_FOLDS)
     p_probe.add_argument("--bucket-px", type=int, default=DEFAULT_SPATIAL_BUCKET_PX)
