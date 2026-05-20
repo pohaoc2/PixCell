@@ -460,7 +460,7 @@ def _section1_legend_handles(variant_keys: list[str]) -> list[Line2D]:
 
 
 def _draw_section1_curves(fig: plt.Figure, gs_slot, cache: dict) -> None:
-    sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.18], hspace=0.22, wspace=0.38)
+    sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.10], hspace=0.02, wspace=0.38)
     curves = cache.get("training_curves", {})
     all_variants = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
     _plot_loss_curves(fig.add_subplot(sub[0, 0]), curves, all_variants, "Training loss")
@@ -473,8 +473,9 @@ def _draw_section1_curves(fig: plt.Figure, gs_slot, cache: dict) -> None:
         ncol=4,
         frameon=False,
         prop=FontProperties(family=SECTION1_FONT_FAMILY, size=FONT_SIZE_TICK),
-        handlelength=2.8,
-        columnspacing=1.4,
+        handlelength=2.0,
+        columnspacing=0.8,
+        handletextpad=0.4,
     )
 
 
@@ -754,8 +755,8 @@ def _draw_section3_legend(ax: plt.Axes) -> None:
     ax.set_ylim(0.0, 1.0)
     swatch_y = 0.5
     entries = [
-        ("Generated cell contour (CellViT)", "red", 0.06),
-        ("Reference cell contour (mask)", (0.45, 0.45, 0.45), 0.46),
+        ("Generated", "red", 0.06),
+        ("Reference", (0.45, 0.45, 0.45), 0.26),
     ]
     for label, color, x in entries:
         ax.plot(
@@ -797,11 +798,11 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
 
     # Reserve a thin top row inside D for the contour legend.
     n_rows = len(row_order)
-    legend_h = 0.35
+    legend_h = 0.22
     tile_outer = gs_slot.subgridspec(
         2, 1,
         height_ratios=[legend_h, n_rows],
-        hspace=0.05,
+        hspace=0.03,
     )
     legend_ax = fig.add_subplot(tile_outer[0])
     _draw_section3_legend(legend_ax)

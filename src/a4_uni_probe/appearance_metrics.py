@@ -16,6 +16,8 @@ except ImportError:  # pragma: no cover
     from skimage.feature import greycomatrix as graycomatrix  # type: ignore
     from skimage.feature import greycoprops as graycoprops  # type: ignore
 
+from src.a4_uni_probe.slope_stats import bootstrap_slope_summary as _bootstrap_slope_summary
+
 
 APPEARANCE_METRIC_NAMES = (
     "appearance.h_mean",
@@ -179,15 +181,6 @@ def _safe_float(row: dict[str, object], key: str) -> float:
         return float("nan")
 
 
-def _linear_slope(x: np.ndarray, y: np.ndarray) -> float:
-    x_centered = x - float(np.mean(x))
-    denom = float(np.dot(x_centered, x_centered))
-    if denom == 0.0:
-        return 0.0
-    y_centered = y - float(np.mean(y))
-    return float(np.dot(x_centered, y_centered) / denom)
-
-
 def _append_appearance_metrics(rows: list[dict[str, object]], *, data_root: Path) -> list[dict[str, object]]:
     cache: dict[tuple[str, str], dict[str, float]] = {}
     updated_rows: list[dict[str, object]] = []
@@ -224,25 +217,12 @@ def _summarize_sweep_rows(rows: list[dict[str, object]], *, attr: str) -> list[d
             direction_rows = [row for row in rows if row.get("direction") == direction_name]
             alphas = np.asarray([_safe_float(row, "alpha") for row in direction_rows], dtype=np.float32)
             values = np.asarray([_safe_float(row, metric_name) for row in direction_rows], dtype=np.float32)
-            valid = np.isfinite(alphas) & np.isfinite(values)
-            if int(valid.sum()) < 2:
-                metric_summary[f"{direction_name}_slope_mean"] = float("nan")
-                metric_summary[f"{direction_name}_slope_ci95_low"] = float("nan")
-                metric_summary[f"{direction_name}_slope_ci95_high"] = float("nan")
-                metric_summary[f"{direction_name}_n"] = int(valid.sum())
-                continue
-            alphas = alphas[valid]
-            values = values[valid]
-            rng = np.random.default_rng(0)
-            slopes = []
-            for _ in range(400):
-                choice = rng.integers(0, len(alphas), size=len(alphas))
-                slopes.append(_linear_slope(alphas[choice], values[choice]))
-            slope_arr = np.asarray(slopes, dtype=np.float32)
-            metric_summary[f"{direction_name}_slope_mean"] = float(np.mean(slope_arr))
-            metric_summary[f"{direction_name}_slope_ci95_low"] = float(np.quantile(slope_arr, 0.025))
-            metric_summary[f"{direction_name}_slope_ci95_high"] = float(np.quantile(slope_arr, 0.975))
-            metric_summary[f"{direction_name}_n"] = int(len(alphas))
+            stats = _bootstrap_slope_summary(alphas, values, n_boot=400, seed=0)
+            ci_low, ci_high = stats["slope_ci95"]
+            metric_summary[f"{direction_name}_slope_mean"] = stats["slope_mean"]
+            metric_summary[f"{direction_name}_slope_ci95_low"] = ci_low
+            metric_summary[f"{direction_name}_slope_ci95_high"] = ci_high
+            metric_summary[f"{direction_name}_n"] = stats["n"]
         summary_rows.append(metric_summary)
     return summary_rows
 

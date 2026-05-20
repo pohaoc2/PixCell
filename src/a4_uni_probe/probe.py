@@ -16,7 +16,12 @@ from sklearn.preprocessing import StandardScaler
 
 from src._tasklib.io import ensure_directory, write_json
 from src._tasklib.tile_ids import list_feature_tile_ids, parse_tile_id
-from src.a4_uni_probe.features import build_tme_baseline_features, build_uni_features, save_feature_bundle
+from src.a4_uni_probe.features import (
+    build_controlnet_encoder_features,
+    build_tme_baseline_features,
+    build_uni_features,
+    save_feature_bundle,
+)
 from src.a4_uni_probe.labels import build_label_matrix, save_label_bundle
 
 
@@ -110,11 +115,20 @@ def run_probe(args: argparse.Namespace) -> dict[str, Path]:
         he_dir=getattr(args, "he_dir", None),
     )
     uni_features = build_uni_features(args.features_dir, tile_ids)
-    tme_features = build_tme_baseline_features(args.exp_channels_dir, tile_ids)
+    ck_path = getattr(args, "controlnet_checkpoint", None)
+    if ck_path is not None and Path(ck_path).is_file():
+        tme_features = build_controlnet_encoder_features(
+            args.exp_channels_dir, tile_ids, ck_path,
+            cache_path=out_dir / "controlnet_tme_features.npy",
+        )
+        tme_label = "TME enc."
+    else:
+        tme_features = build_tme_baseline_features(args.exp_channels_dir, tile_ids)
+        tme_label = "O2/Glc"
     groups = spatial_bucket_groups(tile_ids, args.bucket_px)
 
     labels_path = save_label_bundle(out_dir, tile_ids=tile_ids, labels=labels, attr_names=attr_names)
-    features_path = save_feature_bundle(out_dir, tile_ids=tile_ids, uni_features=uni_features, tme_features=tme_features)
+    features_path = save_feature_bundle(out_dir, tile_ids=tile_ids, uni_features=uni_features, tme_features=tme_features, tme_label=tme_label)
 
     direction_dir = ensure_directory(out_dir / "probe_directions")
     rows: list[dict[str, object]] = []
