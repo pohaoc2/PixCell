@@ -81,3 +81,20 @@ def test_missing_metric_raises():
     rows = _build_rows(lambda *_: 0.0)
     with pytest.raises(KeyError):
         variance_partition(rows, metrics=("not_a_column",))
+
+
+def test_nan_rows_are_dropped_per_metric():
+    rows = _build_rows(lambda a, s, o, g, _seed: 1.0 if s == "prolif" else 0.0)
+    rows[0]["metric"] = float("nan")
+    rows[5]["metric"] = float("nan")
+    shares = variance_partition(rows, metrics=("metric",))
+    s = shares["metric"]
+    assert s["state"] > 0.5
+    assert abs(sum(s.values()) - 1.0) < 1e-9
+
+
+def test_all_nan_metric_returns_zeros():
+    rows = _build_rows(lambda *_: float("nan"))
+    shares = variance_partition(rows, metrics=("metric",))
+    s = shares["metric"]
+    assert all(value == 0.0 for value in s.values())

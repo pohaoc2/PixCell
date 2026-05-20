@@ -68,14 +68,26 @@ def variance_partition(
         if metric not in rows_list[0]:
             raise KeyError(f"metric column missing from rows: {metric!r}")
         values = np.asarray([float(row[metric]) for row in rows_list], dtype=np.float64)
+        finite_mask = np.isfinite(values)
+        values = values[finite_mask]
+        metric_rows_by_factor = {col: values_by_factor[finite_mask] for col, values_by_factor in rows_by_factor.items()}
+
+        zero_shares = {term: 0.0 for term, _ in _ORDERED_TERMS} | {"resid": 0.0}
+        if values.size < 2:
+            out[metric] = zero_shares
+            continue
+
         grand_mean = float(values.mean())
         total_ss = float(np.sum((values - grand_mean) ** 2))
+        if total_ss <= 0.0 or not np.isfinite(total_ss):
+            out[metric] = zero_shares
+            continue
 
         shares: dict[str, float] = {}
         residual = values - grand_mean
 
         for term_name, factors in _ORDERED_TERMS:
-            keys = _composite_key(rows_by_factor, factors)
+            keys = _composite_key(metric_rows_by_factor, factors)
             term_effect = _group_means(residual, keys)
             ss_term = float(np.sum(term_effect ** 2))
             shares[term_name] = ss_term
@@ -83,9 +95,6 @@ def variance_partition(
 
         shares["resid"] = float(np.sum(residual ** 2))
 
-        if total_ss <= 0.0:
-            out[metric] = {key: 0.0 for key in shares}
-        else:
-            out[metric] = {key: max(0.0, value / total_ss) for key, value in shares.items()}
+        out[metric] = {key: max(0.0, value / total_ss) for key, value in shares.items()}
 
     return out
