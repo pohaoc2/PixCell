@@ -12,7 +12,6 @@ from typing import Any
 
 from src._tasklib.io import ensure_directory, write_json
 from src._tasklib.runtime import CommandSpec, JobPlan, JobState, RuntimeProbe, TaskPlan, probe_runtime
-from tools.cellvit.contours import load_cellvit_contours
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,15 +39,24 @@ LEVEL_VALUES = {
 }
 
 MORPHOLOGY_METRICS = (
-    "nuclear_density",
-    "eosin_ratio",
-    "hematoxylin_ratio",
-    "hematoxylin_burden",
-    "mean_cell_size",
-    "nucleus_area_median",
-    "nucleus_area_iqr",
-    "glcm_contrast",
-    "glcm_homogeneity",
+    # morphology (from CellViT)
+    "nuclear_area_mean",
+    "eccentricity_mean",
+    "nuclei_density",
+    "intensity_mean_h",
+    "intensity_mean_e",
+    # appearance (HED + Haralick)
+    "appearance.h_mean",
+    "appearance.h_std",
+    "appearance.e_mean",
+    "appearance.e_std",
+    "appearance.stain_vector_angle_deg",
+    "appearance.texture_h_contrast",
+    "appearance.texture_h_homogeneity",
+    "appearance.texture_h_energy",
+    "appearance.texture_e_contrast",
+    "appearance.texture_e_homogeneity",
+    "appearance.texture_e_energy",
 )
 
 
@@ -457,168 +465,27 @@ def _condition_lookup() -> dict[str, SweepCondition]:
     return {build_condition_id(condition): condition for condition in enumerate_conditions()}
 
 
-def _connected_component_sizes(binary_mask) -> list[int]:
-    import numpy as np
-
-    binary = np.asarray(binary_mask, dtype=bool)
-    try:
-        from scipy import ndimage as ndi
-
-        labels, count = ndi.label(binary, structure=np.ones((3, 3), dtype=np.uint8))
-        return [int(np.sum(labels == label)) for label in range(1, int(count) + 1)]
-    except Exception:
-        pass
-
-    height, width = binary.shape
-    visited = np.zeros((height, width), dtype=bool)
-    sizes: list[int] = []
-    neighbors = (
-        (-1, -1),
-        (-1, 0),
-        (-1, 1),
-        (0, -1),
-        (0, 1),
-        (1, -1),
-        (1, 0),
-        (1, 1),
-    )
-    for row in range(height):
-        for col in range(width):
-            if not binary[row, col] or visited[row, col]:
-                continue
-            stack = [(row, col)]
-            visited[row, col] = True
-            size = 0
-            while stack:
-                current_row, current_col = stack.pop()
-                size += 1
-                for delta_row, delta_col in neighbors:
-                    next_row = current_row + delta_row
-                    next_col = current_col + delta_col
-                    if next_row < 0 or next_row >= height or next_col < 0 or next_col >= width:
-                        continue
-                    if visited[next_row, next_col] or not binary[next_row, next_col]:
-                        continue
-                    visited[next_row, next_col] = True
-                    stack.append((next_row, next_col))
-            sizes.append(size)
-    return sizes
-
-
-def _compute_glcm_features(gray_image, tissue_mask, *, levels: int = 8) -> tuple[float, float]:
-    import numpy as np
-
-    gray = np.asarray(gray_image, dtype=np.float32)
-    mask = np.asarray(tissue_mask, dtype=bool)
-    quantized = np.clip(np.floor(gray * levels), 0, levels - 1).astype(np.int32)
-    left = quantized[:, :-1]
-    right = quantized[:, 1:]
-    pair_mask = mask[:, :-1] & mask[:, 1:]
-    if np.any(pair_mask):
-        left = left[pair_mask]
-        right = right[pair_mask]
-    else:
-        left = left.reshape(-1)
-        right = right.reshape(-1)
-
-    matrix = np.zeros((levels, levels), dtype=np.float64)
-    for src, dst in zip(left.tolist(), right.tolist(), strict=False):
-        matrix[src, dst] += 1.0
-        matrix[dst, src] += 1.0
-    total = float(matrix.sum())
-    if total == 0.0:
-        return 0.0, 1.0
-    matrix /= total
-
-    indices = np.arange(levels, dtype=np.float64)
-    delta = indices[:, None] - indices[None, :]
-    contrast = float(np.sum(matrix * (delta ** 2)))
-    homogeneity = float(np.sum(matrix / (1.0 + (delta ** 2))))
-    return contrast, homogeneity
-
-
-def _polygon_area(contour) -> float:
-    """Shoelace area; accepts ndarray[N, 2] or list[tuple[float, float]]."""
-    area_acc = 0.0
-    n = len(contour)
-    for idx in range(n):
-        x1, y1 = contour[idx]
-        x2, y2 = contour[(idx + 1) % n]
-        area_acc += float(x1) * float(y2) - float(x2) * float(y1)
-    return abs(area_acc) * 0.5
-
-
 def _compute_signature(image_path: Path) -> dict[str, float]:
-    import numpy as np
-    from PIL import Image
+    """Return a4-compatible morphology + appearance metrics for one tile."""
+    from src.a4_uni_probe.appearance_metrics import (
+        APPEARANCE_METRIC_NAMES,
+        appearance_row_for_image,
+    )
+    from src.a4_uni_probe.labels import (
+        MORPHOLOGY_ATTR_NAMES,
+        compute_morphology_attributes_from_cellvit,
+    )
+    from tools.cellvit.contours import cellvit_sidecar_path
 
-    from tools.stage3.hed_utils import rgb_to_hed, tissue_mask_from_rgb
+    morphology = compute_morphology_attributes_from_cellvit(cellvit_sidecar_path(image_path))
+    appearance = appearance_row_for_image(image_path)
 
-    image = Image.open(image_path).convert("RGB")
-    rgb = np.asarray(image, dtype=np.float32) / 255.0
-    tissue_mask = tissue_mask_from_rgb(image)
-    if not np.any(tissue_mask):
-        tissue_mask = np.ones(rgb.shape[:2], dtype=bool)
-
-    hed = rgb_to_hed(image)
-    hematoxylin = np.clip(hed[..., 0], 0.0, None)
-    eosin = np.clip(hed[..., 1], 0.0, None)
-    masked_h = hematoxylin[tissue_mask]
-    masked_e = eosin[tissue_mask]
-    h_mean = float(masked_h.mean()) if masked_h.size else 0.0
-    e_mean = float(masked_e.mean()) if masked_e.size else 0.0
-    stain_total = h_mean + e_mean
-    hematoxylin_ratio = h_mean / stain_total if stain_total > 0.0 else 0.0
-    eosin_ratio = e_mean / stain_total if stain_total > 0.0 else 0.0
-    hematoxylin_burden = h_mean
-
-    h_threshold = float(masked_h.mean() + 0.5 * masked_h.std()) if masked_h.size else 0.0
-    nuclear_mask = tissue_mask & (hematoxylin >= h_threshold)
-    component_sizes = _connected_component_sizes(nuclear_mask)
-    tissue_area = int(np.count_nonzero(tissue_mask))
-
-    area_samples = [float(size) for size in component_sizes]
-    if area_samples:
-        nuclear_density = float(len(area_samples) / tissue_area) if tissue_area else 0.0
-        mean_cell_size = float(sum(area_samples) / len(area_samples))
-    else:
-        nuclear_density = 0.0
-        mean_cell_size = 0.0
-
-    cellvit_contours = load_cellvit_contours(image_path)
-    if cellvit_contours:
-        cellvit_areas = [
-            _polygon_area(contour)
-            for contour in cellvit_contours
-            if len(contour) >= 3
-        ]
-        cellvit_areas = [area for area in cellvit_areas if area > 0.0]
-        if cellvit_areas:
-            area_samples = cellvit_areas
-            nuclear_density = float(len(area_samples) / tissue_area) if tissue_area else 0.0
-            mean_cell_size = float(sum(area_samples) / len(area_samples))
-
-    if area_samples:
-        area_array = np.asarray(area_samples, dtype=np.float64)
-        nucleus_area_median = float(np.median(area_array))
-        nucleus_area_iqr = float(np.percentile(area_array, 75.0) - np.percentile(area_array, 25.0))
-    else:
-        nucleus_area_median = 0.0
-        nucleus_area_iqr = 0.0
-
-    gray = np.clip(np.dot(rgb[..., :3], (0.299, 0.587, 0.114)), 0.0, 1.0)
-    glcm_contrast, glcm_homogeneity = _compute_glcm_features(gray, tissue_mask)
-    return {
-        "nuclear_density": nuclear_density,
-        "eosin_ratio": eosin_ratio,
-        "hematoxylin_ratio": hematoxylin_ratio,
-        "hematoxylin_burden": hematoxylin_burden,
-        "mean_cell_size": mean_cell_size,
-        "nucleus_area_median": nucleus_area_median,
-        "nucleus_area_iqr": nucleus_area_iqr,
-        "glcm_contrast": glcm_contrast,
-        "glcm_homogeneity": glcm_homogeneity,
-    }
+    row: dict[str, float] = {}
+    for name in MORPHOLOGY_ATTR_NAMES:
+        row[name] = float(morphology.get(name, float("nan")))
+    for name in APPEARANCE_METRIC_NAMES:
+        row[name] = float(appearance[name])
+    return row
 
 
 def _iter_signature_rows(config: CombinatorialSweepConfig) -> list[dict[str, Any]]:
