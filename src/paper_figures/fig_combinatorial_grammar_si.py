@@ -7,14 +7,18 @@ from src.paper_figures.style import FONT_SIZE_DENSE_LABEL, FONT_SIZE_DENSE_TITLE
 from tools.ablation_report.shared import INK, plt
 
 from src.paper_figures.fig_combinatorial_grammar_panels import _shared
+from src.paper_figures.fig_combinatorial_grammar_panels._anchor_ranking import draw_anchor_ranking
+from src.paper_figures.fig_combinatorial_grammar_panels._residual_small_multiples import draw_residual_small_multiples
+from src.paper_figures.fig_combinatorial_grammar_panels._seed_ci_table import draw_seed_ci_table
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_A3_OUT = ROOT / "src" / "a3_combinatorial_sweep" / "out"
 DEFAULT_GENERATED_ROOT = DEFAULT_A3_OUT / "generated"
 DEFAULT_SIGNATURES_CSV = DEFAULT_A3_OUT / "morphological_signatures.csv"
+DEFAULT_RESIDUALS_CSV = DEFAULT_A3_OUT / "additive_model_residuals.csv"
 DEFAULT_ABLATION_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "paired_ablation" / "ablation_results"
-DEFAULT_OUT_PNG = ROOT / "figures" / "pngs" / "SI_09_combinatorial_grammar_anchors.png"
+DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "SI_09_combinatorial_grammar_anchors.png"
 
 STATES = _shared.STATES
 LEVELS = _shared.LEVELS
@@ -64,13 +68,17 @@ def build_combinatorial_grammar_si_figure(
     *,
     generated_root: Path = DEFAULT_GENERATED_ROOT,
     signatures_csv: Path = DEFAULT_SIGNATURES_CSV,
+    residuals_csv: Path = DEFAULT_RESIDUALS_CSV,
     ablation_root: Path = DEFAULT_ABLATION_ROOT,
 ) -> plt.Figure:
     generated_root = Path(generated_root)
     signatures_csv = Path(signatures_csv)
+    residuals_csv = Path(residuals_csv)
     ablation_root = Path(ablation_root)
     if not signatures_csv.is_file():
         raise FileNotFoundError(f"missing signatures csv: {signatures_csv}")
+    if not residuals_csv.is_file():
+        raise FileNotFoundError(f"missing residuals csv: {residuals_csv}")
 
     signature_rows = _shared.read_csv(signatures_csv)
     representative = _shared.pick_representative_anchor(signature_rows)
@@ -87,13 +95,18 @@ def build_combinatorial_grammar_si_figure(
         raise FileNotFoundError(f"no anchors with reference renders found under {ablation_root}")
 
     magnitudes = _shared.compute_anchor_sweep_magnitude(signature_rows)
-    fig = plt.figure(figsize=(14.0, 10.0), facecolor="white")
-    outer = fig.add_gridspec(2, 2, wspace=0.10, hspace=0.20)
+    fig = plt.figure(figsize=(16.0, 18.0), facecolor="white")
+    outer = fig.add_gridspec(3, 2, height_ratios=[1.2, 1.0, 1.0], hspace=0.35, wspace=0.2)
     role_labels = ("representative", "low magnitude", "mid magnitude", "high magnitude")
+    raw_subgrid = outer[0, :].subgridspec(2, 2, wspace=0.10, hspace=0.20)
     for idx, anchor_id in enumerate(picks[:4]):
         row, col = divmod(idx, 2)
         title = f"{role_labels[idx]}: anchor {anchor_id} (sweep magnitude={magnitudes.get(anchor_id, 0.0):.3g})"
-        _draw_anchor_subgrid(fig, outer[row, col], anchor_id=anchor_id, generated_root=generated_root, title=title)
+        _draw_anchor_subgrid(fig, raw_subgrid[row, col], anchor_id=anchor_id, generated_root=generated_root, title=title)
+
+    draw_residual_small_multiples(fig, outer[1, 0], residuals_csv=residuals_csv)
+    draw_anchor_ranking(fig, outer[1, 1], signatures_csv=signatures_csv)
+    draw_seed_ci_table(fig, outer[2, :], signatures_csv=signatures_csv)
 
     fig.text(0.02, 0.97, "Figure S6", fontsize=FONT_SIZE_LABEL, color=INK, ha="left", va="top", fontweight="bold")
     fig.subplots_adjust(left=0.04, right=0.98, bottom=0.04, top=0.94)
@@ -105,12 +118,14 @@ def save_combinatorial_grammar_si_figure(
     out_png: Path = DEFAULT_OUT_PNG,
     generated_root: Path = DEFAULT_GENERATED_ROOT,
     signatures_csv: Path = DEFAULT_SIGNATURES_CSV,
+    residuals_csv: Path = DEFAULT_RESIDUALS_CSV,
     ablation_root: Path = DEFAULT_ABLATION_ROOT,
     dpi: int = 300,
 ) -> Path:
     fig = build_combinatorial_grammar_si_figure(
         generated_root=generated_root,
         signatures_csv=signatures_csv,
+        residuals_csv=residuals_csv,
         ablation_root=ablation_root,
     )
     out_png = Path(out_png)
