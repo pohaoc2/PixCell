@@ -130,7 +130,6 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         fontsize=_scaled(FONT_SIZE_LABEL, font_scale),
         fontweight="normal",
         color=INK,
-        family="DejaVu Serif",
     )
 
     if not best_entries and not worst_entries:
@@ -155,7 +154,7 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
 
     ax.plot([0.0, 1.0], [top_line_y, top_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
     ax.plot([0.0, 1.0], [header_bottom_y, header_bottom_y], color=INK, linewidth=0.8, transform=ax.transAxes, clip_on=False)
-    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK, family="DejaVu Serif")
+    ax.text(x_rank, header_y, "Rank", ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK)
     ax.text(
         x_cond,
         header_y,
@@ -164,7 +163,6 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         va="center",
         fontsize=_scaled(FONT_SIZE_CELL_TEXT, font_scale),
         color=INK,
-        family="DejaVu Serif",
     )
     ax.text(
         x_value,
@@ -174,7 +172,6 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
         va="center",
         fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale),
         color=INK,
-        family="DejaVu Serif",
     )
 
     available_h = header_bottom_y - bottom_line_y
@@ -185,14 +182,14 @@ def _draw_comparison_metric_panel(ax: plt.Axes, summary: DatasetSummary, metric_
             sep_y = header_bottom_y - index * row_h
             ax.plot([0.0, 1.0], [sep_y, sep_y], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
             ax.plot([0.0, 1.0], [sep_y - row_h, sep_y - row_h], color=INK, linewidth=0.7, linestyle=(0, (2, 2)), transform=ax.transAxes)
-            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK, family="DejaVu Serif")
+            ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK)
             continue
 
         condition, mean_value, sd_value = entry
-        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color="#555555", family="DejaVu Serif")
+        ax.text(x_rank, y, rank_label, ha="center", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color="#555555")
         _render_condition_glyph_axes(ax, condition, center_x=x_cond, center_y=y, dx=0.055)
         value_text = f"{float(mean_value):.3f}" if metric_key == "fud" else _format_mean_sd(mean_value, sd_value)
-        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK, family="DejaVu Serif")
+        ax.text(x_value, y, value_text, ha="right", va="center", fontsize=_scaled(FONT_SIZE_ANNOTATION, font_scale), color=INK)
 
     ax.plot([0.0, 1.0], [bottom_line_y, bottom_line_y], color=INK, linewidth=1.1, transform=ax.transAxes, clip_on=False)
 

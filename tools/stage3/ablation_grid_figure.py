@@ -276,7 +276,7 @@ def _draw_dot_row(
             ax.text(
                 x, dot_y + 0.48, label,
                 ha="center", va="bottom",
-                fontsize=5.5, color="black",
+                fontsize=8.5, color="black",
             )
 
 

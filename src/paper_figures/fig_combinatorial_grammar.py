@@ -52,7 +52,6 @@ def build_combinatorial_grammar_figure(
     from src.paper_figures.fig_combinatorial_grammar_panels._variance_bars import draw_variance_bars
     from src.paper_figures.fig_combinatorial_grammar_panels._shared import (
         compute_anchor_sweep_magnitude,
-        pick_representative_anchor,
         read_csv,
     )
 
@@ -61,18 +60,19 @@ def build_combinatorial_grammar_figure(
     variance_csv = variance_csv if variance_csv is not None else signatures_csv.parent / "variance_partition.csv"
     signature_rows = read_csv(signatures_csv)
     magnitudes = compute_anchor_sweep_magnitude(signature_rows)
-    representative = pick_representative_anchor(signature_rows)
-    # Anchor pick: max magnitude that is also the representative; if not the same, prefer max magnitude.
-    panel_b_anchor = max(magnitudes.items(), key=lambda pair: (pair[1], pair[0] == representative, pair[0]))[0]
+    panel_b_anchor = sorted(magnitudes.items(), key=lambda pair: (-pair[1], pair[0]))[0][0]
 
-    fig = plt.figure(figsize=(7.5, 9.0), facecolor="white")
-    gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.2], hspace=0.28)
+    fig = plt.figure(figsize=(7.5, 12.0), facecolor="white")
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 1.0, 1.2], hspace=0.45)
 
-    ax_bars = fig.add_subplot(gs[0, 0])
-    draw_variance_bars(ax_bars, Path(variance_csv))
+    ax = fig.add_subplot(gs[0])
+    draw_variance_bars(ax, Path(variance_csv), title="Variance partition (full data)")
 
-    sub_b = gs[1, 0].subgridspec(1, 1)
-    _draw_anchor_sweep_grid(fig, sub_b[0, 0], anchor_id=panel_b_anchor, generated_root=generated_root)
+    ax2 = fig.add_subplot(gs[1])
+    within_csv = signatures_csv.parent / "variance_partition_within.csv"
+    draw_variance_bars(ax2, within_csv, title="Variance partition (within-anchor)")
+
+    _draw_anchor_sweep_grid(fig, gs[2].subgridspec(1, 1)[0, 0], anchor_id=panel_b_anchor, generated_root=generated_root)
 
     return fig
 

@@ -27,7 +27,7 @@ from tools.cellvit.contours import overlay_cellvit_contours
 
 PRIMARY_A2_VARIANT = "a2_bypass_full_tme"
 LEGACY_A2_VARIANT = "a2_bypass"
-SECTION1_FONT_FAMILY = "Nimbus Roman"
+SECTION1_FONT_FAMILY = "Nimbus Sans"
 
 
 VARIANT_SPECS: dict[str, dict] = {
@@ -207,7 +207,7 @@ def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     upper = fig.add_gridspec(
         2, 1,
         height_ratios=[2.1, 0.92],
-        hspace=0.08,
+        hspace=0.20,
         left=0.045, right=0.990,
         top=0.975, bottom=0.605,
     )
@@ -215,7 +215,7 @@ def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     lower = fig.add_gridspec(
         1, 1,
         left=0.045, right=0.981,
-        top=0.580, bottom=0.015,
+        top=0.550, bottom=0.015,
     )
 
     _draw_section1_curves(fig, upper[0], cache)
@@ -460,7 +460,7 @@ def _section1_legend_handles(variant_keys: list[str]) -> list[Line2D]:
 
 
 def _draw_section1_curves(fig: plt.Figure, gs_slot, cache: dict) -> None:
-    sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.10], hspace=0.02, wspace=0.38)
+    sub = gs_slot.subgridspec(2, 2, height_ratios=[1.0, 0.15], hspace=0.55, wspace=0.38)
     curves = cache.get("training_curves", {})
     all_variants = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
     _plot_loss_curves(fig.add_subplot(sub[0, 0]), curves, all_variants, "Training loss")
@@ -563,7 +563,7 @@ def _draw_section2_table(ax: plt.Axes, cache: dict) -> None:
     metrics = _section2_metrics(cache)
     params = cache.get("params", {})
     best_by_metric = _best_metric_variants(metrics)
-    table_fs = FONT_SIZE_TICK + 2
+    table_fs = FONT_SIZE_TICK
     # Give Config its own left-aligned column so row labels stay inside the rules,
     # while keeping metric columns evenly spaced.
     table_left, table_right = 0.02, 0.84
@@ -823,7 +823,7 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
     )
     row_labels = {
         "gt": "Ref H&E",
-        **{variant: spec["label"] for variant, spec in VARIANT_SPECS.items()},
+        **{variant: _compact_variant_label(variant) for variant in VARIANT_SPECS},
     }
 
     for row_idx, variant in enumerate(row_order):
@@ -845,7 +845,7 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
             if col_idx == 0:
                 ax.set_ylabel(
                     row_labels.get(variant, variant),
-                    fontsize=FONT_SIZE_ANNOTATION + 2,
+                    fontsize=FONT_SIZE_ANNOTATION + 1,
                     rotation=0,
                     ha="right",
                     va="center",

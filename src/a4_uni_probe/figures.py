@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
 from adjustText import adjust_text
+from PIL import Image
 
 from src._tasklib.io import ensure_directory
 from src.a4_uni_probe.labels import (
@@ -35,6 +36,22 @@ SWEEP_ALPHA_ROWS = [
     ("+0.00", "α = 0"),
     ("+1.00", "α = +1"),
 ]
+SWEEP_ATTRS: tuple[str, ...] = (
+    "nuclei_density",
+    "nuclear_area_mean",
+    "eccentricity_mean",
+    "texture_e_contrast",
+    "texture_h_contrast",
+    "texture_h_energy",
+)
+SWEEP_ATTR_DISPLAY_NAMES: dict[str, str] = {
+    "nuclei_density": "Nuclei density",
+    "nuclear_area_mean": "Nuclear area mean",
+    "eccentricity_mean": "Eccentricity mean",
+    "texture_e_contrast": "Eosin contrast",
+    "texture_h_contrast": "Hematoxylin contrast",
+    "texture_h_energy": "Hematoxylin energy",
+}
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_A4_DATA_ROOT = ROOT / "data" / "orion-crc33"
 ATTR_TO_PRIMARY_METRIC = {
@@ -370,8 +387,7 @@ def _pick_sweep_tiles(attr_dir: Path, n_tiles: int = 6) -> list[Path]:
     valid_tiles: list[Path] = []
     for tile_dir in sorted(path for path in attr_dir.iterdir() if path.is_dir()):
         has_all_pngs = all(
-            (tile_dir / direction / f"alpha_{alpha}.png").is_file()
-            for direction in ("targeted", "random")
+            (tile_dir / "targeted" / f"alpha_{alpha}.png").is_file()
             for alpha, _label in SWEEP_ALPHA_ROWS
         )
         if has_all_pngs:
@@ -550,7 +566,7 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     ax_lo = min(all_vals) - 0.1
     ax_hi = max(all_vals) + 0.05
 
-    font_name = "Nimbus Roman"
+    font_name = "Nimbus Sans"
     fig, ax = plt.subplots(figsize=(3.5, 3.5))
     ax.set_aspect("equal")
     ax.set_axisbelow(True)
@@ -622,7 +638,10 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     return output_path
 
 
-def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, attr: str, n_tiles: int = 6) -> Path:
+def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, attr: str, n_tiles: int = 3) -> Path:
+    """4-row × n_tiles grid: Row0=Ref H&E, Rows1-3=alpha=-1,0,+1 (targeted).
+    No random section. No section headers. Attr display name as suptitle.
+    """
     out_path = Path(out_dir)
     attr_dir = out_path / "sweep" / attr
     tile_dirs = _pick_sweep_tiles(attr_dir, n_tiles=n_tiles)
@@ -630,103 +649,267 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
         raise ValueError(f"expected at least {n_tiles} valid tiles for {attr}, found {len(tile_dirs)}")
 
     he_root = _resolve_reference_he_root(out_path)
-    exp_channels_root = _resolve_exp_channels_root(out_path)
     tile_ids = [tile_dir.name for tile_dir in tile_dirs]
     reference_images = {tile_id: mpimg.imread(_find_reference_he_path(he_root, tile_id)) for tile_id in tile_ids}
 
-    group_names = ["Reference H&E", "Attribute-directed", "Random"]
-    spacer_width = 0.28
-    width_ratios: list[float] = []
-    group_offsets: list[int] = []
-    column_index = 0
-    for group_index, _group_name in enumerate(group_names):
-        group_offsets.append(column_index)
-        width_ratios.extend([1.0] * n_tiles)
-        column_index += n_tiles
-        if group_index != len(group_names) - 1:
-            width_ratios.append(spacer_width)
-            column_index += 1
+    n_rows = 4  # Row 0 = Ref H&E, rows 1-3 = alpha
+    figsize = (n_tiles * 1.25 + 0.5, n_rows * 1.25 + 0.8)
 
-    # figsize computed so each tile subplot is approximately square:
-    # tile_width = fig_w * 0.94 / 18.56  tile_height = fig_h * 0.80 / 3  → equal at (18.0, 3.4)
-    fig = plt.figure(figsize=(18.0, 3.4))
-    grid = fig.add_gridspec(
-        3,
-        len(width_ratios),
-        width_ratios=width_ratios,
-        wspace=0.05,
-        hspace=0.02,
+    fig, axes = plt.subplots(
+        n_rows, n_tiles,
+        figsize=figsize,
+        gridspec_kw={"wspace": 0.03, "hspace": 0.03},
+        squeeze=False,
     )
-    grouped_axes: dict[str, list[list[plt.Axes]]] = {group_name: [] for group_name in group_names}
+    fig.subplots_adjust(left=0.19, right=0.99, top=0.91, bottom=0.01)
 
-    for row_index, (alpha, _row_label) in enumerate(SWEEP_ALPHA_ROWS):
-        reference_row_axes: list[plt.Axes] = []
-        targeted_row_axes: list[plt.Axes] = []
-        random_row_axes: list[plt.Axes] = []
-        for col_index, tile_dir in enumerate(tile_dirs):
-            tile_id = tile_dir.name
+    # Row 0: Reference H&E
+    for col, tile_id in enumerate(tile_ids):
+        ax = axes[0, col]
+        ax.imshow(reference_images[tile_id])
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
-            reference_ax = fig.add_subplot(grid[row_index, group_offsets[0] + col_index])
-            reference_ax.imshow(reference_images[tile_id])
-            reference_ax.set_xticks([])
-            reference_ax.set_yticks([])
-            for spine in reference_ax.spines.values():
+    # Rows 1-3: alpha-directed (targeted only)
+    for row, (alpha, _row_label) in enumerate(SWEEP_ALPHA_ROWS, start=1):
+        for col, tile_dir in enumerate(tile_dirs):
+            ax = axes[row, col]
+            img_path = tile_dir / "targeted" / f"alpha_{alpha}.png"
+            ax.imshow(mpimg.imread(img_path))
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
                 spine.set_visible(False)
-            reference_row_axes.append(reference_ax)
 
-            targeted_img_path = tile_dir / "targeted" / f"alpha_{alpha}.png"
-            targeted_ax = fig.add_subplot(grid[row_index, group_offsets[1] + col_index])
-            targeted_ax.imshow(mpimg.imread(targeted_img_path))
-            targeted_ax.set_xticks([])
-            targeted_ax.set_yticks([])
-            for spine in targeted_ax.spines.values():
-                spine.set_visible(False)
-            targeted_row_axes.append(targeted_ax)
-
-            random_img_path = tile_dir / "random" / f"alpha_{alpha}.png"
-            random_ax = fig.add_subplot(grid[row_index, group_offsets[2] + col_index])
-            random_ax.imshow(mpimg.imread(random_img_path))
-            random_ax.set_xticks([])
-            random_ax.set_yticks([])
-            for spine in random_ax.spines.values():
-                spine.set_visible(False)
-            random_row_axes.append(random_ax)
-            random_ax.set_xticks([])
-            random_ax.set_yticks([])
-            for spine in random_ax.spines.values():
-                spine.set_visible(False)
-            random_row_axes.append(random_ax)
-
-        grouped_axes["Reference H&E"].append(reference_row_axes)
-        grouped_axes["Attribute-directed"].append(targeted_row_axes)
-        grouped_axes["Random"].append(random_row_axes)
-
-    fig.subplots_adjust(left=0.055, right=0.995, bottom=0.03, top=0.83, hspace=0.02)
-    fig.canvas.draw()
-
-    for row_index, (_alpha, row_label) in enumerate(SWEEP_ALPHA_ROWS):
-        row_ax = grouped_axes["Reference H&E"][row_index][0]
-        position = row_ax.get_position()
-        fig.text(position.x0 - 0.012, (position.y0 + position.y1) / 2, row_label, ha="right", va="center", fontsize=11)
-
-    bracket_y = grouped_axes["Reference H&E"][0][0].get_position().y1 + 0.02
-    text_y = bracket_y + 0.008
-    for group_name in group_names:
-        top_left = grouped_axes[group_name][0][0].get_position()
-        top_right = grouped_axes[group_name][0][-1].get_position()
-        fig.add_artist(
-            Line2D(
-                [top_left.x0, top_right.x1],
-                [bracket_y, bracket_y],
-                transform=fig.transFigure,
-                color="#000000",
-                linewidth=1.5,
-            )
+    # Row labels on left column
+    row_labels = ["Ref H&E"] + [lbl for _, lbl in SWEEP_ALPHA_ROWS]
+    for row_idx, lbl in enumerate(row_labels):
+        axes[row_idx, 0].set_ylabel(
+            lbl, fontsize=13, rotation=0, ha="right", va="center", labelpad=4
         )
-        fig.text((top_left.x0 + top_right.x1) / 2, text_y, group_name, ha="center", va="bottom", fontsize=11, fontweight="normal")
+
+    # Attribute name as suptitle
+    fig.suptitle(
+        SWEEP_ATTR_DISPLAY_NAMES.get(attr, attr),
+        fontsize=14, fontweight="bold", y=0.995,
+    )
 
     output_path = ensure_directory(Path(dest_dir)) / f"sweep_grid_{attr}.png"
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str | Path) -> Path:
+    """6 attribute sweep grids in one matplotlib figure (horizontal ribbon).
+
+    - 4 rows × 3 cols per attribute block, all 6 blocks side by side.
+    - Y-labels (row names) only on the leftmost block.
+    - Attr display name centered over its grid, with a black horizontal line below
+      the text and above the tile rows.
+    - Tight wspace/hspace between tiles and between attribute blocks.
+    """
+    out_path = Path(out_dir)
+    dest_path = ensure_directory(Path(dest_dir))
+
+    n_attrs = len(SWEEP_ATTRS)  # 6
+    n_tiles = 3
+    n_rows = 4  # Ref H&E + 3 alpha rows
+
+    he_root = _resolve_reference_he_root(out_path)
+
+    # Pre-load all tile data
+    attr_data: dict[str, dict] = {}
+    for attr in SWEEP_ATTRS:
+        attr_dir = out_path / "sweep" / attr
+        tile_dirs = _pick_sweep_tiles(attr_dir, n_tiles=n_tiles)
+        tile_ids = [td.name for td in tile_dirs]
+        attr_data[attr] = {
+            "tile_dirs": tile_dirs,
+            "tile_ids": tile_ids,
+            "ref_imgs": {
+                tid: mpimg.imread(_find_reference_he_path(he_root, tid))
+                for tid in tile_ids
+            },
+        }
+
+    # Column layout: n_tiles tile cols per attr + thin spacer between attrs
+    spacer_r = 0.06  # spacer width as fraction of one tile width
+    col_ratios: list[float] = []
+    for i in range(n_attrs):
+        col_ratios.extend([1.0] * n_tiles)
+        if i < n_attrs - 1:
+            col_ratios.append(spacer_r)
+    n_grid_cols = len(col_ratios)  # 6*3 + 5 = 23
+
+    # Figure sizing (aim for ~0.88" square tiles)
+    TILE_IN = 0.88
+    LEFT_M = 1.10   # room for y-labels (increased for larger font)
+    RIGHT_M = 0.04
+    TOP_M = 0.55    # room for subtitle text + line (increased for larger font)
+    BOT_M = 0.04
+    SPACER_IN = TILE_IN * spacer_r
+
+    fig_w = LEFT_M + n_attrs * (n_tiles * TILE_IN) + (n_attrs - 1) * SPACER_IN + RIGHT_M
+    fig_h = TOP_M + n_rows * TILE_IN + BOT_M
+
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+    gs = fig.add_gridspec(
+        n_rows, n_grid_cols,
+        width_ratios=col_ratios,
+        wspace=0.02,
+        hspace=0.02,
+        left=LEFT_M / fig_w,
+        right=1.0 - RIGHT_M / fig_w,
+        top=1.0 - TOP_M / fig_h,
+        bottom=BOT_M / fig_h,
+    )
+
+    row_labels = ["Ref H&E"] + [lbl for _, lbl in SWEEP_ALPHA_ROWS]
+
+    # Store top-left / top-right axes per attr block for label/line placement
+    block_axes: dict[int, dict[str, plt.Axes]] = {}
+
+    for attr_idx, attr in enumerate(SWEEP_ATTRS):
+        data = attr_data[attr]
+        tile_dirs = data["tile_dirs"]
+        tile_ids = data["tile_ids"]
+        ref_imgs = data["ref_imgs"]
+        gs_col0 = attr_idx * (n_tiles + 1)  # tiles + 1 spacer step
+
+        block_axes[attr_idx] = {}
+        for row in range(n_rows):
+            for col in range(n_tiles):
+                ax = fig.add_subplot(gs[row, gs_col0 + col])
+                if row == 0 and col == 0:
+                    block_axes[attr_idx]["top_left"] = ax
+                if row == 0 and col == n_tiles - 1:
+                    block_axes[attr_idx]["top_right"] = ax
+
+                if row == 0:
+                    ax.imshow(ref_imgs[tile_ids[col]])
+                else:
+                    alpha, _ = SWEEP_ALPHA_ROWS[row - 1]
+                    img_path = tile_dirs[col] / "targeted" / f"alpha_{alpha}.png"
+                    ax.imshow(mpimg.imread(img_path))
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for sp in ax.spines.values():
+                    sp.set_visible(False)
+
+                # Y-labels only on leftmost column of first attr
+                if attr_idx == 0 and col == 0:
+                    ax.set_ylabel(
+                        row_labels[row], fontsize=20, rotation=0,
+                        ha="right", va="center", labelpad=4,
+                    )
+
+    # Add subtitle text and black line above each attr block
+    fig.canvas.draw()
+
+    for attr_idx, attr in enumerate(SWEEP_ATTRS):
+        pos_tl = block_axes[attr_idx]["top_left"].get_position()
+        pos_tr = block_axes[attr_idx]["top_right"].get_position()
+
+        x_left = pos_tl.x0
+        x_right = pos_tr.x1
+        x_center = (x_left + x_right) / 2
+        y_tile_top = pos_tl.y1
+
+        line_y = y_tile_top + 0.012
+        text_y = line_y + 0.008
+
+        fig.add_artist(
+            Line2D(
+                [x_left, x_right], [line_y, line_y],
+                transform=fig.transFigure,
+                color="black", linewidth=1.2,
+            )
+        )
+        fig.text(
+            x_center, text_y,
+            SWEEP_ATTR_DISPLAY_NAMES.get(attr, attr),
+            ha="center", va="bottom",
+            fontsize=20, fontweight="normal",
+        )
+
+    output_path = dest_path / "sweep_grid_combined.png"
+    fig.savefig(output_path, dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def render_pngs_updated_combined_abc(out_dir: str | Path, dest_dir: str | Path) -> Path:
+    """Combined figure: [A: probe_delta | B: specificity_heatmap] on top,
+    [C: sweep_combined] below. Width(A) + Width(B) = Width(C).
+
+    A is padded with white below to match B's height. C is scaled to match A+B total width.
+    """
+    out_path = Path(out_dir)
+    dest_path = ensure_directory(Path(dest_dir))
+
+    # Ensure C exists
+    sweep_combined_path = dest_path / "sweep_grid_combined.png"
+    if not sweep_combined_path.is_file():
+        render_pngs_updated_combined_sweep_grid(out_path, dest_path)
+
+    img_A = np.array(Image.open(dest_path / "probe_delta_r2.png").convert("RGB"))
+    img_B = np.array(Image.open(dest_path / "specificity_heatmap.png").convert("RGB"))
+    img_C = np.array(Image.open(sweep_combined_path).convert("RGB"))
+
+    H_A, W_A = img_A.shape[:2]
+    H_B, W_B = img_B.shape[:2]
+    H_C, W_C = img_C.shape[:2]
+
+    # Scale A up slightly and B down so both reach the geometric-mean height,
+    # preserving each image's aspect ratio.
+    H_target = round(float(np.sqrt(H_A * H_B)))
+    W_A_new = round(W_A * H_target / H_A)
+    W_B_new = round(W_B * H_target / H_B)
+
+    img_A_r = np.array(Image.fromarray(img_A).resize((W_A_new, H_target), Image.LANCZOS))
+    img_B_r = np.array(Image.fromarray(img_B).resize((W_B_new, H_target), Image.LANCZOS))
+
+    img_AB = np.concatenate([img_A_r, img_B_r], axis=1)  # (H_target, W_A_new+W_B_new, 3)
+    W_AB = img_AB.shape[1]
+
+    # Scale C so its width matches W_AB
+    H_C_scaled = max(1, round(H_C * W_AB / W_C))
+    img_C_scaled = np.array(
+        Image.fromarray(img_C).resize((W_AB, H_C_scaled), Image.LANCZOS)
+    )
+
+    # No separator — stack directly
+    combined = np.concatenate([img_AB, img_C_scaled], axis=0)
+
+    # Draw panel labels A, B, C using matplotlib (data coords)
+    _DPI = 180
+    fig, ax = plt.subplots(
+        figsize=(combined.shape[1] / _DPI, combined.shape[0] / _DPI),
+        facecolor="white",
+    )
+    ax.imshow(combined, interpolation="bilinear")
+    ax.axis("off")
+    fig.subplots_adjust(0, 0, 1, 1, 0, 0)
+
+    label_pad = max(6, int(0.015 * combined.shape[1]))
+    top_pad = max(6, int(0.015 * combined.shape[0]))
+
+    # A: top-left of A panel
+    ax.text(label_pad, top_pad, "A", fontsize=20, fontweight="bold",
+            color="black", ha="left", va="top")
+    # B: top-left of B panel
+    ax.text(W_A_new + label_pad, top_pad, "B", fontsize=20, fontweight="bold",
+            color="black", ha="left", va="top")
+    # C: top-left of C panel (starts after H_target rows)
+    ax.text(label_pad, H_target + top_pad, "C", fontsize=20, fontweight="bold",
+            color="black", ha="left", va="top")
+
+    output_path = dest_path / "combined_a_b_c.png"
+    fig.savefig(output_path, dpi=_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
 
@@ -795,6 +978,8 @@ def render_pngs_updated(out_dir: str | Path, dest_dir: str | Path) -> dict[str, 
     }
     for attr in _ordered_sweep_attrs(out_path / "sweep"):
         outputs[f"sweep_grid_{attr}"] = render_pngs_updated_sweep_grid(out_path, destination, attr)
+    outputs["sweep_grid_combined"] = render_pngs_updated_combined_sweep_grid(out_path, destination)
+    outputs["combined_a_b_c"] = render_pngs_updated_combined_abc(out_path, destination)
     return outputs
 
 

@@ -32,7 +32,7 @@ def _collapse(row: dict[str, float]) -> dict[str, float]:
     }
 
 
-def draw_variance_bars(ax: plt.Axes, variance_csv: Path) -> None:
+def draw_variance_bars(ax: plt.Axes, variance_csv: Path, *, title: str | None = None) -> None:
     variance_csv = Path(variance_csv)
     if not variance_csv.is_file():
         ax.text(0.5, 0.5, "no variance data", ha="center", va="center", transform=ax.transAxes)
@@ -74,7 +74,7 @@ def draw_variance_bars(ax: plt.Axes, variance_csv: Path) -> None:
     ax.set_yticklabels(metrics, fontsize=8)
     ax.set_xlim(0.0, 1.0)
     ax.set_xlabel("variance share")
-    ax.set_title("Variance partition by metric (sorted by interaction share)", fontsize=10)
-    ax.legend(loc="lower right", fontsize=7, frameon=False, ncol=3)
+    ax.set_title(title or "Variance partition by metric (sorted by interaction share)", fontsize=10)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=6, fontsize=7, frameon=False)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)

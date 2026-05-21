@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 
-FONT_FAMILY = "Nimbus Roman"
+FONT_FAMILY = "Nimbus Sans"
 FONT_SIZE_BASE = 12
 FONT_SIZE_TITLE = 13
 FONT_SIZE_LABEL = 12
@@ -17,7 +17,8 @@ FONT_SIZE_DENSE_TITLE = 8    # subplot titles in dense grids
 FONT_SIZE_INLINE = 10        # inline figure annotations
 
 RC_PARAMS: dict[str, object] = {
-    "font.family": FONT_FAMILY,
+    "font.family": "sans-serif",
+    "font.sans-serif": [FONT_FAMILY, "DejaVu Sans"],
     "font.size": FONT_SIZE_BASE,
     "axes.titlesize": FONT_SIZE_TITLE,
     "axes.titleweight": "normal",

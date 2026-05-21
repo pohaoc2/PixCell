@@ -118,12 +118,13 @@ def build_condition_id(condition: SweepCondition) -> str:
     return f"{condition.cell_state}_{condition.oxygen_label}_{condition.glucose_label}"
 
 
-def _summary_output_paths(out_dir: Path) -> tuple[Path, Path, Path, Path]:
+def _summary_output_paths(out_dir: Path) -> tuple[Path, Path, Path, Path, Path]:
     return (
         out_dir / "morphological_signatures.csv",
         out_dir / "additive_model_residuals.csv",
         out_dir / "interaction_heatmap.png",
         out_dir / "variance_partition.csv",
+        out_dir / "variance_partition_within.csv",
     )
 
 
@@ -645,7 +646,7 @@ def _write_interaction_heatmap(path: Path, additive_rows: list[dict[str, Any]]) 
     return path
 
 
-def run_summary_worker(config: CombinatorialSweepConfig) -> tuple[Path, Path, Path, Path]:
+def run_summary_worker(config: CombinatorialSweepConfig) -> tuple[Path, Path, Path, Path, Path]:
     signature_rows = _iter_signature_rows(config)
     if not signature_rows:
         raise FileNotFoundError(f"no generated PNGs found under {config.out_dir / 'generated'}")
@@ -682,12 +683,18 @@ def run_summary_worker(config: CombinatorialSweepConfig) -> tuple[Path, Path, Pa
         {"metric": metric, **shares[metric]}
         for metric in MORPHOLOGY_METRICS
     ]
-    signatures_path, residuals_path, heatmap_path, variance_path = _summary_output_paths(config.out_dir)
+    signatures_path, residuals_path, heatmap_path, variance_path, within_path = _summary_output_paths(config.out_dir)
     _write_csv(signatures_path, signature_rows, signature_fieldnames)
     _write_csv(residuals_path, additive_rows, additive_fieldnames)
     _write_interaction_heatmap(heatmap_path, additive_rows)
     _write_csv(variance_path, variance_rows, variance_fieldnames)
-    return signatures_path, residuals_path, heatmap_path, variance_path
+    within_shares = variance_partition(signature_rows, metrics=MORPHOLOGY_METRICS, strip_factor="anchor_id")
+    within_rows = [
+        {"metric": metric, **within_shares[metric]}
+        for metric in MORPHOLOGY_METRICS
+    ]
+    _write_csv(within_path, within_rows, variance_fieldnames)
+    return signatures_path, residuals_path, heatmap_path, variance_path, within_path
 
 
 def _require_args(parser: argparse.ArgumentParser, args: argparse.Namespace, names: tuple[str, ...]) -> None:
