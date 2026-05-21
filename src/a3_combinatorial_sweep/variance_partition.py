@@ -51,12 +51,16 @@ def _composite_key(rows_by_factor: dict[str, np.ndarray], factors: tuple[str, ..
 def variance_partition(
     rows: Iterable[dict[str, Any]],
     metrics: tuple[str, ...],
+    strip_factor: str | None = None,
 ) -> dict[str, dict[str, float]]:
     """Decompose total variance per metric into named factor shares.
 
     Returns: {metric_name: {anchor, state, o2, gluc, s_x_o, s_x_g, o_x_g, s_x_o_x_g, resid}}
     Each inner dict sums to 1.0 (or to 0.0 if total variance is zero).
     """
+    if strip_factor is not None and strip_factor != "anchor_id":
+        raise ValueError(f"unsupported strip_factor: {strip_factor!r}")
+
     rows_list = list(rows)
     if not rows_list:
         return {metric: {term: 0.0 for term, _ in _ORDERED_TERMS} | {"resid": 0.0} for metric in metrics}
@@ -77,6 +81,12 @@ def variance_partition(
             out[metric] = zero_shares
             continue
 
+        stripped_term_name: str | None = None
+        if strip_factor is not None:
+            stripped_term_name = "anchor"
+            strip_keys = metric_rows_by_factor[strip_factor].astype(str)
+            values = values - _group_means(values, strip_keys)
+
         grand_mean = float(values.mean())
         total_ss = float(np.sum((values - grand_mean) ** 2))
         if total_ss <= 0.0 or not np.isfinite(total_ss):
@@ -95,6 +105,16 @@ def variance_partition(
 
         shares["resid"] = float(np.sum(residual ** 2))
 
-        out[metric] = {key: max(0.0, value / total_ss) for key, value in shares.items()}
+        metric_shares = {key: max(0.0, value / total_ss) for key, value in shares.items()}
+        if stripped_term_name is not None:
+            metric_shares[stripped_term_name] = 0.0
+            remaining_total = sum(value for key, value in metric_shares.items() if key != stripped_term_name)
+            if remaining_total > 0.0 and np.isfinite(remaining_total):
+                metric_shares = {
+                    key: (0.0 if key == stripped_term_name else value / remaining_total)
+                    for key, value in metric_shares.items()
+                }
+
+        out[metric] = metric_shares
 
     return out

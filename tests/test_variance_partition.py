@@ -60,6 +60,17 @@ def test_pure_anchor_variance():
     assert grammar < 1e-9
 
 
+def test_strip_anchor_removes_anchor_share():
+    anchor_eff = {'a1': 1.0, 'a2': 0.5, 'a3': 0.0}
+    state_eff = {'prolif': 0.2, 'nonprolif': 0.0, 'dead': -0.2}
+    rows = _build_rows(lambda a, s, o, g, _seed: anchor_eff[a] + state_eff[s])
+    shares = variance_partition(rows, metrics=('metric',), strip_factor='anchor_id')
+    s = shares['metric']
+    assert s['anchor'] == 0.0
+    assert s['state'] > 0.9
+    assert abs(sum(s.values()) - 1.0) < 1e-9
+
+
 def test_interaction_only_shows_up_as_interaction():
     rows = _build_rows(lambda a, s, o, g, _seed: 1.0 if (s == "prolif" and o == "high") else 0.0)
 
