@@ -2,7 +2,7 @@
 
 - Goal: train a diffusion ControlNet that maps spatial TME channels to realistic H&E patches.
 - Training uses paired ORION-CRC experimental tiles (H&E + CODEX-derived channels); inference uses unpaired simulation channels.
-- Current primary path is paired experimental ControlNet + multi-group TME; older sim-only code still exists but is not the default workflow.
+- Current primary path is paired experimental ControlNet + concat/raw-conditioning; grouped TME and older sim-only code still exist for compatibility and ablations.
 
 ## Pipeline
 
@@ -14,12 +14,11 @@
 ## Model
 
 - Frozen pieces: base PixCell-256 transformer, SD3.5 VAE, and UNI-2h encoder.
-- Trainable pieces: ControlNet + `MultiGroupTMEModule` in `diffusion/model/nets/multi_group_tme.py`.
+- Trainable pieces: ControlNet + the active conditioning module (`RawConditioningPassthrough` for concat by default; `MultiGroupTMEModule` remains for grouped checkpoints/ablations).
 - Channel groups: `cell_types` (healthy/cancer/immune), `cell_state` (prolif/nonprolif/dead), `vasculature`, `microenv` (oxygen/glucose).
 - Each group has its own CNN encoder + cross-attention; outputs are zero-init additive residuals.
 - `zero_mask_latent=True` (post-TME): TME uses real mask latent for spatial Q, then subtracts — `fused = tme(vae_mask) - vae_mask`. Closes bypass path, preserves spatial structure. Must be applied post-TME in train, inference, and all pipeline helpers.
 - `cfg_dropout_prob=0.15` zeros UNI embeddings during training, enabling TME-only inference.
-- Per-group dropout configured in `configs/config_controlnet_exp.py`.
 
 ## Data Contract
 
@@ -45,8 +44,8 @@
 
 - `tests/test_paired_exp_dataset.py`: paired dataset contract + `cell_mask` alias.
 - `tests/test_multi_group_tme.py`: shape, zero-init identity, active-group gating, residual/attention outputs.
-- `tests/test_channel_group_utils.py`: group splitting + group dropout.
-- `tests/test_train_controlnet_exp.py`: CFG dropout + channel-weighting tensor logic.
+- `tests/test_channel_group_utils.py`: group splitting helpers.
+- `tests/test_train_controlnet_exp.py`: CFG dropout, conditioning-path logic, and training helper coverage.
 
 ## Working Assumptions
 
