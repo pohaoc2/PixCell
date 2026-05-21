@@ -78,9 +78,11 @@ def compute_anchor_sweep_magnitude(signature_rows: list[dict[str, str]]) -> dict
     for anchor, rows in grouped.items():
         total = 0.0
         for metric in MORPHOLOGY_METRICS:
-            values = [float(r[metric]) for r in rows if r.get(metric) not in (None, "")]
-            if len(values) >= 2:
-                total += float(np.var(values, ddof=0))
+            raw = [r.get(metric) for r in rows if r.get(metric) not in (None, "")]
+            values = [float(v) for v in raw]
+            finite = [v for v in values if np.isfinite(v)]
+            if len(finite) >= 2:
+                total += float(np.var(finite, ddof=0))
         out[anchor] = total
     return out
 

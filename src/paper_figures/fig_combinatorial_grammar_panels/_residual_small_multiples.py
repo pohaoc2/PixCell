@@ -29,14 +29,30 @@ def _residual_grid(rows: list[dict[str, str]], metric: str) -> np.ndarray:
     return grid
 
 
+def _metric_has_signal(rows: list[dict[str, str]], metric: str) -> bool:
+    actual_col = f"actual_{metric}"
+    expected_col = f"expected_{metric}"
+    if not rows or actual_col not in rows[0] or expected_col not in rows[0]:
+        return False
+    for row in rows:
+        try:
+            diff = float(row[actual_col]) - float(row[expected_col])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(diff) and abs(diff) > 1e-12:
+            return True
+    return False
+
+
 def draw_residual_small_multiples(fig: plt.Figure, subgrid, *, residuals_csv: Path) -> None:
     rows = read_csv(residuals_csv)
-    n_metrics = len(MORPHOLOGY_METRICS)
+    visible_metrics = tuple(m for m in MORPHOLOGY_METRICS if _metric_has_signal(rows, m))
+    n_metrics = len(visible_metrics)
     ncols = 3
     nrows = (n_metrics + ncols - 1) // ncols
     inner = subgrid.subgridspec(nrows, ncols, hspace=0.55, wspace=0.25)
 
-    for idx, metric in enumerate(MORPHOLOGY_METRICS):
+    for idx, metric in enumerate(visible_metrics):
         row, col = divmod(idx, ncols)
         ax = fig.add_subplot(inner[row, col])
         grid = _residual_grid(rows, metric)
