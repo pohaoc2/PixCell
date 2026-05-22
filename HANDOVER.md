@@ -1,5 +1,230 @@
 # Handover
 
+## 2026-05-22 — Multi-Encoder Spatial Probe Session
+
+### Goal
+
+Implement the multi-encoder spatial decodability pipeline from
+`docs/superpowers/plans/2026-05-21-multi-encoder-spatial-probe.md` and produce
+`figures/pngs_updated/07d_t1_spatial_multi_encoder.png` comparing T1 spatial
+probe performance across UNI-2h, Virchow2, CTransPath, and ResNet-50.
+
+### Code built
+
+| Path | Purpose |
+|------|---------|
+| `pipeline/patch_extractors.py` | Reusable patch-feature extractors for ViT and hook-based spatial encoders (`extract_uni_patches`, `extract_virchow_patches`, `extract_ctranspath_patches`, `extract_resnet50_patches`). |
+| `pipeline/extract_features.py` | Added patch-cache mode via `--encoder`, `--encoder-model`, `--patches-output-dir`, `--patches-prefix`. |
+| `src/a1_mask_targets_spatial/main.py` | `block_mean_pool` now supports non-divisor grids via `cv2.INTER_AREA`; used for 7x7 target generation. |
+| `src/a1_probe_mlp_spatial/main.py` | Generalized feature suffix loading; later extended with faster-probe CLI knobs `--max-iter`, `--hidden-layer-sizes`, and lower default `--n-splits=3`. |
+| `src/a1_probe_mlp_spatial/run_multi_encoder.py` | Thin orchestrator for per-encoder spatial probe runs. |
+| `src/paper_figures/fig_t1_spatial_multi_encoder.py` | Builds the final 07d grouped-bar figure. |
+| `src/paper_figures/main.py` | Wires 07d into the paper figure runner. |
+| `tests/test_task_a1_mask_targets_spatial.py` | Added regression test for non-divisor pooling at grid=7. |
+| `tests/test_patch_extractors.py` | New extractor shape/dtype tests. |
+| `tests/test_fig_t1_spatial_multi_encoder.py` | New smoke test for 07d rendering. |
+
+### Focused validation completed
+
+The implementation-level tests passed before the long-running jobs:
+
+```bash
+conda run --no-capture-output -n pixcell python -m pytest \
+  tests/test_task_a1_mask_targets_spatial.py \
+  tests/test_patch_extractors.py \
+  tests/test_fig_t1_spatial_multi_encoder.py -q
+```
+
+Result: `10 passed`
+
+### Data artifacts produced (on disk, not committed)
+
+| Path | Notes |
+|------|-------|
+| `src/a1_mask_targets_spatial/out_grid_07/mask_targets_T1_spatial.npy` | 7x7 pooled T1 targets, shape `(10379, 49, 10)` fp32. |
+| `data/orion-crc33/features_patches/virchow2/` | Virchow2 patch cache, 10,379 files. |
+| `data/orion-crc33/features_patches/ctranspath/` | CTransPath patch cache, 10,379 files. |
+| `data/orion-crc33/features_patches/resnet50/` | ResNet-50 patch cache, 10,379 files. |
+| `src/a1_probe_mlp_spatial/out/uni_16/mlp_spatial_probe_results.csv` | UNI probe results, 10 rows. |
+| `src/a1_probe_mlp_spatial/out/virchow2_16/mlp_spatial_probe_results.csv` | Virchow2 probe results, 10 rows. |
+| `src/a1_probe_mlp_spatial/out/ctranspath_07/mlp_spatial_probe_results.csv` | CTransPath probe results, 10 rows. |
+| `src/a1_probe_mlp_spatial/out/resnet50_07/mlp_spatial_probe_results.csv` | ResNet-50 probe results, 10 rows. |
+| `figures/pngs_updated/07d_t1_spatial_multi_encoder.png` | Final rendered multi-encoder figure. |
+
+### Important runtime note
+
+The final 07d figure is complete, but the encoder results were **not all run on
+the same probe budget**.
+
+- UNI-2h completed on the original, more expensive settings.
+- CTransPath completed on the original, more expensive settings.
+- Virchow2 was restarted on a reduced budget after the original run proved too slow.
+- ResNet-50 was run on the same reduced budget as the relaunched Virchow2.
+
+Reduced-budget settings used for the final Virchow2 and ResNet-50 runs:
+
+```bash
+--n-splits 3
+--n-tiles 200
+--max-train-rows 10000
+--max-iter 50
+--hidden-layer-sizes 128,32
+--n-jobs 1
+```
+
+This means the figure is valid as a fast comparison artifact, but **not a
+strictly budget-matched encoder comparison**. If the paper needs matched
+conditions, rerun all four encoders on one agreed setting and overwrite the
+CSV outputs plus `07d_t1_spatial_multi_encoder.png`.
+
+### What went wrong during execution
+
+1. Virchow2 weights path was initially launched with `pretrained_models/virchow2/...`; the correct path on this host is `pretrained_models/Virchow2/pytorch_model.bin`.
+2. The original MLP probe budget was far slower than expected in practice because many targets hit `max_iter=200` rather than early-stopping.
+3. The probe script only writes CSV results at the end, so long-running targets looked stalled even while CPU was fully utilized.
+
+### Recommended next steps
+
+1. Decide whether 07d is a **fast mixed-budget comparison** or whether the figure must be recomputed under one consistent budget.
+2. If consistency matters, rerun all four encoders with one agreed budget using the new CLI knobs in `src/a1_probe_mlp_spatial/main.py`.
+3. If this figure is going into a paper draft now, add a caption note that Virchow2 / ResNet-50 were run on a reduced probe budget unless/until a matched rerun is done.
+
+### Useful commands
+
+```bash
+# Verify all four result CSVs
+for d in src/a1_probe_mlp_spatial/out/uni_16 \
+         src/a1_probe_mlp_spatial/out/virchow2_16 \
+         src/a1_probe_mlp_spatial/out/ctranspath_07 \
+         src/a1_probe_mlp_spatial/out/resnet50_07; do
+  printf '%s ' "$d"
+  awk 'END{print NR-1}' "$d/mlp_spatial_probe_results.csv"
+done
+
+# Re-render 07d from existing CSVs
+conda run --no-capture-output -n pixcell python -m src.paper_figures.fig_t1_spatial_multi_encoder
+
+# Example consistent reduced-budget rerun
+conda run --no-capture-output -n pixcell python -m src.a1_probe_mlp_spatial.main \
+  --features-dir data/orion-crc33/features_patches/virchow2 \
+  --targets-path src/a1_mask_targets_spatial/out/mask_targets_T1_spatial.npy \
+  --tile-ids-path src/a1_mask_targets_spatial/out/tile_ids.txt \
+  --target-names-path src/a1_mask_targets_spatial/out/target_names_T1_spatial.json \
+  --out-dir src/a1_probe_mlp_spatial/out/virchow2_16 \
+  --feature-suffix _patches.npy \
+  --n-splits 3 --n-tiles 200 --batch-size 2048 \
+  --max-train-rows 10000 --max-iter 50 \
+  --hidden-layer-sizes 128,32 --n-jobs 1
+```
+
+## 2026-05-21 — Spatial Probe Session
+
+### Goal
+
+Replace fig 07B / fig 09b scalar-tile-mean R² with **per-patch R²** so trivially-flat
+targets (oxygen, glucose) no longer score high "for free". Adds per-tile
+within-baseline, Pearson r, and shuffle-baseline metrics so noise floors are
+explicit. Motivation: oxygen tile-mean σ ≈ 0.05; scalar probe gets R² ≈ 0.85
+just by predicting the mean, which says nothing about whether H&E encodes
+oxygen spatially.
+
+### Code built
+
+| Path | Purpose |
+|------|---------|
+| `pipeline/extract_features.py` | UNI patch-token cache (`extract_patch_tokens`) + flags `--save-uni-tokens`, `--skip-uni`, `--skip-vae`, `--uni-tokens-prefix`. |
+| `src/a1_mask_targets_spatial/main.py` | Block-pool exp-channels to 16×16 grid → `(N, 256, 10)` T1 tensor; per-patch cell-type/state fractions. |
+| `src/a1_codex_targets_spatial/build.py` | Per-cell CODEX → per-patch marker means via centroid bucketing; output `(N, 256, n_markers)`. |
+| `src/a1_probe_mlp_spatial/main.py` | Shared MLP head over UNI patch tokens. Reports `r2_global`, `r2_within` (per-tile baseline), `pearson_r`, `delta_shuffle`. Memory-safe via fp16 disk memmap + pre-gather row subsample. CLI: `--n-jobs`, `--max-train-rows`, `--batch-size`, `--n-tiles`. |
+| `tests/test_task_a1_{mask_targets,codex_targets,probe_mlp}_spatial.py` | 9 unit tests covering pooling, centroid bucketing, NaN handling, synthetic-signal recovery. All passing. |
+| `SPATIAL_PROBE_RUNBOOK.md` | Three-step pipeline doc. |
+| `CLAUDE.md` | Compacted 133 → 99 lines. Added "Memory Limits" section (mandatory `prlimit --as=24000000000` wrap for > 10 GB jobs, pre-launch FLOP/RAM math). |
+
+### Data artifacts (on disk, not committed)
+
+| Path | Shape | Size |
+|------|-------|------|
+| `data/orion-crc33/features/<tile>_uni_tokens.npy` | (256, 1536) fp16 each | 8.1 GB total |
+| `src/a1_mask_targets_spatial/out/mask_targets_T1_spatial.npy` | (10379, 256, 10) fp32 | 102 MB |
+| `src/a1_codex_targets_spatial/out/codex_T2_spatial_mean.npy` | (10379, 256, 19) fp32 | 193 MB |
+
+### Currently running (as of 5:38 PM PDT)
+
+Background bash chain, PID 26070 → conda → python 27541, 2 loky workers.
+
+```bash
+nohup bash -c "set -e
+  conda run --no-capture-output -n pixcell python -m src.a1_probe_mlp_spatial.main \
+    --features-dir data/orion-crc33/features \
+    --targets-path src/a1_mask_targets_spatial/out/mask_targets_T1_spatial.npy \
+    --tile-ids-path src/a1_mask_targets_spatial/out/tile_ids.txt \
+    --target-names-path src/a1_mask_targets_spatial/out/target_names_T1_spatial.json \
+    --out-dir src/a1_probe_mlp_spatial/out/t1_spatial \
+    --n-tiles 800 --batch-size 2048 --n-jobs 2
+  conda run ... # T2 with same flags + codex paths
+" > logs/spatial_probe.log 2>&1 &
+```
+
+Subsample: 800 tiles seeded 42. ETA ~40 min from 5:38 PM (T1 ~18 min + T2 ~33 min). Done when log contains `=== ALL DONE ===`.
+
+### Failure modes already hit and fixed
+
+1. `np.stack` peak-RAM OOM on 10 379-tile load → row-by-row fp16 memmap.
+2. joblib closure-pickled 16 GB X per worker → `delayed` arg + memmap.
+3. `_flatten_split` materialized full train slice before subsample → pre-gather indexing into memmap.
+4. `prlimit --as=24G` SIGBUS on memmap access (AS counts mmap mapping size, not RSS) → removed prlimit for the 800-tile run; re-apply with `--as=32G` for full-dataset runs.
+
+### Next steps (after probe completes)
+
+1. **Inspect** results CSVs:
+   ```bash
+   column -s, -t < src/a1_probe_mlp_spatial/out/t1_spatial/mlp_spatial_probe_results.csv
+   column -s, -t < src/a1_probe_mlp_spatial/out/t2_spatial/mlp_spatial_probe_results.csv
+   ```
+   Expect: oxygen / glucose `r2_within_mean` ≪ scalar `r2_mean`. T2 markers Ki67 / E-cadherin / PD-1 should keep some positive `r2_within_mean`; sparse markers (FOXP3, CD8a) likely flat.
+
+2. **Rewire figures** — manual choice on metric:
+   - `src/paper_figures/fig_marker_utility.py:22` → repoint `PROBE_CSV` at `src/a1_probe_mlp_spatial/out/t2_spatial/mlp_spatial_probe_results.csv`. Decide x-axis = `r2_mean` (compare-style) or `r2_within_mean` (honest spatial decodability).
+   - `src/paper_figures/main.py:36` → `T2_MLP_CSV` similarly.
+   - Fig 07 panel A: add `T1_SPATIAL_CSV` to `main.py`, modify `fig_inverse_decoding.py` panel A or add SI panel.
+
+3. **Optional follow-ups**:
+   - Re-run on full 10 379 tiles (ETA ~3–5 hr; use `prlimit --as=32000000000`, `--max-train-rows 200000`).
+   - Add `--compute-shuffle-baseline` for `delta_shuffle` column.
+
+### Settings changed this session
+
+- `.claude/settings.local.json`: `"permissions": { "defaultMode": "auto", … }` added so probe-completion → figure-rewiring loop runs without manual approval. Gitignored.
+
+### Quick commands
+
+```bash
+# Watch progress
+tail -f logs/spatial_probe.log
+
+# Mem + procs
+free -h ; pgrep -af a1_probe_mlp_spatial
+
+# Kill probe + loky workers
+pkill -9 -f a1_probe_mlp_spatial ; pkill -9 -f "loky.backend.popen"
+
+# Clean restart
+rm -rf src/a1_probe_mlp_spatial/out/
+
+# T1 only (small smoke, ~10 min on T4)
+conda run --no-capture-output -n pixcell python -m src.a1_probe_mlp_spatial.main \
+  --features-dir data/orion-crc33/features \
+  --targets-path src/a1_mask_targets_spatial/out/mask_targets_T1_spatial.npy \
+  --tile-ids-path src/a1_mask_targets_spatial/out/tile_ids.txt \
+  --target-names-path src/a1_mask_targets_spatial/out/target_names_T1_spatial.json \
+  --out-dir src/a1_probe_mlp_spatial/out/t1_spatial \
+  --n-tiles 800 --batch-size 2048 --n-jobs 2
+```
+
+---
+
+## 2026-04-24 — Prior Session
+
 Date: 2026-04-24
 
 ## Current state

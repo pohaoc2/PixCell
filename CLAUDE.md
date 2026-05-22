@@ -1,113 +1,99 @@
 # PixCell Quick Context
 
-- Goal: train a diffusion ControlNet that maps spatial TME channels to realistic H&E patches.
-- Training uses paired ORION-CRC experimental tiles (H&E + CODEX-derived channels); inference uses unpaired simulation channels.
-- Current primary path is paired experimental ControlNet + concat/raw-conditioning; grouped TME and older sim-only code still exist for compatibility and ablations.
+- Goal: diffusion ControlNet maps spatial TME channels → realistic H&E.
+- Train: paired ORION-CRC tiles (H&E + CODEX channels). Inference: unpaired sim channels.
+- Primary path: paired-exp ControlNet + raw/concat conditioning. Grouped TME + sim-only kept for ablations.
 
 ## Pipeline
 
-1. `stage0_setup.py`: download PixCell-256, PixCell ControlNet init, UNI-2h, and SD3.5 VAE into `pretrained_models/`.
-2. `stage1_extract_features.py`: cache UNI embeddings and SD3.5 VAE latents for H&E and cell-mask images.
-3. `stage2_train.py`: train ControlNet + TME module using `configs/config_controlnet_exp.py`.
-4. `stage3_inference.py`: generate H&E from exp channels, optionally with a reference H&E for style conditioning.
+1. `stage0_setup.py` — fetch PixCell-256, ControlNet init, UNI-2h, SD3.5 VAE into `pretrained_models/`.
+2. `stage1_extract_features.py` — cache UNI embeddings + SD3.5 VAE latents.
+3. `stage2_train.py` — train via `configs/config_controlnet_exp.py`.
+4. `stage3_inference.py` — gen H&E from exp channels, optional ref-H&E style.
 
 ## Model
 
-- Frozen pieces: base PixCell-256 transformer, SD3.5 VAE, and UNI-2h encoder.
-- Trainable pieces: ControlNet + the active conditioning module (`RawConditioningPassthrough` for concat by default; `MultiGroupTMEModule` remains for grouped checkpoints/ablations).
-- Channel groups: `cell_types` (healthy/cancer/immune), `cell_state` (prolif/nonprolif/dead), `vasculature`, `microenv` (oxygen/glucose).
-- Each group has its own CNN encoder + cross-attention; outputs are zero-init additive residuals.
-- `zero_mask_latent=True` (post-TME): TME uses real mask latent for spatial Q, then subtracts — `fused = tme(vae_mask) - vae_mask`. Closes bypass path, preserves spatial structure. Must be applied post-TME in train, inference, and all pipeline helpers.
-- `cfg_dropout_prob=0.15` zeros UNI embeddings during training, enabling TME-only inference.
+- Frozen: PixCell-256 transformer, SD3.5 VAE, UNI-2h.
+- Trainable: ControlNet + active conditioning module (`RawConditioningPassthrough` default; `MultiGroupTMEModule` for grouped ablations).
+- Channel groups: `cell_types` (healthy/cancer/immune), `cell_state` (prolif/nonprolif/dead), `vasculature`, `microenv` (oxygen/glucose). Per-group CNN + cross-attn, zero-init residuals.
+- `zero_mask_latent=True` (post-TME): `fused = tme(vae_mask) - vae_mask`. Closes bypass, keeps spatial structure. Apply post-TME in train/inference/helpers.
+- `cfg_dropout_prob=0.15` zeros UNI embeddings → enables TME-only inference.
 
 ## Data Contract
 
-- Default paired dataset root: `data/orion-crc33`.
-- Required subdirs: `exp_channels/`, `features/`, `vae_features/`, `metadata/exp_index.hdf5`.
-- Canonical first channel is `cell_masks`; legacy alias `cell_mask` is still accepted in utilities/tests.
-- Required binary channels: `cell_masks`, 3 cell-type maps, 3 cell-state maps.
-- Optional/approximate channels: `vasculature`, `oxygen`, `glucose`.
-- Missing `mask_sd3_vae` falls back to zeros; missing optional sim channels are skipped at inference.
+- Paired root: `data/orion-crc33`. Subdirs: `exp_channels/`, `features/`, `vae_features/`, `metadata/exp_index.hdf5`.
+- First channel `cell_masks` (legacy alias `cell_mask` accepted).
+- Required binary: `cell_masks`, 3 cell-type, 3 cell-state. Optional: `vasculature`, `oxygen`, `glucose`.
+- Missing `mask_sd3_vae` → zeros. Missing optional sim channels skipped at inference.
 
 ## Important Files
 
 - Config: `configs/config_controlnet_exp.py`
-- Training loop: `train_scripts/train_controlnet_exp.py`
+- Train loop: `train_scripts/train_controlnet_exp.py`
 - Dataset: `diffusion/data/datasets/paired_exp_controlnet_dataset.py`
 - Group helpers: `tools/channel_group_utils.py`
 - Inference: `stage3_inference.py`; batch vis: `tools/stage3/run_evaluation.py`
-- Visualization: `tools/stage3/figures.py` (figures), `tools/stage3/tile_pipeline.py` (inference helpers)
-- Color palette: `tools/color_constants.py`
-- Architecture notes: `MODEL_ARCHITECTURE.md`
+- Vis: `tools/stage3/figures.py`, `tools/stage3/tile_pipeline.py`
+- Palette: `tools/color_constants.py`
+- Architecture: `MODEL_ARCHITECTURE.md`
 
 ## Tests
 
-- `tests/test_paired_exp_dataset.py`: paired dataset contract + `cell_mask` alias.
-- `tests/test_multi_group_tme.py`: shape, zero-init identity, active-group gating, residual/attention outputs.
-- `tests/test_channel_group_utils.py`: group splitting helpers.
-- `tests/test_train_controlnet_exp.py`: CFG dropout, conditioning-path logic, and training helper coverage.
+- `tests/test_paired_exp_dataset.py` — paired dataset contract + alias.
+- `tests/test_multi_group_tme.py` — shape, zero-init, group gating, residuals.
+- `tests/test_channel_group_utils.py` — group splitting.
+- `tests/test_train_controlnet_exp.py` — CFG dropout, conditioning logic, helpers.
 
 ## Working Assumptions
 
-- Prefer the paired-exp + concat path unless the task explicitly targets legacy grouped or sim code.
-- Preserve `cell_masks`/`cell_mask` compatibility when touching datasets or inference.
-- If changing inference/training group logic, update both code and tests.
-- Read `README.md` only for full setup instructions; this file is the short agent handoff.
+- Prefer paired-exp + concat unless task targets legacy grouped/sim code.
+- Preserve `cell_masks`/`cell_mask` compatibility in dataset/inference touches.
+- Update tests when changing inference/training group logic.
+- `README.md` = full setup; this file = short agent handoff.
 
 ## CellViT — Local Execution
 
-CellViT can be run locally. Full runbook: `CELLVIT_LOCAL_RUNBOOK.md`.
+Full runbook: `CELLVIT_LOCAL_RUNBOOK.md`. Repo: `/home/ec2-user/CellViT`. Checkpoint: `/home/ec2-user/checkpoints/CellViT-256.pth`. Runner: `/home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py`. Env: `cellvit` (separate from `pixcell`, conflicting deps).
 
-- CellViT repo: `/home/ec2-user/CellViT`
-- Checkpoint: `/home/ec2-user/checkpoints/CellViT-256.pth`
-- Runner: `/home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py`
-- Conda env: `cellvit` (separate from `pixcell` — conflicting deps)
-
-**Three-step pattern for any ablation cache:**
+Three-step pattern for any ablation cache:
 
 ```bash
 # 1. Export PNGs to flat batch
 conda run --no-capture-output -n pixcell python tools/cellvit/export_batch.py \
   --cache-root <cache_dir> --output-dir /tmp/cellvit_batch --overwrite --zip
 
-# 2. Run CellViT (use cellvit env, not pixcell)
+# 2. Run CellViT (cellvit env)
 set +u; source /home/ec2-user/miniconda3/etc/profile.d/conda.sh; conda activate cellvit; set -u
 python /home/ec2-user/he-feature-visualizer/stages/run_cellvit_local.py \
   --zip /tmp/cellvit_batch.zip --out /tmp/cellvit_results \
   --checkpoint /home/ec2-user/checkpoints/CellViT-256.pth \
   --cellvit-repo /home/ec2-user/CellViT
 
-# 3. Import JSON sidecars back beside source PNGs (default suffix: _cellvit_instances)
+# 3. Import JSON sidecars back beside source PNGs (suffix: _cellvit_instances)
 conda run --no-capture-output -n pixcell python tools/cellvit/import_results.py \
   --manifest /tmp/cellvit_batch/manifest.json --results-dir /tmp/cellvit_results
 ```
 
-After import, re-run `compute_ablation_metrics.py --metrics dice` (or `all`) on the cache dir to populate cell metrics.
+Then re-run `compute_ablation_metrics.py --metrics dice` (or `all`) on cache dir.
 
-## Token Efficiency — Use Codex for Heavy Commands
+## Token Efficiency — Codex for Heavy Commands
 
-Before running commands with large output (git diffs, recursive file listings, large log files, full dataset inspection), delegate to the Codex subagent to summarize instead of flooding Claude's context.
+Before running commands with large output (git diffs, recursive listings, large logs, full dataset inspection), delegate to Codex subagent. See `CODEX_COMMANDS.md`. Trigger: "Use Codex to run `<cmd>` and summarize." Codex bills OpenAI, not Claude. **Always** delegate any command listed in `CODEX_COMMANDS.md`.
 
-- See `CODEX_COMMANDS.md` for the full reference of which commands to delegate and how.
-- Trigger with: "Use Codex to run `<command>` and summarize the result."
-- Codex runs on OpenAI credits, not Claude tokens.
-- **Always** use Codex for any command listed in `CODEX_COMMANDS.md` (file exploration, git diffs, log inspection, etc.) — do not run these directly in Bash.
+## Claude Role Split — DISABLED 2026-05-21
 
-## Claude Model Role Split — Plan/Review vs. Implement
+Stay in Claude for plan + implement. Use Edit/Write directly; do **not** delegate to `codex:codex-rescue`. (Re-enable by removing this note. Original policy: Claude plans/reviews, Codex implements via `codex:codex-rescue`.)
 
-**Claude (this session) only plans and reviews. Codex does all real implementation.**
+## Memory Limits — Cap Long-Running Jobs
 
-This applies when running as:
-- Claude Opus (any reasoning level), or
-- Claude Sonnet with high reasoning level (i.e. the current model or equivalent)
+Box: 32 GB RAM, no swap. Wrap any job allocating > ~10 GB with a memory cap so OOM cannot kill user session.
 
-Under these modes:
-- **Claude**: reads code, writes plans, reviews diffs, answers questions, makes architectural decisions.
-- **Codex**: writes and edits all files, runs tests, executes shell commands for implementation.
+- Launch wrap: `prlimit --as=24000000000 -- <cmd>` (24 GB AS cap) or `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -- bash -c "<cmd>"` (tree-wide).
+- Live PID: `prlimit --pid <pid> --as=24000000000`.
+- Default cap: **24 GB**. Raise only after profiling shows a single fit needs more.
+- Mandatory for: probe training, full-dataset feature extraction, anything loading the 10 379-tile UNI cache, anything `np.stack`ing per-tile arrays.
+- Pre-launch math: `rows × features × dtype-bytes × (n_jobs + 1)`. If > 24 GB → subsample or shrink `n_jobs`.
 
-When a coding task arrives:
-1. Claude reads the relevant files and produces a concrete plan (what to change, where, why).
-2. Claude delegates the implementation to Codex via the `codex:codex-rescue` subagent with the full plan.
-3. Claude reviews the result and iterates if needed.
+## Figure / Visualization Guidance
 
-Do **not** use Edit/Write tools to implement features or bug fixes directly — delegate to Codex instead.
+Paper figures follow `vis_guidance.md` (compact layout, no text overlaps, consistent marker shapes, Nimbus Sans, 4 black spines, legend below). Exemplar: `src/a4_uni_probe/figures.py::render_pngs_updated_probe_delta`.

@@ -14,6 +14,7 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
+from adjustText import adjust_text
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +49,22 @@ GROUP_COLORS = {
     "vasculature": "#2a8a4a",
     "microenv":    "#c2a83e",
 }
+
+GROUP_MARKERS = {
+    "cell_types":  "o",
+    "cell_state":  "s",
+    "vasculature": "^",
+    "microenv":    "D",
+}
+
+GROUP_LABELS = {
+    "cell_types": "cell types",
+    "cell_state": "cell state",
+    "vasculature": "vasculature",
+    "microenv": "microenv",
+}
+
+FONT_NAME = "Nimbus Sans"
 
 # Pretty display: drop redundant prefixes, replace underscores.
 PRETTY_SUB = {
@@ -128,7 +145,8 @@ def _draw_quadrants(ax: plt.Axes) -> None:
             ty, va = ylim[1] - 0.15, "top"
         else:
             ty, va = ylim[0] + 0.15, "bottom"
-        ax.text(tx, ty, label, ha=ha, va=va, fontsize=7, color=color, alpha=0.95, fontweight="bold")
+        ax.text(tx, ty, label, ha=ha, va=va, fontsize=7, color="black",
+                alpha=0.95, fontweight="bold", fontfamily=FONT_NAME)
 
     ax.axvline(x_mid, color="#888", linestyle=":", linewidth=0.6, zorder=1)
     ax.axhline(y_mid, color="#888", linestyle=":", linewidth=0.6, zorder=1)
@@ -163,49 +181,63 @@ def draw_channel_utility(
 
     _draw_quadrants(ax)
 
+    texts: list = []
+    plotted_groups: set[str] = set()
     for sub, r2, de, r2_sd, de_sem, group in points:
         color = GROUP_COLORS[group]
+        marker = GROUP_MARKERS[group]
+        plotted_groups.add(group)
         ax.errorbar(
             r2, de,
             xerr=r2_sd, yerr=de_sem,
-            fmt="o", markersize=7,
-            color=color, ecolor=color, elinewidth=0.8, capsize=2.0,
-            markeredgecolor="white", markeredgewidth=0.6,
+            fmt=marker, markersize=5,
+            color=color, ecolor=color, elinewidth=0.7, capsize=2.0,
+            markerfacecolor="white", markeredgecolor=color, markeredgewidth=1.2,
             zorder=3,
         )
-        ax.annotate(
-            PRETTY_SUB.get(sub, sub),
-            (r2, de),
-            xytext=(5, 4),
-            textcoords="offset points",
-            fontsize=7.5,
-            color=color,
-            ha="left",
-            va="bottom",
-            zorder=4,
+        txt = ax.text(
+            r2, de, PRETTY_SUB.get(sub, sub),
+            fontsize=6.5, color="black",
+            fontfamily=FONT_NAME, zorder=4,
         )
+        texts.append(txt)
 
-    ax.set_xlabel("H&E → MX decodability (R²)", fontsize=9)
-    ax.set_ylabel("Generative impact (ΔE)", fontsize=9)
+    adjust_text(
+        texts, ax=ax,
+        expand=(1.15, 1.3),
+        arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5),
+    )
+
+    ax.set_xlabel("H&E → MX decodability (R²)", fontsize=9, fontfamily=FONT_NAME)
+    ax.set_ylabel("Generative impact ΔE (LOO)", fontsize=9, fontfamily=FONT_NAME)
     ax.tick_params(labelsize=8)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontfamily(FONT_NAME)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color("black")
+        spine.set_linewidth(0.8)
     ax.set_axisbelow(True)
     ax.grid(True, alpha=0.2, linewidth=0.4, zorder=0)
 
-    # Group legend (colors → group names).
+    # Group legend below plot, hollow markers with shape per group.
     handles = [
-        plt.Line2D([0], [0], marker="o", linestyle="", markersize=6,
-                   color=color, markeredgecolor="white")
-        for color in GROUP_COLORS.values()
+        plt.Line2D([0], [0], marker=GROUP_MARKERS[g], linestyle="",
+                   color=GROUP_COLORS[g], markerfacecolor="white",
+                   markeredgecolor=GROUP_COLORS[g], markeredgewidth=1.2,
+                   markersize=6, label=GROUP_LABELS[g])
+        for g in GROUP_COLORS.keys()
+        if g in plotted_groups
     ]
-    labels = list(GROUP_COLORS.keys())
-    ax.legend(
-        handles, labels,
-        loc="upper left", bbox_to_anchor=(1.01, 1.0),
-        fontsize=7, frameon=False, title="Group", title_fontsize=7,
-        borderaxespad=0.0,
-    )
+    if handles:
+        ax.legend(
+            handles=handles,
+            loc="upper center", bbox_to_anchor=(0.5, -0.18),
+            ncol=len(handles), frameon=False,
+            prop={"family": FONT_NAME, "size": 7.0},
+            handlelength=1.4, columnspacing=0.6, handletextpad=0.3,
+            borderaxespad=0.0,
+        )
 
 
 def build_channel_utility_figure(
@@ -213,7 +245,7 @@ def build_channel_utility_figure(
     decode_csv: Path = DEFAULT_DECODE_CSV,
     loo_csv: Path = DEFAULT_LOO_CSV,
 ) -> plt.Figure:
-    fig = plt.figure(figsize=(5.0, 4.0), facecolor="white", constrained_layout=True)
+    fig = plt.figure(figsize=(3.5, 3.5), facecolor="white", constrained_layout=True)
     ax = fig.add_subplot(1, 1, 1)
     draw_channel_utility(ax, decode_csv=Path(decode_csv), loo_csv=Path(loo_csv))
     return fig

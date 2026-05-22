@@ -7,6 +7,7 @@ from src.paper_figures.fig_combined_performance import build_combined_performanc
 from src.paper_figures.fig_combinatorial_grammar import save_combinatorial_grammar_figure
 from src.paper_figures.fig_combinatorial_grammar_si import save_combinatorial_grammar_si_figure
 from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
+from src.paper_figures.fig_t1_spatial_multi_encoder import build_figure as build_t1_spatial_multi_encoder_figure
 from src.paper_figures.fig_si_a1_a2_unified import save_split_figures as save_si_a1_a2_split_figures
 from src.paper_figures.fig_si_a2_bypass import build_si_a2_bypass_figure
 from src.paper_figures.fig_si_a3_zero_init import build_si_a3_zero_init_figure
@@ -34,6 +35,14 @@ T1_CTRANSPATH_CSV = PROBE_ENCODERS_OUT / "ctranspath_linear_probe_results.csv"
 T1_RESNET50_CSV = PROBE_ENCODERS_OUT / "resnet50_linear_probe_results.csv"
 T1_REMEDIS_CSV = PROBE_ENCODERS_OUT / "remedis_linear_probe_results.csv"
 T2_MLP_CSV = ROOT / "src" / "a1_codex_targets" / "probe_out" / "t2_mlp" / "mlp_probe_results.csv"
+T2_SPATIAL_CSV = ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "t2_spatial" / "mlp_spatial_probe_results.csv"
+T1_SPATIAL_MULTI_ENCODER_CSVS = {
+    "UNI-2h": ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "uni_16" / "mlp_spatial_probe_results.csv",
+    "Virchow2": ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "virchow2_16" / "mlp_spatial_probe_results.csv",
+    "CTransPath": ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "ctranspath_07" / "mlp_spatial_probe_results.csv",
+    "ResNet-50": ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "resnet50_07" / "mlp_spatial_probe_results.csv",
+    "REMEDIS": ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "remedis_07" / "mlp_spatial_probe_results.csv",
+}
 DECOMPOSITION_SUMMARY_CSV = ROOT / "src" / "a2_decomposition" / "out" / "decomposition_summary.csv"
 A3_SIGNATURES_CSV = ROOT / "src" / "a3_combinatorial_sweep" / "out" / "morphological_signatures.csv"
 A3_RESIDUALS_CSV = ROOT / "src" / "a3_combinatorial_sweep" / "out" / "additive_model_residuals.csv"
@@ -168,6 +177,15 @@ def main() -> None:
         _save_figure_png_outputs(fig_inverse_decoding, "07_inverse_decoding.png")
     else:
         print("Skipping 07_inverse_decoding.png; missing", T2_MLP_CSV)
+
+    if any(path.is_file() for path in T1_SPATIAL_MULTI_ENCODER_CSVS.values()) and T2_SPATIAL_CSV.is_file():
+        fig_t1_spatial_multi_encoder = build_t1_spatial_multi_encoder_figure(
+            encoder_csvs=T1_SPATIAL_MULTI_ENCODER_CSVS,
+            t2_spatial_csv=T2_SPATIAL_CSV,
+        )
+        _save_figure_png_outputs(fig_t1_spatial_multi_encoder, "07d_t1_spatial_multi_encoder.png")
+    else:
+        print("Skipping 07d_t1_spatial_multi_encoder.png; missing multi-encoder or T2 spatial probe CSVs")
 
     if DECOMPOSITION_SUMMARY_CSV.is_file():
         save_uni_tme_decomposition_figure(out_png=PNG_DIR / "08_uni_tme_decomposition.png")
