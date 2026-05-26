@@ -569,29 +569,27 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     ax.fill([ax_lo, ax_hi, ax_hi], [ax_lo, ax_lo, ax_hi],
             color="#f8efe6", edgecolor="none", zorder=0)
     _rng = ax_hi - ax_lo
-    dominance_label_style = {
-        "fontsize": 7.0,
-        "color": "black",
+    _dominance_base = {
+        "fontsize": 8.5,
         "fontfamily": font_name,
         "fontstyle": "italic",
+        "fontweight": "bold",
         "zorder": 2,
-        "transform": ax.transAxes,
     }
+    # UNI dominate: data coordinates so y=0.3 means R²=0.3 on the axis
     uni_dom_text = ax.text(
-        0.015,
-        0.985,
-        "UNI dominate",
-        ha="left",
-        va="top",
-        **dominance_label_style,
+        ax_lo + 0.02, 0.30, "UNI dominate",
+        ha="left", va="center",
+        color="#2b6cb0",
+        **_dominance_base,
     )
+    # TME dominate: axes coordinates (bottom-right corner)
     tme_dom_text = ax.text(
-        0.985,
-        0.015,
-        "TME dominate",
-        ha="right",
-        va="bottom",
-        **dominance_label_style,
+        0.985, 0.015, "TME dominate",
+        ha="right", va="bottom",
+        color="#b05a10",
+        transform=ax.transAxes,
+        **_dominance_base,
     )
 
     ax.set_xlim(ax_lo, ax_hi)
