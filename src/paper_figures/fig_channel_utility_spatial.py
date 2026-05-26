@@ -13,7 +13,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from matplotlib.lines import Line2D
-from matplotlib.patches import Rectangle
 from adjustText import adjust_text
 
 from src.paper_figures.fig_channel_utility import (
@@ -51,13 +50,6 @@ COLOR_Y_LIM = (-0.3, 6.0)
 LAYOUT_THRESHOLD = 0.05
 LAYOUT_Y_MIN = -0.02
 
-QUAD_FILLS = {
-    "Critical":    "#d05050",
-    "Redundant":   "#f0c060",
-    "Skip":        "#a0a0a0",
-    "MX optional": "#70b070",
-}
-
 LAYOUT_LABEL_OFFSETS = {
     "cell_type_healthy": (0.015, 0.008),
     "cell_type_cancer": (0.015, 0.003),
@@ -86,33 +78,9 @@ def _spatial_lookup(spatial_csv: Path) -> dict[str, tuple[float, float]]:
 
 
 def _fill_quadrants(ax_left: plt.Axes, ax_right: plt.Axes, *, y_mid: float, y_lim: tuple[float, float]) -> None:
-    """Tint the four quadrants across the broken-axis pair."""
+    """Draw quadrant crosshair lines (no background tints)."""
 
-    # Left pane is entirely R² < 0 → only Critical (top) and Skip (bottom).
-    lx0, lx1 = LEFT_XLIM
-    ax_left.add_patch(plt.Rectangle((lx0, y_mid), lx1 - lx0, y_lim[1] - y_mid,
-                                    facecolor=QUAD_FILLS["Critical"], edgecolor="none",
-                                    linewidth=0.0, alpha=0.06, zorder=0))
-    ax_left.add_patch(plt.Rectangle((lx0, y_lim[0]), lx1 - lx0, y_mid - y_lim[0],
-                                    facecolor=QUAD_FILLS["Skip"], edgecolor="none",
-                                    linewidth=0.0, alpha=0.06, zorder=0))
-
-    # Right pane: 4 quadrants split at R² = 0.
-    rx0, rx1 = RIGHT_XLIM
     x_mid = R2_THRESHOLD
-    ax_right.add_patch(plt.Rectangle((rx0, y_mid), x_mid - rx0, y_lim[1] - y_mid,
-                                     facecolor=QUAD_FILLS["Critical"], edgecolor="none",
-                                     linewidth=0.0, alpha=0.06, zorder=0))
-    ax_right.add_patch(plt.Rectangle((x_mid, y_mid), rx1 - x_mid, y_lim[1] - y_mid,
-                                     facecolor=QUAD_FILLS["Redundant"], edgecolor="none",
-                                     linewidth=0.0, alpha=0.06, zorder=0))
-    ax_right.add_patch(plt.Rectangle((rx0, y_lim[0]), x_mid - rx0, y_mid - y_lim[0],
-                                     facecolor=QUAD_FILLS["Skip"], edgecolor="none",
-                                     linewidth=0.0, alpha=0.06, zorder=0))
-    ax_right.add_patch(plt.Rectangle((x_mid, y_lim[0]), rx1 - x_mid, y_mid - y_lim[0],
-                                     facecolor=QUAD_FILLS["MX optional"], edgecolor="none",
-                                     linewidth=0.0, alpha=0.06, zorder=0))
-
     ax_right.axvline(x_mid, color="#888", linestyle=":", linewidth=0.6, zorder=1)
     for axis in (ax_left, ax_right):
         axis.axhline(y_mid, color="#888", linestyle=":", linewidth=0.6, zorder=1)
@@ -196,45 +164,8 @@ def _fill_break_seam(
     y_mid: float,
     y_lim: tuple[float, float],
 ) -> None:
-    """Tint the omitted seam so the broken-axis join does not show figure white.
-
-    The omitted range is still indicated by the `//` marks; this only removes
-    the visual gutter between the two panes.
-    """
-    fig.canvas.draw()
-    left_box = ax_left.get_position()
-    right_box = ax_right.get_position()
-    seam_x0 = left_box.x1
-    seam_x1 = right_box.x0
-    y0 = left_box.y0
-    y1 = left_box.y1
-    _, y_mid_disp = ax_left.transData.transform((LEFT_XLIM[1], y_mid))
-    _, y_mid_fig = fig.transFigure.inverted().transform((0.0, y_mid_disp))
-
-    fig.add_artist(
-        Rectangle(
-            (seam_x0, y_mid_fig),
-            seam_x1 - seam_x0,
-            y1 - y_mid_fig,
-            transform=fig.transFigure,
-            facecolor=QUAD_FILLS["Critical"],
-            edgecolor="none",
-            alpha=0.06,
-            zorder=-1,
-        )
-    )
-    fig.add_artist(
-        Rectangle(
-            (seam_x0, y0),
-            seam_x1 - seam_x0,
-            y_mid_fig - y0,
-            transform=fig.transFigure,
-            facecolor=QUAD_FILLS["Skip"],
-            edgecolor="none",
-            alpha=0.06,
-            zorder=-1,
-        )
-    )
+    """No-op: quadrant tinting removed; seam stays figure-background."""
+    return
 
 
 def _plot_point(ax: plt.Axes, *, x: float, y: float, r2_sd: float, y_sem: float,
@@ -462,7 +393,7 @@ def build_channel_utility_spatial_figure(
         fig.text(
             panel_center,
             max(0.01, panel_bottom - 0.095),
-            r"H&E → MX spatial decodability ($R^2_{within}$)",
+            "Patch-level R²",
             ha="center",
             va="bottom",
             fontsize=AXIS_LABEL_SIZE,

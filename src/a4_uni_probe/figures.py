@@ -36,21 +36,14 @@ SWEEP_ALPHA_ROWS = [
     ("+0.00", "α = 0"),
     ("+1.00", "α = +1"),
 ]
-SWEEP_ATTRS: tuple[str, ...] = (
-    "nuclei_density",
-    "nuclear_area_mean",
-    "eccentricity_mean",
-    "texture_e_contrast",
-    "texture_h_contrast",
-    "texture_h_energy",
-)
+SWEEP_ATTRS: tuple[str, ...] = tuple(PREFERRED_SWEEP_ATTRS)
 SWEEP_ATTR_DISPLAY_NAMES: dict[str, str] = {
+    "eccentricity_mean": "Eccentricity",
+    "nuclear_area_mean": "Nuclear area",
     "nuclei_density": "Nuclei density",
-    "nuclear_area_mean": "Nuclear area mean",
-    "eccentricity_mean": "Eccentricity mean",
-    "texture_e_contrast": "Eosin contrast",
-    "texture_h_contrast": "Hematoxylin contrast",
-    "texture_h_energy": "Hematoxylin energy",
+    "texture_e_contrast": "E contrast",
+    "texture_h_contrast": "H contrast",
+    "texture_h_energy": "H energy",
 }
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_A4_DATA_ROOT = ROOT / "data" / "orion-crc33"
@@ -556,31 +549,85 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
         if attr in _EXCLUDE_ATTRS:
             continue
         points.append((_attr_category(attr), attr, tme_r2, uni_r2,
-                       tme_std if np.isfinite(tme_std) else 0.0,
-                       uni_std if np.isfinite(uni_std) else 0.0))
+                   tme_std if np.isfinite(tme_std) else 0.0,
+                   uni_std if np.isfinite(uni_std) else 0.0))
 
     all_y = [p[3] for p in points]
     all_x = [p[2] for p in points]
     # Single shared range for both axes so the diagonal is exactly 45° and axes are square
     all_vals = all_x + all_y
     ax_lo = min(all_vals) - 0.1
-    ax_hi = max(all_vals) + 0.05
+    ax_hi = max(all_vals) + 0.08
 
     font_name = "Nimbus Sans"
     fig, ax = plt.subplots(figsize=(3.5, 3.5))
     ax.set_aspect("equal")
     ax.set_axisbelow(True)
     ax.grid(linewidth=0.4, color="#E0E0E0", zorder=0)
-    ax.plot([ax_lo, ax_hi], [ax_lo, ax_hi],
-            color="black", linewidth=0.8, linestyle="--", zorder=1)
+    ax.fill([ax_lo, ax_lo, ax_hi], [ax_lo, ax_hi, ax_hi],
+            color="#eaf0f8", edgecolor="none", zorder=0)
+    ax.fill([ax_lo, ax_hi, ax_hi], [ax_lo, ax_lo, ax_hi],
+            color="#f8efe6", edgecolor="none", zorder=0)
+    _rng = ax_hi - ax_lo
+    dominance_label_style = {
+        "fontsize": 7.0,
+        "color": "black",
+        "fontfamily": font_name,
+        "fontstyle": "italic",
+        "zorder": 2,
+        "transform": ax.transAxes,
+    }
+    uni_dom_text = ax.text(
+        0.015,
+        0.985,
+        "UNI dominate",
+        ha="left",
+        va="top",
+        **dominance_label_style,
+    )
+    tme_dom_text = ax.text(
+        0.985,
+        0.015,
+        "TME dominate",
+        ha="right",
+        va="bottom",
+        **dominance_label_style,
+    )
+
+    ax.set_xlim(ax_lo, ax_hi)
+    ax.set_ylim(ax_lo, ax_hi)
 
     plotted_categories: set[str] = set()
     texts: list = []
+    point_xs: list[float] = []
+    point_ys: list[float] = []
+    label_offset_scale = _rng
+    default_label_offset = 0.018 * label_offset_scale
+    label_offsets = {
+        "texture_h_contrast": (-0.12 * label_offset_scale, 0.00 * label_offset_scale),
+        "texture_e_contrast": (0.03 * label_offset_scale, -0.05 * label_offset_scale),
+        "texture_h_energy": (0.03 * label_offset_scale, -0.04 * label_offset_scale),
+        "texture_e_energy": (-0.11 * label_offset_scale, -0.03 * label_offset_scale),
+        "texture_h_homogeneity": (-0.02 * label_offset_scale, -0.14 * label_offset_scale),
+        "texture_e_homogeneity": (-0.13 * label_offset_scale, 0.03 * label_offset_scale),
+        "e_mean": (-0.05 * label_offset_scale, 0.10 * label_offset_scale),
+        "h_mean": (0.05 * label_offset_scale, 0.10 * label_offset_scale),
+        "nuclei_density": (0.10 * label_offset_scale, -0.04 * label_offset_scale),
+        "prolif_fraction": (0.08 * label_offset_scale, 0.02 * label_offset_scale),
+        "nonprolif_fraction": (0.08 * label_offset_scale, -0.05 * label_offset_scale),
+        "healthy_fraction": (0.08 * label_offset_scale, 0.03 * label_offset_scale),
+        "cancer_fraction": (0.08 * label_offset_scale, -0.05 * label_offset_scale),
+        "nuclear_area_mean": (0.03 * label_offset_scale, 0.06 * label_offset_scale),
+        "eccentricity": (-0.05 * label_offset_scale, -0.06 * label_offset_scale),
+        "immune_fraction": (0.05 * label_offset_scale, -0.05 * label_offset_scale),
+        "dead_fraction": (0.02 * label_offset_scale, 0.04 * label_offset_scale),
+    }
+    marker_artists: list = []
     for cat, attr, tme_r2, uni_r2, tme_std, uni_std in points:
         color, marker = _CAT_STYLE[cat]
         legend_label = cat if cat not in plotted_categories else None
         plotted_categories.add(cat)
-        ax.errorbar(
+        eb = ax.errorbar(
             tme_r2, uni_r2,
             xerr=tme_std, yerr=uni_std,
             fmt=marker, color=color, ecolor=color,
@@ -588,32 +635,44 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
             markeredgewidth=1.2, elinewidth=0.7,
             capsize=2, markersize=5, label=legend_label, zorder=3,
         )
+        marker_artists.append(eb.lines[0])
+        point_xs.append(tme_r2)
+        point_ys.append(uni_r2)
         _label = _display_attr(attr).lower().replace(" fraction", " frac")
         _label = re.sub(r"\b(h|e)\b", lambda m: m.group().upper(), _label)
+        label_dx, label_dy = label_offsets.get(attr, (default_label_offset, default_label_offset))
+        label_ha = "left" if label_dx >= 0 else "right"
+        label_va = "bottom" if label_dy >= 0 else "top"
         txt = ax.text(
-            tme_r2, uni_r2, _label,
-            fontsize=6.5, color="black",
-            fontfamily=font_name, zorder=4,
+            tme_r2 + label_dx, uni_r2 + label_dy, _label,
+            fontsize=7.0, color="black",
+            fontfamily=font_name, ha=label_ha, va=label_va, zorder=4,
         )
         texts.append(txt)
 
     adjust_text(
-        texts, ax=ax,
-        expand=(1.15, 1.3),
+        texts,
+        ax=ax,
+        x=point_xs,
+        y=point_ys,
+        target_x=point_xs,
+        target_y=point_ys,
+        objects=[uni_dom_text, tme_dom_text, *marker_artists],
+        expand=(1.4, 1.6),
+        force_text=(0.5, 0.6),
+        force_static=(0.5, 0.6),
+        iter_lim=800,
         arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5),
     )
-
-    ax.set_xlim(ax_lo, ax_hi)
-    ax.set_ylim(ax_lo, ax_hi)
     _bundle_path = out_path / "features.npz"
     _tme_label = "TME"
     if _bundle_path.is_file():
         _bundle = np.load(_bundle_path, allow_pickle=True)
         if "tme_label" in _bundle:
             _tme_label = str(_bundle["tme_label"])
-    ax.set_xlabel(f"{_tme_label} R²", fontsize=9, fontfamily=font_name)
-    ax.set_ylabel("UNI R²", fontsize=9, fontfamily=font_name)
-    ax.tick_params(labelsize=8)
+    ax.set_xlabel(f"Tile-level R² ({_tme_label} features)", fontsize=10, fontfamily=font_name)
+    ax.set_ylabel("Tile-level R² (UNI features)", fontsize=10, fontfamily=font_name)
+    ax.tick_params(labelsize=9)
     for lbl in ax.get_xticklabels() + ax.get_yticklabels():
         lbl.set_fontfamily(font_name)
     handles = [
@@ -624,10 +683,10 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
         if cat in plotted_categories
     ]
     if handles:
-        ax.legend(handles=handles, fontsize=7.0,
+        ax.legend(handles=handles, fontsize=8.0,
                   loc="upper center", bbox_to_anchor=(0.5, -0.12),
                   ncol=len(handles),
-                  prop={"family": font_name, "size": 7.0},
+              prop={"family": font_name, "size": 8.0},
                   frameon=False,
                   handlelength=1.4, columnspacing=0.5, handletextpad=0.3)
     fig.tight_layout()
@@ -918,6 +977,7 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     out_path = Path(out_dir)
     rows = _read_csv_rows(out_path / "specificity_full.csv")
     edited, grid, _abs_ratio_annot = _specificity_square_payload(rows)
+    grid = grid.T
 
     # Annotations show the same normalized slope that drives the color
     annot = np.full((len(edited), len(edited)), "", dtype=object)
@@ -942,8 +1002,8 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     ax.set_yticks(np.arange(-0.5, len(edited), 1), minor=True)
     ax.grid(which="minor", color="white", linewidth=0.8)
     ax.tick_params(which="minor", bottom=False, left=False)
-    ax.set_xlabel("Measured metric", fontsize=13)
-    ax.set_ylabel("Edited attribute", fontsize=13)
+    ax.set_xlabel("Edited UNI probe direction", fontsize=13)
+    ax.set_ylabel("Measured tile-level metric", fontsize=13)
 
     _draw_specificity_diagonal_and_annotations(
         ax,

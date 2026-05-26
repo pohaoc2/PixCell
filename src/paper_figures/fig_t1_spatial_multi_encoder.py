@@ -315,7 +315,7 @@ def _draw_raw_mx_panel(ax: plt.Axes, markers: list[dict[str, Any]]) -> None:
     ax.tick_params(axis="x", pad=_X_TICK_LABEL_PAD, labelsize=FONT_SIZE_TICK)
     ax.tick_params(axis="y", labelsize=FONT_SIZE_TICK)
     ax.set_ylim(_R2_CAP, 0.05)
-    ax.set_ylabel(r"Per-patch $R^2$ (within-tile)", fontsize=FONT_SIZE_LABEL)
+    ax.set_ylabel("Patch-level R²", fontsize=FONT_SIZE_LABEL)
     ax.grid(axis="y", linewidth=0.4, color="#E0E0E0", zorder=0)
     ax.set_axisbelow(True)
     for spine in ax.spines.values():
@@ -357,7 +357,7 @@ def build_figure(*, encoder_csvs: dict[str, Path | None], t2_spatial_csv: Path) 
         encoder_order=encoder_order,
         folds_key="r2_within_folds",
         mean_key="r2_within_mean",
-        ylabel=r"Per-patch $R^2$ (within-tile)",
+        ylabel="Patch-level R²",
         ylim=(_R2_CAP, 0.5),
         clip_floor=_R2_CAP,
         show_legend=True,

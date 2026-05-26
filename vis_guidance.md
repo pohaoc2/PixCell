@@ -14,7 +14,7 @@ High-level rules for any figure produced under `figures/` or `src/paper_figures/
 - No text overlaps. Use `adjustText.adjust_text` with leader lines `#aaaaaa lw=0.5` for scatter labels.
 - Label color: black. Group/category color is encoded by marker, not by label color.
 - Font: Nimbus Sans across all figures (xlabel, ylabel, ticks, legend, in-axes text).
-- Sizes: xlabel/ylabel 9, tick 8, in-axes label 6.5, legend 7, title 10. Stay within ±0.5 of these.
+- Sizes: xlabel/ylabel 10, tick 9, in-axes label 7, legend 8, title 11. Stay within ±0.5 of these.
 - Axis labels disambiguate units and metric (e.g. "Generative impact ΔE (LOO)", not "Generative impact").
 
 ## Markers and legend
