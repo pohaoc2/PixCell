@@ -853,27 +853,54 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
                 )
 
 
-def _split_output_paths(out: Path) -> dict[str, Path]:
+def _split_output_paths(out: Path, section_dir: Path | None = None) -> dict[str, Path]:
     stem = out.stem
     prefix = stem.replace("_unified", "")
+    base = section_dir if section_dir is not None else out.parent
     return {
-        "section1_curves": out.with_name(f"{prefix}_section1_curves{out.suffix}"),
-        "section2_metrics": out.with_name(f"{prefix}_section2_metrics{out.suffix}"),
-        "section3_tiles": out.with_name(f"{prefix}_section3_tiles{out.suffix}"),
-        "section4_sensitivity": out.with_name(f"{prefix}_section4_sensitivity{out.suffix}"),
+        "section1_curves": base / f"{prefix}_section1_curves{out.suffix}",
+        "section2_metrics": base / f"{prefix}_section2_metrics{out.suffix}",
+        "section3_tiles": base / f"{prefix}_section3_tiles{out.suffix}",
+        "section4_sensitivity": base / f"{prefix}_section4_sensitivity{out.suffix}",
     }
 
 
-def save_split_figures(*, cache_path: Path, tile_dir: Path, out: Path, dpi: int) -> dict[str, Path]:
-    paths = _split_output_paths(out)
-    for key, fig in build_section_figures(cache_path=cache_path, tile_dir=tile_dir).items():
+def save_split_figures(
+    *,
+    cache_path: Path,
+    tile_dir: Path,
+    out: Path,
+    dpi: int,
+    section_dir: Path | None = None,
+) -> dict[str, Path]:
+    """Save section figures (individually) and the combined unified figure.
+
+    Args:
+        section_dir: Directory for section panel PNGs. Defaults to ``out.parent``.
+                     Pass a separate path to route individual sections to a different
+                     folder than the unified composite (e.g. ``individual/si_a1_a2/``
+                     vs ``concat/``).
+    """
+    import gc
+    paths = _split_output_paths(out, section_dir=section_dir)
+    # Build and save each section figure individually to avoid holding all four in memory at once.
+    section_builders = [
+        ("section1_curves", lambda: build_section1_figure(cache_path=cache_path)),
+        ("section2_metrics", lambda: build_section2_figure(cache_path=cache_path)),
+        ("section3_tiles", lambda: build_section3_figure(cache_path=cache_path, tile_dir=tile_dir)),
+        ("section4_sensitivity", lambda: build_section4_figure(cache_path=cache_path)),
+    ]
+    for key, builder in section_builders:
+        fig = builder()
         paths[key].parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(paths[key], dpi=dpi, bbox_inches="tight")
         plt.close(fig)
+        gc.collect()
     out.parent.mkdir(parents=True, exist_ok=True)
     unified_fig = build_figure(cache_path=cache_path, tile_dir=tile_dir)
     unified_fig.savefig(out, dpi=dpi, bbox_inches="tight")
     plt.close(unified_fig)
+    gc.collect()
     paths["unified"] = out
     return paths
 

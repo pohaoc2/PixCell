@@ -44,6 +44,12 @@ def _summarize_for_metric(rows: list[dict[str, str]], metric_name: str, n_boot: 
         out[f"{direction_name}_slope_ci95_low"] = ci_low
         out[f"{direction_name}_slope_ci95_high"] = ci_high
         out[f"{direction_name}_n"] = stats["n"]
+        valid = np.isfinite(alphas) & np.isfinite(values)
+        if valid.sum() >= 2:
+            r = float(np.corrcoef(alphas[valid].astype(np.float64), values[valid].astype(np.float64))[0, 1])
+        else:
+            r = float("nan")
+        out[f"{direction_name}_pearson_r"] = r
     return out
 
 
@@ -119,6 +125,7 @@ def run_specificity(args: argparse.Namespace) -> dict[str, Path]:
 
             targeted = float(stats["targeted_slope_mean"])
             random_ = float(stats["random_slope_mean"])
+            targeted_r = float(stats["targeted_pearson_r"])
             std = baseline_stds.get(metric_name, float("nan"))
             if np.isfinite(targeted) and np.isfinite(random_) and abs(random_) > 0.0:
                 abs_ratio = abs(targeted) / abs(random_)
@@ -137,6 +144,7 @@ def run_specificity(args: argparse.Namespace) -> dict[str, Path]:
                 "abs_ratio": abs_ratio,
                 "baseline_std": std,
                 "normalized_targeted_slope": normalized,
+                "targeted_pearson_r": targeted_r,
             })
 
     morpho_csv = out_dir / "specificity_morphology_summary.csv"

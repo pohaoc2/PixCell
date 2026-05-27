@@ -1,11 +1,10 @@
 """Generate paper figures 01 through 09 when inputs are available."""
+import gc
 from pathlib import Path
 
 from src.paper_figures.fig_ablation_grid import build_representative_ablation_grid
 from src.paper_figures.fig_combined_ablation_grids import build_combined_ablation_grids_figure
 from src.paper_figures.fig_combined_performance import build_combined_performance_figure
-from src.paper_figures.fig_combinatorial_grammar import save_combinatorial_grammar_figure
-from src.paper_figures.fig_combinatorial_grammar_si import save_combinatorial_grammar_si_figure
 from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
 from src.paper_figures.fig_t1_spatial_multi_encoder import build_figure as build_t1_spatial_multi_encoder_figure
 from src.paper_figures.fig_si_a1_a2_unified import save_split_figures as save_si_a1_a2_split_figures
@@ -44,8 +43,6 @@ T1_SPATIAL_MULTI_ENCODER_CSVS = {
     "REMEDIS": ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "remedis_07" / "mlp_spatial_probe_results.csv",
 }
 DECOMPOSITION_SUMMARY_CSV = ROOT / "src" / "a2_decomposition" / "out" / "decomposition_summary.csv"
-A3_SIGNATURES_CSV = ROOT / "src" / "a3_combinatorial_sweep" / "out" / "morphological_signatures.csv"
-A3_RESIDUALS_CSV = ROOT / "src" / "a3_combinatorial_sweep" / "out" / "additive_model_residuals.csv"
 
 A2_METRICS_SUMMARY = ROOT / "inference_output" / "a2_bypass" / "metrics_summary.json"
 A2_TILE_DIRS = {
@@ -69,16 +66,21 @@ UNPAIRED_METRICS_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "un
 UNPAIRED_DATASET_ROOT = ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation"
 UNPAIRED_REFERENCE_ROOT = ROOT / "data" / "orion-crc33"
 
-PNG_DIR = ROOT / "figures" / "pngs_updated"
-
-
-def _save_figure_png_outputs(fig, filename: str) -> None:
-    save_figure_png(fig, PNG_DIR / filename)
+# Output directory structure
+FIGURES_ROOT = ROOT / "figures" / "pngs_updated"
+CONCAT_DIR = FIGURES_ROOT / "concat"           # multi-panel / composite figures
+IND = FIGURES_ROOT / "individual"
+MODEL_PERF = IND / "model_performance"         # 01-03: quantitative performance
+ABLATION = IND / "ablation_analysis"           # 04-06: channel ablation & visual quality
+ENCODER = IND / "encoder_probes"               # 07: encoder probe analysis
+CHANNEL = IND / "channel_utility"              # 09: single-panel TME channel utility
+SI_A1_A2 = IND / "si_a1_a2"                   # SI A1/A2 section panels
 
 
 def main() -> None:
     apply_style()
-    PNG_DIR.mkdir(parents=True, exist_ok=True)
+    for d in [CONCAT_DIR, MODEL_PERF, ABLATION, ENCODER, CHANNEL, SI_A1_A2]:
+        d.mkdir(parents=True, exist_ok=True)
 
     paired_summary = load_dataset_summary(
         slug="paired",
@@ -98,25 +100,34 @@ def main() -> None:
     )
     summaries = [paired_summary, unpaired_summary]
 
+    # --- model_performance: 01-03 ---
     fig_trends = build_metric_trends_figure(summaries)
-    _save_figure_png_outputs(fig_trends, "01_metric_tradeoffs.png")
+    save_figure_png(fig_trends, MODEL_PERF / "01_metric_tradeoffs.png")
 
     fig_comparison = build_comparison_table_figure(summaries)
-    _save_figure_png_outputs(fig_comparison, "02_paired_vs_unpaired.png")
+    save_figure_png(fig_comparison, MODEL_PERF / "02_model_comparison.png")
 
     fig_heatmap = build_channel_effect_heatmaps_figure(summaries)
-    _save_figure_png_outputs(fig_heatmap, "03_channel_effect_sizes.png")
+    save_figure_png(fig_heatmap, MODEL_PERF / "03_channel_effect_sizes.png")
 
+    # --- ablation_analysis: 04 (channel LOO) ---
     fig_loo = build_leave_one_out_figure(summaries)
-    _save_figure_png_outputs(fig_loo, "04_leave_one_out_impact.png")
-    fig_combined = build_combined_performance_figure(summaries)
-    _save_figure_png_outputs(fig_combined, "fig_paired_unpaired_performance.png")
+    save_figure_png(fig_loo, ABLATION / "04_leave_one_out_impact.png")
 
+    # Composite: paired + unpaired performance summary → concat/
+    fig_combined = build_combined_performance_figure(summaries)
+    save_figure_png(fig_combined, CONCAT_DIR / "performance_paired_unpaired.png")
+
+    # Release summary data before the image-heavy ablation grids to reduce peak RAM.
+    del paired_summary, unpaired_summary, summaries
+    gc.collect()
+
+    # --- ablation_analysis: 05-06 (visual ablation grids) ---
     build_representative_ablation_grid(
         metrics_root=PAIRED_METRICS_ROOT,
         dataset_root=PAIRED_DATASET_ROOT,
         orion_root=PAIRED_REFERENCE_ROOT,
-        out_png=PNG_DIR / "05_paired_ablation_grid.png",
+        out_png=ABLATION / "05_paired_ablation_grid.png",
         tile_id="10752_13824",
     )
 
@@ -124,17 +135,19 @@ def main() -> None:
         metrics_root=UNPAIRED_METRICS_ROOT,
         dataset_root=UNPAIRED_DATASET_ROOT,
         orion_root=UNPAIRED_REFERENCE_ROOT,
-        out_png=PNG_DIR / "06_unpaired_ablation_grid.png",
+        out_png=ABLATION / "06_unpaired_ablation_grid.png",
         tile_id="13056_27392",
         style_mapping_json=ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
     )
 
+    # Composite: paired + unpaired ablation grids side-by-side → concat/
     fig_ablation_grids = build_combined_ablation_grids_figure(
-        PNG_DIR / "05_paired_ablation_grid.png",
-        PNG_DIR / "06_unpaired_ablation_grid.png",
+        ABLATION / "05_paired_ablation_grid.png",
+        ABLATION / "06_unpaired_ablation_grid.png",
     )
-    save_figure_png(fig_ablation_grids, PNG_DIR / "fig_ablation_grids.png")
+    save_figure_png(fig_ablation_grids, CONCAT_DIR / "ablation_grids_combined.png")
 
+    # --- concat/: SI A2, A3 supplemental composites ---
     if A2_METRICS_SUMMARY.is_file():
         a2_tile_paths = {
             key: [directory / f"{tile_id}.png" for tile_id in A2_TILE_IDS if (directory / f"{tile_id}.png").is_file()]
@@ -144,7 +157,7 @@ def main() -> None:
             metrics_summary_path=A2_METRICS_SUMMARY,
             tile_paths=a2_tile_paths,
         )
-        _save_figure_png_outputs(fig_a2, "SI_A2_bypass_probe.png")
+        save_figure_png(fig_a2, CONCAT_DIR / "SI_A2_bypass_probe.png")
     else:
         print("Skipping SI_A2_bypass_probe.png; missing", A2_METRICS_SUMMARY)
 
@@ -156,7 +169,7 @@ def main() -> None:
             stability_summary_false_path=A3_STABILITY_FALSE,
             metrics_summary_path=A3_METRICS_SUMMARY,
         )
-        _save_figure_png_outputs(fig_a3, "SI_A3_zero_init.png")
+        save_figure_png(fig_a3, CONCAT_DIR / "SI_A3_zero_init.png")
     else:
         print(
             "Skipping SI_A3_zero_init.png; missing one of",
@@ -165,6 +178,7 @@ def main() -> None:
             A3_STABILITY_FALSE,
         )
 
+    # --- encoder_probes/: 07 (individual); concat/: 07d (multi-encoder composite) ---
     if T2_MLP_CSV.is_file():
         fig_inverse_decoding = build_inverse_decoding_figure(
             uni_t1_csv=T1_UNI_CSV,
@@ -174,7 +188,7 @@ def main() -> None:
             remedis_t1_csv=T1_REMEDIS_CSV if T1_REMEDIS_CSV.is_file() else None,
             t2_mlp_csv=T2_MLP_CSV,
         )
-        _save_figure_png_outputs(fig_inverse_decoding, "07_inverse_decoding.png")
+        save_figure_png(fig_inverse_decoding, ENCODER / "07_inverse_decoding.png")
     else:
         print("Skipping 07_inverse_decoding.png; missing", T2_MLP_CSV)
 
@@ -183,42 +197,35 @@ def main() -> None:
             encoder_csvs=T1_SPATIAL_MULTI_ENCODER_CSVS,
             t2_spatial_csv=T2_SPATIAL_CSV,
         )
-        _save_figure_png_outputs(fig_t1_spatial_multi_encoder, "07d_t1_spatial_multi_encoder.png")
+        save_figure_png(fig_t1_spatial_multi_encoder, CONCAT_DIR / "07d_t1_spatial_multi_encoder.png")
     else:
         print("Skipping 07d_t1_spatial_multi_encoder.png; missing multi-encoder or T2 spatial probe CSVs")
 
+    # --- concat/: 08 TME decomposition composite, channel_utility/: 09 single panel ---
     if DECOMPOSITION_SUMMARY_CSV.is_file():
-        save_uni_tme_decomposition_figure(out_png=PNG_DIR / "08_uni_tme_decomposition.png")
+        save_uni_tme_decomposition_figure(out_png=CONCAT_DIR / "08_uni_tme_decomposition.png")
     else:
         print("Skipping 08_uni_tme_decomposition.png; missing", DECOMPOSITION_SUMMARY_CSV)
 
-    if A3_SIGNATURES_CSV.is_file() and A3_RESIDUALS_CSV.is_file():
-        save_combinatorial_grammar_figure(out_png=PNG_DIR / "09_combinatorial_grammar.png")
-        save_combinatorial_grammar_si_figure(out_png=PNG_DIR / "SI_09_combinatorial_grammar_anchors.png")
-    else:
-        if not A3_SIGNATURES_CSV.is_file():
-            print("Skipping 09_combinatorial_grammar.png; missing", A3_SIGNATURES_CSV)
-        if not A3_RESIDUALS_CSV.is_file():
-            print("Skipping 09_combinatorial_grammar.png; missing", A3_RESIDUALS_CSV)
-
+    # --- si_a1_a2: section panels (individual/) + unified (concat/) ---
     SI_A1_A2_CACHE = ROOT / "inference_output" / "si_a1_a2" / "cache.json"
     if SI_A1_A2_CACHE.is_file():
         save_si_a1_a2_split_figures(
             cache_path=SI_A1_A2_CACHE,
             tile_dir=SI_A1_A2_CACHE.parent / "tiles",
-            out=PNG_DIR / "SI_A1_A2_unified.png",
+            out=CONCAT_DIR / "SI_A1_A2_unified.png",
             dpi=300,
+            section_dir=SI_A1_A2,
         )
     else:
         print("Skipping SI_A1_A2_unified.png; missing", SI_A1_A2_CACHE)
 
     print(
-        "Saved 01_metric_tradeoffs.png, 02_paired_vs_unpaired.png, "
-        "03_channel_effect_sizes.png, 04_leave_one_out_impact.png, "
-        "05_paired_ablation_grid.png, 06_unpaired_ablation_grid.png, "
-        "07_inverse_decoding.png, 08_uni_tme_decomposition.png, "
-        "09_combinatorial_grammar.png, SI_A1_A2_unified.png when inputs are available to",
-        PNG_DIR,
+        "Figures written to:\n"
+        f"  concat/     → {CONCAT_DIR}\n"
+        f"  individual/ → {IND}\n"
+        "  Subfolders: model_performance, ablation_analysis, encoder_probes,\n"
+        "              channel_utility, si_a1_a2"
     )
 
 

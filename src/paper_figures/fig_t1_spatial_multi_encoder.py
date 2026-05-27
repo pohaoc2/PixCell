@@ -402,7 +402,7 @@ def main() -> None:
         },
         t2_spatial_csv=root / "src/a1_probe_mlp_spatial/out/t2_spatial/mlp_spatial_probe_results.csv",
     )
-    out_path = root / "figures" / "pngs_updated" / "07d_t1_spatial_multi_encoder.png"
+    out_path = root / "figures" / "pngs_updated" / "concat" / "07d_t1_spatial_multi_encoder.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     print(f"wrote {out_path}")

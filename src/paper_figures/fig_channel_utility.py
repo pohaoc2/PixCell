@@ -20,7 +20,7 @@ from adjustText import adjust_text
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DECODE_CSV = ROOT / "src" / "a1_probe_linear" / "out" / "linear_probe_results.csv"
 DEFAULT_LOO_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subchannel_summary.csv"
-DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "09_channel_utility.png"
+DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "individual" / "channel_utility" / "09_channel_color_impact.png"
 
 # Sub-channel name -> matching ridge-probe target name in linear_probe_results.csv.
 DECODE_TARGET = {

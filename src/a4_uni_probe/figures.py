@@ -318,7 +318,7 @@ def _specificity_plot_payload(rows: list[dict[str, str]]) -> tuple[list[str], li
             row = index.get((attr, metric))
             if row is None:
                 continue
-            normalized = float(row.get("normalized_targeted_slope") or "nan")
+            normalized = float(row.get("targeted_pearson_r") or "nan")
             grid[i, j] = normalized
             ratio = row.get("abs_ratio")
             try:
@@ -427,9 +427,9 @@ def _load_cell_layout_image(exp_channels_root: Path, tile_id: str) -> np.ndarray
 def render_panel_f(out_dir: str | Path) -> Path:
     """6 (edited attr) x N (measured metric) specificity heatmap.
 
-    Cell color = normalized targeted slope (z-scored by metric baseline std).
-    Cell annotation = abs_ratio (|targeted| / |random|). Diagonal cells get a
-    bold border to highlight the edit-self alignment.
+    Cell color = Pearson r (alpha vs. metric). Cell annotation = abs_ratio
+    (|targeted| / |random|). Diagonal cells get a bold border to highlight
+    the edit-self alignment.
     """
     out_path = Path(out_dir)
     figure_dir = ensure_directory(out_path / "figures")
@@ -437,10 +437,7 @@ def render_panel_f(out_dir: str | Path) -> Path:
     rows = _read_csv_rows(csv_path)
     edited, metrics, grid, annot = _specificity_plot_payload(rows)
 
-    finite = grid[np.isfinite(grid)]
-    vlim = float(np.quantile(np.abs(finite), 0.95)) if finite.size else 1.0
-    if vlim == 0.0:
-        vlim = 1.0
+    vlim = 1.0
 
     fig, ax = plt.subplots(figsize=(max(10.0, 0.7 * len(metrics)), max(4.5, 0.7 * len(edited))))
     im = ax.imshow(grid, cmap="RdBu_r", vmin=-vlim, vmax=vlim, aspect="auto")
@@ -450,12 +447,13 @@ def render_panel_f(out_dir: str | Path) -> Path:
     ax.set_yticklabels(edited, fontsize=9)
     ax.set_xlabel("Measured metric", fontsize=10)
     ax.set_ylabel("Edited attribute", fontsize=10)
-    ax.set_title("Panel F: Specificity matrix (z-scored targeted slope; cell label = |targeted|/|random| ratio)", fontsize=11)
+    ax.set_title("Panel F: Specificity matrix (Pearson r; cell label = |targeted|/|random| ratio)", fontsize=11)
 
     _draw_specificity_diagonal_and_annotations(ax, edited=edited, metrics=metrics, annot=annot, fontsize=7)
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.85)
-    cbar.set_label("Normalized targeted slope (per metric std)", fontsize=9)
+    cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
+    cbar.set_label("Pearson r (alpha vs. metric)", fontsize=9)
     fig.tight_layout()
     panel_path = figure_dir / "panel_f_specificity_matrix.png"
     fig.savefig(panel_path, dpi=180, bbox_inches="tight")
@@ -899,19 +897,29 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
     return output_path
 
 
-def render_pngs_updated_combined_abc(out_dir: str | Path, dest_dir: str | Path) -> Path:
+def render_pngs_updated_combined_abc(
+    out_dir: str | Path,
+    dest_dir: str | Path,
+    *,
+    concat_dir: str | Path | None = None,
+) -> Path:
     """Combined figure: [A: probe_delta | B: specificity_heatmap] on top,
     [C: sweep_combined] below. Width(A) + Width(B) = Width(C).
 
     A is padded with white below to match B's height. C is scaled to match A+B total width.
+
+    Args:
+        concat_dir: Directory containing sweep_grid_combined.png and where
+                    combined_a_b_c.png is written. Defaults to ``dest_dir``.
     """
     out_path = Path(out_dir)
     dest_path = ensure_directory(Path(dest_dir))
+    concat_path = ensure_directory(Path(concat_dir)) if concat_dir is not None else dest_path
 
     # Ensure C exists
-    sweep_combined_path = dest_path / "sweep_grid_combined.png"
+    sweep_combined_path = concat_path / "sweep_grid_combined.png"
     if not sweep_combined_path.is_file():
-        render_pngs_updated_combined_sweep_grid(out_path, dest_path)
+        render_pngs_updated_combined_sweep_grid(out_path, concat_path)
 
     img_A = np.array(Image.open(dest_path / "probe_delta_r2.png").convert("RGB"))
     img_B = np.array(Image.open(dest_path / "specificity_heatmap.png").convert("RGB"))
@@ -965,7 +973,7 @@ def render_pngs_updated_combined_abc(out_dir: str | Path, dest_dir: str | Path) 
     ax.text(label_pad, H_target + top_pad, "C", fontsize=20, fontweight="bold",
             color="black", ha="left", va="top")
 
-    output_path = dest_path / "combined_a_b_c.png"
+    output_path = concat_path / "combined_a_b_c.png"
     fig.savefig(output_path, dpi=_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
@@ -985,10 +993,7 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
             if np.isfinite(v):
                 annot[i, j] = f"{v:.2f}"
 
-    finite = grid[np.isfinite(grid)]
-    vlim = float(np.quantile(np.abs(finite), 0.95)) if finite.size else 1.0
-    if vlim == 0.0:
-        vlim = 1.0
+    vlim = 1.0
 
     fig, ax = plt.subplots(figsize=(max(6.0, 0.9 * len(edited)), max(6.0, 0.9 * len(edited))))
     im = ax.imshow(grid, cmap="RdBu_r", vmin=-vlim, vmax=vlim, aspect="equal")
@@ -1017,7 +1022,7 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.12)
     cbar = fig.colorbar(im, cax=cax)
-    cbar.set_ticks([-8, -4, 0, 4, 8])
+    cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
     cbar.ax.tick_params(labelsize=11)
     fig.tight_layout()
 
@@ -1027,17 +1032,30 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
     return output_path
 
 
-def render_pngs_updated(out_dir: str | Path, dest_dir: str | Path) -> dict[str, Path]:
+def render_pngs_updated(
+    out_dir: str | Path,
+    dest_dir: str | Path,
+    *,
+    concat_dir: str | Path | None = None,
+) -> dict[str, Path]:
+    """Render all publication-ready uni_probe figures.
+
+    Args:
+        dest_dir:   Individual panel outputs (probe_delta, specificity, per-attr grids).
+        concat_dir: Combined outputs (sweep_grid_combined, combined_a_b_c).
+                    Defaults to ``dest_dir`` when not specified.
+    """
     out_path = Path(out_dir)
     destination = ensure_directory(Path(dest_dir))
+    concat_dest = ensure_directory(Path(concat_dir)) if concat_dir is not None else destination
     outputs = {
         "probe_delta_r2": render_pngs_updated_probe_delta(out_path, destination),
         "specificity_heatmap": render_pngs_updated_specificity_heatmap(out_path, destination),
     }
     for attr in _ordered_sweep_attrs(out_path / "sweep"):
         outputs[f"sweep_grid_{attr}"] = render_pngs_updated_sweep_grid(out_path, destination, attr)
-    outputs["sweep_grid_combined"] = render_pngs_updated_combined_sweep_grid(out_path, destination)
-    outputs["combined_a_b_c"] = render_pngs_updated_combined_abc(out_path, destination)
+    outputs["sweep_grid_combined"] = render_pngs_updated_combined_sweep_grid(out_path, concat_dest)
+    outputs["combined_a_b_c"] = render_pngs_updated_combined_abc(out_path, destination, concat_dir=concat_dest)
     return outputs
 
 

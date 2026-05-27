@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SPATIAL_CSV = ROOT / "src" / "a1_probe_mlp_spatial" / "out" / "uni_16" / "mlp_spatial_probe_results.csv"
 DEFAULT_LOO_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subchannel_summary.csv"
 DEFAULT_LAYOUT_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subchannel_layout_summary.csv"
-DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "09b_channel_utility.png"
+DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "concat" / "09b_channel_color_layout_impact.png"
 
 TITLE_SIZE = 10.5
 AXIS_LABEL_SIZE = 9.5
@@ -316,6 +316,7 @@ def draw_channel_utility_layout(
             continue
         r2, r2_sd = spatial[target]
         pq_drop, pq_sem = layout[sub]
+        pq_drop = abs(pq_drop)
         max_y = max(max_y, pq_drop + pq_sem)
         points.append((sub, r2, pq_drop, r2_sd, pq_sem, SUB_GROUP[sub]))
 
