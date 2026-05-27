@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 from adjustText import adjust_text
 from PIL import Image
@@ -91,10 +92,6 @@ def _display_attr(attr: str) -> str:
     label = re.sub(r"\b(h|e)\b", lambda m: m.group().upper(), label)
     return label
 
-
-def _clean_attr_label(attr: str) -> str:
-    """Backward-compat alias for _display_attr."""
-    return _display_attr(attr)
 
 
 def _read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -357,7 +354,6 @@ def _draw_specificity_diagonal_and_annotations(
                 ax.text(j, i, annot[i, j], ha="center", va="center", fontsize=fontsize, color=text_color)
 
 
-
 def _specificity_square_payload(rows: list[dict[str, str]]) -> tuple[list[str], np.ndarray, np.ndarray]:
     edited, metrics, grid, annot = _specificity_plot_payload(rows)
     metric_index = {metric: index for index, metric in enumerate(metrics)}
@@ -402,26 +398,12 @@ def _resolve_reference_he_root(out_path: Path) -> Path:
     raise FileNotFoundError(f"could not resolve H&E root for {out_path}")
 
 
-def _resolve_exp_channels_root(out_path: Path) -> Path:
-    for candidate in (out_path / "exp_channels", DEFAULT_A4_DATA_ROOT / "exp_channels"):
-        if candidate.is_dir():
-            return candidate
-    raise FileNotFoundError(f"could not resolve experimental channels root for {out_path}")
-
-
 def _find_reference_he_path(he_root: Path, tile_id: str) -> Path:
     for suffix in (".png", ".jpg", ".jpeg", ".tif", ".tiff"):
         candidate = he_root / f"{tile_id}{suffix}"
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(f"reference H&E missing for tile {tile_id} under {he_root}")
-
-
-def _load_cell_layout_image(exp_channels_root: Path, tile_id: str) -> np.ndarray:
-    cell_layout = _load_channel_array(exp_channels_root, tile_id, "cell_masks", resolution=256, missing_ok=False)
-    if cell_layout is None:
-        raise FileNotFoundError(f"cell_masks missing for tile {tile_id} under {exp_channels_root}")
-    return cell_layout
 
 
 def render_panel_f(out_dir: str | Path) -> Path:
@@ -566,7 +548,6 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
             color="#eaf0f8", edgecolor="none", zorder=0)
     ax.fill([ax_lo, ax_hi, ax_hi], [ax_lo, ax_lo, ax_hi],
             color="#f8efe6", edgecolor="none", zorder=0)
-    _rng = ax_hi - ax_lo
     _dominance_base = {
         "fontsize": 8.5,
         "fontfamily": font_name,
@@ -597,7 +578,7 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     texts: list = []
     point_xs: list[float] = []
     point_ys: list[float] = []
-    label_offset_scale = _rng
+    label_offset_scale = ax_hi - ax_lo
     default_label_offset = 0.018 * label_offset_scale
     label_offsets = {
         "texture_h_contrast": (-0.12 * label_offset_scale, 0.00 * label_offset_scale),
@@ -1018,7 +999,6 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
         vlim=vlim,
     )
 
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.12)
     cbar = fig.colorbar(im, cax=cax)

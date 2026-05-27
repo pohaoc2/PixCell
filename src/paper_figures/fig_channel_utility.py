@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -114,6 +113,13 @@ def _loo_lookup(loo_csv: Path) -> dict[str, tuple[float, float]]:
             continue
         out[row["sub_channel"]] = (mean_v, sem_v)
     return out
+
+
+def _save_figure_png(fig: plt.Figure, out_png: Path, *, dpi: int) -> Path:
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return out_png
 
 
 def _draw_quadrants(ax: plt.Axes) -> None:
@@ -259,11 +265,7 @@ def save_channel_utility_figure(
     dpi: int = 300,
 ) -> Path:
     fig = build_channel_utility_figure(decode_csv=decode_csv, loo_csv=loo_csv)
-    out_png = Path(out_png)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    return out_png
+    return _save_figure_png(fig, Path(out_png), dpi=dpi)
 
 
 if __name__ == "__main__":

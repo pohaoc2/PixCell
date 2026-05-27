@@ -25,6 +25,7 @@ from src.paper_figures.fig_channel_utility import (
     PRETTY_SUB,
     SUB_GROUP,
     _loo_lookup,
+    _save_figure_png,
 )
 
 
@@ -156,17 +157,6 @@ def _draw_break_marks(fig: plt.Figure, ax_left: plt.Axes, ax_right: plt.Axes) ->
             )
 
 
-def _fill_break_seam(
-    fig: plt.Figure,
-    ax_left: plt.Axes,
-    ax_right: plt.Axes,
-    *,
-    y_mid: float,
-    y_lim: tuple[float, float],
-) -> None:
-    """No-op: quadrant tinting removed; seam stays figure-background."""
-    return
-
 
 def _plot_point(ax: plt.Axes, *, x: float, y: float, r2_sd: float, y_sem: float,
                 color: str, marker: str) -> None:
@@ -260,7 +250,6 @@ def _draw_panel(
             lbl.set_fontfamily(FONT_NAME)
         axis.set_axisbelow(True)
 
-    _fill_break_seam(fig, ax_left, ax_right, y_mid=y_mid, y_lim=y_lim)
     _draw_break_marks(fig, ax_left, ax_right)
     ax_left.set_xticks([-5])
     ax_right.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0])
@@ -434,11 +423,7 @@ def save_channel_utility_spatial_figure(
     dpi: int = 300,
 ) -> Path:
     fig = build_channel_utility_spatial_figure(spatial_csv=spatial_csv, loo_csv=loo_csv, layout_csv=layout_csv)
-    out_png = Path(out_png)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    return out_png
+    return _save_figure_png(fig, Path(out_png), dpi=dpi)
 
 
 if __name__ == "__main__":
