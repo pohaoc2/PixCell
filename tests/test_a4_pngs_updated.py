@@ -130,27 +130,30 @@ def test_specificity_square_payload_uses_only_edited_attrs(tmp_path: Path) -> No
 def test_render_pngs_updated_outputs(tmp_path: Path) -> None:
     _build_synthetic_inputs(tmp_path)
 
-    from src.a4_uni_probe.figures import render_pngs_updated
+    from src.a4_uni_probe.figures import COMBINED_ABC_CLEAR_NAME, render_pngs_updated
 
     dest_dir = tmp_path / "pngs_updated" / "a4_uni_probe"
     outputs = render_pngs_updated(tmp_path, dest_dir)
 
-    assert len(outputs) == 8
+    assert len(outputs) == 10
     assert set(outputs) == {
         "probe_delta_r2",
         "specificity_heatmap",
         *(f"sweep_grid_{attr}" for attr in SWEEP_ATTRS),
+        "sweep_grid_combined",
+        "uni_probe_overview",
     }
     for path in outputs.values():
         assert path.is_file()
         assert path.stat().st_size > 1000
+    assert (dest_dir / COMBINED_ABC_CLEAR_NAME).is_file()
 
     probe_image = mpimg.imread(dest_dir / "probe_delta_r2.png")
     assert probe_image.shape[1] >= 600
     assert probe_image.shape[0] >= 600
 
     sweep_image = mpimg.imread(dest_dir / f"sweep_grid_{SWEEP_ATTRS[0]}.png")
-    assert sweep_image.shape[1] >= 3200
+    assert sweep_image.shape[1] >= 700
     assert sweep_image.shape[0] >= 500
 
     heatmap_image = mpimg.imread(dest_dir / "specificity_heatmap.png")

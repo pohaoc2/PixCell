@@ -11,8 +11,8 @@ import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from matplotlib.lines import Line2D
+from matplotlib.ticker import FormatStrFormatter
 from adjustText import adjust_text
 
 from src.paper_figures.fig_channel_utility import (
@@ -41,6 +41,9 @@ TICK_SIZE = 8.5
 POINT_LABEL_SIZE = 7.0
 QUADRANT_LABEL_SIZE = 7.5
 LEGEND_SIZE = 7.5
+# Vertical half-spacing of the circled-number cluster, as a fraction of the
+# panel's y-range (keeps circles from overlapping at any y-scale).
+QUADRANT_CLUSTER_DY_FRAC = 0.055
 
 R2_THRESHOLD = 0.0
 # Boundary between the main right pane and the compressed left pane.
@@ -51,18 +54,39 @@ COLOR_Y_LIM = (-0.3, 6.0)
 LAYOUT_THRESHOLD = 0.05
 LAYOUT_Y_MIN = -0.02
 
-LAYOUT_LABEL_OFFSETS = {
-    "cell_type_healthy": (0.015, 0.008),
-    "cell_type_cancer": (0.015, 0.003),
-    "cell_type_immune": (0.015, -0.003),
-    "cell_state_prolif": (0.020, 0.003),
-    "cell_state_nonprolif": (0.020, 0.002),
-    "cell_state_dead": (0.020, -0.003),
-    "vasculature": (0.020, -0.004),
-    "oxygen": (-0.040, 0.005),
-    "glucose": (-0.040, 0.005),
-}
+# --- Compact, square panel geometry (absolute inches) ---------------------
+# Each panel's data box (compressed left pane + main right pane) is a
+# PANEL_SQ_IN square; both panels share the same height. Margins are tight.
+PANEL_SQ_IN = 2.05
+PANE_LEFT_RATIO = 1.0      # width share of the compressed (R² < -1) pane
+PANE_RIGHT_RATIO = 3.6     # width share of the main pane
+MARGIN_LEFT_IN = 0.56      # y-axis label + tick labels (panel A)
+MARGIN_GAP_IN = 0.66       # between panel A and panel B (room for B's y-label)
+MARGIN_RIGHT_IN = 0.08
+MARGIN_TOP_IN = 0.22       # panel letters
+MARGIN_XLABEL_IN = 0.44    # x tick labels + "Patch-level R²"
+MARGIN_LEGEND_IN = 0.32    # legend row
+# One decimal everywhere (x and y, both panels). ΔPQ is small, so 1-dp y-ticks
+# are necessarily coarse (0.0, 0.1); the 0.05 threshold is shown by the dotted line.
+LAYOUT_Y_TICKS = [0.0, 0.1]
 
+# Manual label anchors for panel B (absolute data coords + ha), tuned to the
+# real marker positions. Healthy is kept in its own (bottom-left) quadrant per
+# request; the rest are routed to clear space with leader lines. Left-pane
+# labels (compressed axis) are stacked above/below/left of their markers.
+LAYOUT_LABEL_XY = {
+    # left pane (R² < -1)
+    "cell_state_dead": (-7.48, -0.013, "center"),
+    "oxygen": (-4.94, 0.030, "center"),
+    "glucose": (-3.25, 0.066, "right"),
+    # right pane
+    "cell_state_nonprolif": (0.34, 0.095, "left"),
+    "cell_type_cancer": (0.36, 0.026, "left"),
+    "cell_state_prolif": (0.46, 0.002, "left"),
+    "cell_type_healthy": (-0.35, 0.041, "right"),
+    "cell_type_immune": (-0.30, -0.007, "center"),
+    "vasculature": (-0.55, 0.022, "center"),
+}
 
 def _spatial_lookup(spatial_csv: Path) -> dict[str, tuple[float, float]]:
     """target -> (r2_within_mean, r2_within_sd)."""
@@ -91,25 +115,35 @@ def _place_quadrant_labels(
     ax_right: plt.Axes,
     *,
     y_mid: float,
-    panel_kind: str,
-) -> None:
-    """Restore the original quadrant naming at the split crosshair."""
-    if panel_kind == "layout":
-        return
+    y_lim: tuple[float, float],
+) -> list:
+    """Mark the four quadrants with circled numbers (1-4, reading order), in
+    BOTH panels, clustered tightly around the crosshair (x=0, y=y_mid).
 
+    Names (Critical / Redundant / Skip / MX optional) move to the figure caption.
+    1 = top-left, 2 = top-right, 3 = bottom-left, 4 = bottom-right. Offsets are
+    the smallest that keep the four circles from overlapping each other.
+    Returns the circle Text artists so label placement can route around them.
+    """
     x_mid = R2_THRESHOLD
-    dx = 0.014
-    dy = 0.16
+    dx = 0.13                                   # x is shared across panels
+    dy = QUADRANT_CLUSTER_DY_FRAC * (y_lim[1] - y_lim[0])
     spec = [
-        ("Critical", x_mid - dx, y_mid + dy, "right", "bottom"),
-        ("Redundant", x_mid + dx, y_mid + dy, "left", "bottom"),
-        ("Skip", x_mid - dx, y_mid - dy, "right", "top"),
-        ("MX optional", x_mid + dx, y_mid - dy, "left", "top"),
+        ("1", x_mid - dx, y_mid + dy),
+        ("2", x_mid + dx, y_mid + dy),
+        ("3", x_mid - dx, y_mid - dy),
+        ("4", x_mid + dx, y_mid - dy),
     ]
-    for label, x, y, ha, va in spec:
-        ax_right.text(x, y, label, ha=ha, va=va, fontsize=QUADRANT_LABEL_SIZE, color="black",
-                      alpha=0.95, fontweight="bold", fontfamily=FONT_NAME, zorder=5,
-                      linespacing=0.95)
+    artists = []
+    for label, x, y in spec:
+        artists.append(ax_right.text(
+            x, y, label, ha="center", va="center",
+            fontsize=QUADRANT_LABEL_SIZE, color="black",
+            fontfamily=FONT_NAME, zorder=6,
+            bbox=dict(boxstyle="circle,pad=0.20", facecolor="white",
+                      edgecolor="black", linewidth=0.8),
+        ))
+    return artists
 
 
 def _layout_lookup(layout_csv: Path) -> dict[str, tuple[float, float]]:
@@ -160,46 +194,35 @@ def _draw_break_marks(fig: plt.Figure, ax_left: plt.Axes, ax_right: plt.Axes) ->
 
 def _plot_point(ax: plt.Axes, *, x: float, y: float, r2_sd: float, y_sem: float,
                 color: str, marker: str) -> None:
-    ax.errorbar(
+    container = ax.errorbar(
         x, y, xerr=r2_sd, yerr=y_sem,
         fmt=marker, markersize=5,
         color=color, ecolor=color, elinewidth=0.7, capsize=2.0,
         markerfacecolor="white", markeredgecolor=color, markeredgewidth=1.2,
         zorder=3,
     )
-
-
-def _annotate_layout_label(ax: plt.Axes, *, sub: str, x: float, y: float) -> None:
-    dx, dy = LAYOUT_LABEL_OFFSETS.get(sub, (0.015, 0.004))
-    ha = "left" if dx >= 0 else "right"
-    ax.annotate(
-        PRETTY_SUB.get(sub, sub),
-        xy=(x, y),
-        xytext=(x + dx, y + dy),
-        textcoords="data",
-        ha=ha,
-        va="center",
-        fontsize=POINT_LABEL_SIZE,
-        color="black",
-        fontfamily=FONT_NAME,
-        arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5),
-        zorder=4,
-    )
+    # Don't let the axes clip a marker whose vertex pokes a hair past the pane
+    # edge (e.g. Glucose sits at R²≈-2.02, right against the left pane's -1.5 edge,
+    # so its right diamond corner was being clipped).
+    for artist in container.get_children():
+        artist.set_clip_on(False)
 
 
 def _draw_panel(
     fig: plt.Figure,
     *,
-    subplot_spec,
+    left_rect: tuple[float, float, float, float],
+    right_rect: tuple[float, float, float, float],
     points: list[tuple[str, float, float, float, float, str]],
     y_label: str,
     y_mid: float,
     y_lim: tuple[float, float],
     panel_kind: str,
+    tick_decimals: int,
+    y_ticks: list[float] | None = None,
 ) -> tuple[plt.Axes, plt.Axes, set[str]]:
-    gs = GridSpecFromSubplotSpec(1, 2, subplot_spec=subplot_spec, width_ratios=[1.0, 3.6], wspace=0.0)
-    ax_left = fig.add_subplot(gs[0, 0])
-    ax_right = fig.add_subplot(gs[0, 1], sharey=ax_left)
+    ax_left = fig.add_axes(left_rect)
+    ax_right = fig.add_axes(right_rect, sharey=ax_left)
 
     ax_left.set_xlim(*LEFT_XLIM)
     ax_right.set_xlim(*RIGHT_XLIM)
@@ -208,8 +231,11 @@ def _draw_panel(
     ax_right.set_facecolor("none")
 
     _fill_quadrants(ax_left, ax_right, y_mid=y_mid, y_lim=y_lim)
-    _place_quadrant_labels(ax_right, y_mid=y_mid, panel_kind=panel_kind)
+    circle_artists = _place_quadrant_labels(ax_right, y_mid=y_mid, y_lim=y_lim)
 
+    # shrinkB keeps the leader from terminating on the marker itself (it was
+    # covering the diamond/triangle vertices).
+    _leader = dict(arrowstyle="-", color="#aaaaaa", lw=0.5, shrinkB=5)
     texts_left: list = []
     texts_right: list = []
     plotted_groups: set[str] = set()
@@ -217,25 +243,34 @@ def _draw_panel(
         color = GROUP_COLORS[group]
         marker = GROUP_MARKERS[group]
         plotted_groups.add(group)
-        if r2 < BREAK_AT:
-            _plot_point(ax_left, x=r2, y=y_value, r2_sd=r2_sd, y_sem=y_sem, color=color, marker=marker)
-            if panel_kind == "layout":
-                _annotate_layout_label(ax_left, sub=sub, x=r2, y=y_value)
-            else:
-                txt = ax_left.text(r2, y_value, PRETTY_SUB.get(sub, sub), fontsize=POINT_LABEL_SIZE, color="black", fontfamily=FONT_NAME, zorder=4)
-                texts_left.append(txt)
-        else:
-            _plot_point(ax_right, x=r2, y=y_value, r2_sd=r2_sd, y_sem=y_sem, color=color, marker=marker)
-            if panel_kind == "layout":
-                _annotate_layout_label(ax_right, sub=sub, x=r2, y=y_value)
-            else:
-                txt = ax_right.text(r2, y_value, PRETTY_SUB.get(sub, sub), fontsize=POINT_LABEL_SIZE, color="black", fontfamily=FONT_NAME, zorder=4)
-                texts_right.append(txt)
+        ax = ax_left if r2 < BREAK_AT else ax_right
+        _plot_point(ax, x=r2, y=y_value, r2_sd=r2_sd, y_sem=y_sem, color=color, marker=marker)
 
-    if panel_kind != "layout" and texts_left:
-        adjust_text(texts_left, ax=ax_left, expand=(1.1, 1.3), arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5))
-    if panel_kind != "layout" and texts_right:
-        adjust_text(texts_right, ax=ax_right, expand=(1.15, 1.3), arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5))
+        if panel_kind == "layout":
+            # Manual placement with curated anchors (the compressed left pane and
+            # the central circled numbers leave no room for automatic layout).
+            # Left-pane labels sit adjacent to their marker, so no leader (a short
+            # leader would just clip the marker's vertices).
+            lx, ly, lha = LAYOUT_LABEL_XY.get(sub, (r2 + 0.04, y_value, "left"))
+            ax.annotate(PRETTY_SUB.get(sub, sub), xy=(r2, y_value),
+                        xytext=(lx, ly), textcoords="data",
+                        ha=lha, va="center", fontsize=POINT_LABEL_SIZE,
+                        color="black", fontfamily=FONT_NAME, zorder=4,
+                        arrowprops=None if r2 < BREAK_AT else _leader)
+        else:
+            bucket = texts_left if r2 < BREAK_AT else texts_right
+            bucket.append(ax.text(r2, y_value, PRETTY_SUB.get(sub, sub),
+                                  fontsize=POINT_LABEL_SIZE, color="black",
+                                  fontfamily=FONT_NAME, zorder=4))
+
+    # Panel A (color): adjust_text routes labels clear of markers AND circles.
+    if texts_left:
+        adjust_text(texts_left, ax=ax_left, expand=(1.1, 1.3), arrowprops=_leader)
+    if texts_right:
+        adjust_text(texts_right, ax=ax_right, objects=circle_artists,
+                    force_text=(0.5, 1.0), force_static=(0.6, 1.1),
+                    force_explode=(0.3, 0.6), expand=(1.5, 2.0),
+                    max_move=40, iter_lim=600, arrowprops=_leader)
 
     ax_left.spines["right"].set_visible(False)
     ax_right.spines["left"].set_visible(False)
@@ -252,7 +287,18 @@ def _draw_panel(
 
     _draw_break_marks(fig, ax_left, ax_right)
     ax_left.set_xticks([-5])
-    ax_right.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0])
+    # Omit the tick at the break (-1.0): it would collide with the left pane's
+    # tick across the narrow seam.
+    ax_right.set_xticks([-0.5, 0.0, 0.5, 1.0])
+    if y_ticks is not None:
+        ax_left.set_yticks(y_ticks)
+
+    # X and Y tick labels use the SAME number of decimal places (see vis_guidance.md).
+    fmt = FormatStrFormatter(f"%.{tick_decimals}f")
+    for axis in (ax_left, ax_right):
+        axis.xaxis.set_major_formatter(fmt)
+    ax_left.yaxis.set_major_formatter(fmt)
+
     ax_left.set_ylabel(y_label, fontsize=AXIS_LABEL_SIZE, fontfamily=FONT_NAME, labelpad=4)
     return ax_left, ax_right, plotted_groups
 
@@ -262,7 +308,8 @@ def draw_channel_utility_spatial(
     *,
     spatial_csv: Path,
     loo_csv: Path,
-    subplot_spec,
+    left_rect: tuple[float, float, float, float],
+    right_rect: tuple[float, float, float, float],
 ) -> tuple[plt.Axes, plt.Axes, set[str]]:
     spatial = _spatial_lookup(spatial_csv)
     loo = _loo_lookup(loo_csv)
@@ -277,12 +324,14 @@ def draw_channel_utility_spatial(
 
     return _draw_panel(
         fig,
-        subplot_spec=subplot_spec,
+        left_rect=left_rect,
+        right_rect=right_rect,
         points=points,
         y_label=r"Color impact ($\Delta E$)",
         y_mid=DELTA_E_THRESHOLD,
         y_lim=COLOR_Y_LIM,
         panel_kind="color",
+        tick_decimals=1,
     )
 
 
@@ -291,7 +340,8 @@ def draw_channel_utility_layout(
     *,
     spatial_csv: Path,
     layout_csv: Path,
-    subplot_spec,
+    left_rect: tuple[float, float, float, float],
+    right_rect: tuple[float, float, float, float],
 ) -> tuple[plt.Axes, plt.Axes, set[str]] | None:
     spatial = _spatial_lookup(spatial_csv)
     layout = _layout_lookup(layout_csv)
@@ -309,15 +359,18 @@ def draw_channel_utility_layout(
         max_y = max(max_y, pq_drop + pq_sem)
         points.append((sub, r2, pq_drop, r2_sd, pq_sem, SUB_GROUP[sub]))
 
-    y_lim = (LAYOUT_Y_MIN, max(0.18, max_y + 0.02))
+    y_lim = (LAYOUT_Y_MIN, max(0.17, max_y + 0.02))
     return _draw_panel(
         fig,
-        subplot_spec=subplot_spec,
+        left_rect=left_rect,
+        right_rect=right_rect,
         points=points,
         y_label=r"Layout impact ($\Delta$PQ)",
         y_mid=LAYOUT_THRESHOLD,
         y_lim=y_lim,
         panel_kind="layout",
+        tick_decimals=1,
+        y_ticks=LAYOUT_Y_TICKS,
     )
 
 
@@ -327,68 +380,62 @@ def build_channel_utility_spatial_figure(
     loo_csv: Path = DEFAULT_LOO_CSV,
     layout_csv: Path = DEFAULT_LAYOUT_CSV,
 ) -> plt.Figure:
-    fig = plt.figure(figsize=(6.7, 3.55), facecolor="white")
-    outer = fig.add_gridspec(
-        1,
-        2,
-        width_ratios=[1.0, 1.0],
-        left=0.07,
-        right=0.98,
-        bottom=0.28,
-        top=0.93,
-        wspace=0.36,
-    )
+    # Absolute-inch geometry → square, compact panels (see PANEL_* constants).
+    bottom_margin_in = MARGIN_XLABEL_IN + MARGIN_LEGEND_IN
+    fig_w = MARGIN_LEFT_IN + PANEL_SQ_IN + MARGIN_GAP_IN + PANEL_SQ_IN + MARGIN_RIGHT_IN
+    fig_h = MARGIN_TOP_IN + PANEL_SQ_IN + bottom_margin_in
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+
+    pane_tot = PANE_LEFT_RATIO + PANE_RIGHT_RATIO
+    left_w_in = PANEL_SQ_IN * PANE_LEFT_RATIO / pane_tot
+    right_w_in = PANEL_SQ_IN * PANE_RIGHT_RATIO / pane_tot
+    y0_in = bottom_margin_in
+
+    def _rects(x0_in: float):
+        left = (x0_in / fig_w, y0_in / fig_h, left_w_in / fig_w, PANEL_SQ_IN / fig_h)
+        right = ((x0_in + left_w_in) / fig_w, y0_in / fig_h, right_w_in / fig_w, PANEL_SQ_IN / fig_h)
+        return left, right
+
+    a_x0_in = MARGIN_LEFT_IN
+    b_x0_in = MARGIN_LEFT_IN + PANEL_SQ_IN + MARGIN_GAP_IN
+    lr_a, rr_a = _rects(a_x0_in)
+    lr_b, rr_b = _rects(b_x0_in)
+
     ax_left_a, ax_right_a, plotted_groups = draw_channel_utility_spatial(
         fig,
         spatial_csv=Path(spatial_csv),
         loo_csv=Path(loo_csv),
-        subplot_spec=outer[0, 0],
+        left_rect=lr_a,
+        right_rect=rr_a,
     )
-    ax_left_a.text(-0.26, 1.03, "A", transform=ax_left_a.transAxes,
-                   ha="left", va="bottom", fontsize=TITLE_SIZE, fontweight="bold",
-                   fontfamily=FONT_NAME)
 
     panel_b = draw_channel_utility_layout(
         fig,
         spatial_csv=Path(spatial_csv),
         layout_csv=Path(layout_csv),
-        subplot_spec=outer[0, 1],
+        left_rect=lr_b,
+        right_rect=rr_b,
     )
     if panel_b is None:
-        placeholder = fig.add_subplot(outer[0, 1])
+        placeholder = fig.add_axes([lr_b[0], lr_b[1], (rr_b[0] + rr_b[2]) - lr_b[0], lr_b[3]])
         placeholder.axis("off")
         placeholder.text(
-            0.5,
-            0.55,
+            0.5, 0.55,
             "PQ-drop summary not computed yet.\nCompute CellViT sidecars +\nper_subchannel_layout_summary.csv.",
-            ha="center",
-            va="center",
-            fontsize=TICK_SIZE,
-            fontfamily=FONT_NAME,
+            ha="center", va="center", fontsize=TICK_SIZE, fontfamily=FONT_NAME,
         )
-        panel_axes = [(ax_left_a, ax_right_a)]
     else:
-        ax_left_b, ax_right_b, plotted_groups_b = panel_b
+        _ax_left_b, _ax_right_b, plotted_groups_b = panel_b
         plotted_groups |= plotted_groups_b
-        panel_axes = [(ax_left_a, ax_right_a), (ax_left_b, ax_right_b)]
-        ax_left_b.text(-0.26, 1.03, "B", transform=ax_left_b.transAxes,
-                       ha="left", va="bottom", fontsize=TITLE_SIZE, fontweight="bold",
-                       fontfamily=FONT_NAME)
 
-    for left_ax, right_ax in panel_axes:
-        panel_left = left_ax.get_position().x0
-        panel_right = right_ax.get_position().x1
-        panel_bottom = min(left_ax.get_position().y0, right_ax.get_position().y0)
-        panel_center = 0.5 * (panel_left + panel_right)
-        fig.text(
-            panel_center,
-            max(0.01, panel_bottom - 0.095),
-            "Patch-level R²",
-            ha="center",
-            va="bottom",
-            fontsize=AXIS_LABEL_SIZE,
-            fontfamily=FONT_NAME,
-        )
+    # Panel letters (figure coords) and x-axis label, centered under each panel.
+    letter_y = (y0_in + PANEL_SQ_IN + 0.03) / fig_h
+    xlabel_y = (MARGIN_LEGEND_IN + 0.10) / fig_h
+    for x0_in, letter in ((a_x0_in, "A"), (b_x0_in, "B")):
+        fig.text((x0_in - 0.48) / fig_w, letter_y, letter, ha="left", va="bottom",
+                 fontsize=TITLE_SIZE, fontweight="bold", fontfamily=FONT_NAME)
+        fig.text((x0_in + PANEL_SQ_IN / 2.0) / fig_w, xlabel_y, "Patch-level R²",
+                 ha="center", va="center", fontsize=AXIS_LABEL_SIZE, fontfamily=FONT_NAME)
 
     handles = [
         plt.Line2D([0], [0], marker=GROUP_MARKERS[g], linestyle="",
@@ -401,8 +448,8 @@ def build_channel_utility_spatial_figure(
     if handles:
         fig.legend(
             handles=handles,
-            loc="lower right",
-            bbox_to_anchor=(0.985, 0.095),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.005),
             ncol=len(handles),
             frameon=False,
             prop={"family": FONT_NAME, "size": LEGEND_SIZE},

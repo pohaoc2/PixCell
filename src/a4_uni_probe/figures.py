@@ -10,7 +10,7 @@ from pathlib import Path
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 import numpy as np
 from adjustText import adjust_text
 from PIL import Image
@@ -73,6 +73,11 @@ ATTR_DISPLAY_NAMES: dict[str, str] = {
     "texture_h_dissimilarity": "H dissimilarity",
     "texture_e_dissimilarity": "E dissimilarity",
     "prolif_fraction": "Prolif fraction",
+    "nonprolif_fraction": "Nonprolif fraction",
+    "healthy_fraction": "Healthy fraction",
+    "cancer_fraction": "Cancer fraction",
+    "immune_fraction": "Immune fraction",
+    "dead_fraction": "Dead fraction",
     "intensity_mean_h": "H intensity",
     "intensity_mean_e": "E intensity",
     "h_mean": "H mean",
@@ -81,6 +86,38 @@ ATTR_DISPLAY_NAMES: dict[str, str] = {
     "e_std": "E std",
     "stain_vector_angle_deg": "Stain angle",
 }
+
+COMBINED_ABC_CLEAR_NAME = "uni_probe_overview.png"
+UPDATED_PANEL_DPI = 240
+
+# --- Cross-panel consistency for the combined A/B/C overview ---------------
+# Every panel is rendered at the SAME dpi with the SAME font point sizes and is
+# composited WITHOUT post-hoc rescaling, so a given point size occupies the same
+# number of pixels in panels A, B and C alike. See vis_guidance.md.
+COMBINED_DPI = UPDATED_PANEL_DPI            # one dpi for A, B and C
+COMBINED_GAP_IN = 0.34                       # horizontal gap between A and B (inches)
+FONT_AXIS_LABEL = 13                         # x/y axis titles, colorbar label
+FONT_TICK = 11                               # tick labels (both axes), colorbar ticks
+FONT_INAXES = 11                             # scatter point labels
+FONT_HEATMAP_ANNOT = 14                      # per-cell numbers in the heatmap
+FONT_LEGEND = 11                             # legend entries
+FONT_PANEL_LETTER = 18                        # bold A / B / C panel letters
+
+# Panels A and B use absolute-inch geometry so the scatter axis and the heatmap
+# square are exactly the SAME size (PANEL_SQUARE_IN) and the two panels share the
+# same height (PANEL_TOP_IN + PANEL_SQUARE_IN + PANEL_BOT_IN). Margins are kept
+# tight so the A/B row sits close to panel C below it.
+PANEL_SQUARE_IN = 4.0     # shared plotting square: scatter axis == heatmap square
+PANEL_TOP_IN = 0.16       # space above the square (for the panel letter)
+PANEL_BOT_IN = 1.18       # space below: A = xlabel + legend; B = rotated xticks + xlabel
+# Panel A (scatter) horizontal margins
+PANEL_A_LEFT_IN = 0.92    # y-axis label + tick labels
+PANEL_A_RIGHT_IN = 0.16
+# Panel B (heatmap) horizontal margins + colorbar
+PANEL_B_LEFT_IN = 1.42    # longer y-tick labels ("Nuclei density")
+PANEL_B_CBAR_GAP_IN = 0.12
+PANEL_B_CBAR_W_IN = 0.16
+PANEL_B_CBAR_LABEL_IN = 0.66   # colorbar ticks + "Pearson R" label
 
 
 def _display_attr(attr: str) -> str:
@@ -540,7 +577,18 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     ax_hi = max(all_vals) + 0.08
 
     font_name = "Nimbus Sans"
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    # Absolute-inch geometry: the scatter axis is a PANEL_SQUARE_IN square, and
+    # the panel height matches panel B exactly (see PANEL_* constants).
+    fig_w = PANEL_A_LEFT_IN + PANEL_SQUARE_IN + PANEL_A_RIGHT_IN
+    fig_h = PANEL_TOP_IN + PANEL_SQUARE_IN + PANEL_BOT_IN
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="none")
+    ax = fig.add_axes([
+        PANEL_A_LEFT_IN / fig_w,
+        PANEL_BOT_IN / fig_h,
+        PANEL_SQUARE_IN / fig_w,
+        PANEL_SQUARE_IN / fig_h,
+    ])
+    ax.set_facecolor("none")
     ax.set_aspect("equal")
     ax.set_axisbelow(True)
     ax.grid(linewidth=0.4, color="#E0E0E0", zorder=0)
@@ -548,31 +596,13 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
             color="#eaf0f8", edgecolor="none", zorder=0)
     ax.fill([ax_lo, ax_hi, ax_hi], [ax_lo, ax_lo, ax_hi],
             color="#f8efe6", edgecolor="none", zorder=0)
-    _dominance_base = {
-        "fontsize": 8.5,
-        "fontfamily": font_name,
-        "fontstyle": "italic",
-        "fontweight": "bold",
-        "zorder": 2,
-    }
-    # UNI dominate: data coordinates so y=0.3 means R²=0.3 on the axis
-    uni_dom_text = ax.text(
-        ax_lo + 0.02, 0.30, "UNI dominate",
-        ha="left", va="center",
-        color="#2b6cb0",
-        **_dominance_base,
-    )
-    # TME dominate: axes coordinates (bottom-right corner)
-    tme_dom_text = ax.text(
-        0.985, 0.015, "TME dominate",
-        ha="right", va="bottom",
-        color="#b05a10",
-        transform=ax.transAxes,
-        **_dominance_base,
-    )
 
     ax.set_xlim(ax_lo, ax_hi)
     ax.set_ylim(ax_lo, ax_hi)
+    ax.xaxis.set_major_locator(MultipleLocator(0.2))
+    ax.yaxis.set_major_locator(MultipleLocator(0.2))
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
 
     plotted_categories: set[str] = set()
     texts: list = []
@@ -595,7 +625,7 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
         "healthy_fraction": (0.08 * label_offset_scale, 0.03 * label_offset_scale),
         "cancer_fraction": (0.08 * label_offset_scale, -0.05 * label_offset_scale),
         "nuclear_area_mean": (0.03 * label_offset_scale, 0.06 * label_offset_scale),
-        "eccentricity": (-0.05 * label_offset_scale, -0.06 * label_offset_scale),
+        "eccentricity_mean": (-0.05 * label_offset_scale, -0.06 * label_offset_scale),
         "immune_fraction": (0.05 * label_offset_scale, -0.05 * label_offset_scale),
         "dead_fraction": (0.02 * label_offset_scale, 0.04 * label_offset_scale),
     }
@@ -609,20 +639,19 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
             xerr=tme_std, yerr=uni_std,
             fmt=marker, color=color, ecolor=color,
             markerfacecolor="white", markeredgecolor=color,
-            markeredgewidth=1.2, elinewidth=0.7,
-            capsize=2, markersize=5, label=legend_label, zorder=3,
+            markeredgewidth=1.2, elinewidth=0.8,
+            capsize=2.5, markersize=6.5, label=legend_label, zorder=3,
         )
         marker_artists.append(eb.lines[0])
         point_xs.append(tme_r2)
         point_ys.append(uni_r2)
-        _label = _display_attr(attr).lower().replace(" fraction", " frac")
-        _label = re.sub(r"\b(h|e)\b", lambda m: m.group().upper(), _label)
+        _label = _display_attr(attr)
         label_dx, label_dy = label_offsets.get(attr, (default_label_offset, default_label_offset))
         label_ha = "left" if label_dx >= 0 else "right"
         label_va = "bottom" if label_dy >= 0 else "top"
         txt = ax.text(
             tme_r2 + label_dx, uni_r2 + label_dy, _label,
-            fontsize=7.0, color="black",
+            fontsize=FONT_INAXES, color="black",
             fontfamily=font_name, ha=label_ha, va=label_va, zorder=4,
         )
         texts.append(txt)
@@ -634,42 +663,35 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
         y=point_ys,
         target_x=point_xs,
         target_y=point_ys,
-        objects=[uni_dom_text, tme_dom_text, *marker_artists],
+        objects=marker_artists,
         expand=(1.4, 1.6),
         force_text=(0.5, 0.6),
         force_static=(0.5, 0.6),
         iter_lim=800,
         arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5),
     )
-    _bundle_path = out_path / "features.npz"
-    _tme_label = "TME"
-    if _bundle_path.is_file():
-        _bundle = np.load(_bundle_path, allow_pickle=True)
-        if "tme_label" in _bundle:
-            _tme_label = str(_bundle["tme_label"])
-    ax.set_xlabel(f"Tile-level R² ({_tme_label} features)", fontsize=10, fontfamily=font_name)
-    ax.set_ylabel("Tile-level R² (UNI features)", fontsize=10, fontfamily=font_name)
-    ax.tick_params(labelsize=9)
+    ax.set_xlabel("TME features (tile-level R²)", fontsize=FONT_AXIS_LABEL, fontfamily=font_name)
+    ax.set_ylabel("UNI features (tile-level R²)", fontsize=FONT_AXIS_LABEL, fontfamily=font_name)
+    ax.tick_params(labelsize=FONT_TICK)
     for lbl in ax.get_xticklabels() + ax.get_yticklabels():
         lbl.set_fontfamily(font_name)
     handles = [
         Line2D([0], [0], marker=_CAT_STYLE[cat][1], color=_CAT_STYLE[cat][0],
                markerfacecolor="white", markeredgecolor=_CAT_STYLE[cat][0],
-               markeredgewidth=1.2, markersize=6, linestyle="none", label=cat)
+               markeredgewidth=1.2, markersize=8, linestyle="none", label=cat)
         for cat in ("appearance", "morphology", "cell composition")
         if cat in plotted_categories
     ]
     if handles:
-        ax.legend(handles=handles, fontsize=8.0,
+        ax.legend(handles=handles, fontsize=FONT_LEGEND,
                   loc="upper center", bbox_to_anchor=(0.5, -0.12),
                   ncol=len(handles),
-              prop={"family": font_name, "size": 8.0},
+              prop={"family": font_name, "size": FONT_LEGEND},
                   frameon=False,
                   handlelength=1.4, columnspacing=0.5, handletextpad=0.3)
-    fig.tight_layout()
 
     output_path = ensure_directory(Path(dest_dir)) / "probe_delta_r2.png"
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    fig.savefig(output_path, dpi=UPDATED_PANEL_DPI, facecolor="none", transparent=True)
     plt.close(fig)
     return output_path
 
@@ -738,7 +760,12 @@ def render_pngs_updated_sweep_grid(out_dir: str | Path, dest_dir: str | Path, at
     return output_path
 
 
-def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str | Path) -> Path:
+def render_pngs_updated_combined_sweep_grid(
+    out_dir: str | Path,
+    dest_dir: str | Path,
+    *,
+    target_width_in: float | None = None,
+) -> Path:
     """6 attribute sweep grids in one matplotlib figure (horizontal ribbon).
 
     - 4 rows × 3 cols per attribute block, all 6 blocks side by side.
@@ -746,6 +773,12 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
     - Attr display name centered over its grid, with a black horizontal line below
       the text and above the tile rows.
     - Tight wspace/hspace between tiles and between attribute blocks.
+
+    Args:
+        target_width_in: When set, the tile size is solved so the figure width
+            equals exactly this value (and ``bbox_inches="tight"`` is skipped) so
+            the panel can be stacked under A+B with NO rescaling — keeping fonts
+            the same size as in A and B. When None, uses the standalone tile size.
     """
     out_path = Path(out_dir)
     dest_path = ensure_directory(Path(dest_dir))
@@ -780,20 +813,30 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
             col_ratios.append(spacer_r)
     n_grid_cols = len(col_ratios)  # 6*3 + 5 = 23
 
-    # Figure sizing (aim for ~0.88" square tiles)
-    TILE_IN = 0.88
-    LEFT_M = 1.10   # room for y-labels (increased for larger font)
+    # Figure sizing. Margins sized for the shared FONT_AXIS_LABEL row/column text.
+    LEFT_M = 0.88   # room for y-labels ("Ref H&E", "α = +1")
     RIGHT_M = 0.04
-    TOP_M = 0.55    # room for subtitle text + line (increased for larger font)
+    TOP_M = 0.34    # room for subtitle text + line
     BOT_M = 0.04
+    REF_ROW_GAP_IN = 0.08
+
+    # Tiles per row across the whole ribbon, counting inter-block spacers.
+    _tile_units = n_attrs * n_tiles + (n_attrs - 1) * spacer_r
+    if target_width_in is not None:
+        # Solve tile size so total width == target (no post-hoc rescaling needed).
+        TILE_IN = max(0.1, (target_width_in - LEFT_M - RIGHT_M) / _tile_units)
+    else:
+        TILE_IN = 0.88  # standalone default
     SPACER_IN = TILE_IN * spacer_r
 
     fig_w = LEFT_M + n_attrs * (n_tiles * TILE_IN) + (n_attrs - 1) * SPACER_IN + RIGHT_M
-    fig_h = TOP_M + n_rows * TILE_IN + BOT_M
+    fig_h = TOP_M + n_rows * TILE_IN + REF_ROW_GAP_IN + BOT_M
 
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+    row_ratios = [1.0, REF_ROW_GAP_IN / TILE_IN, 1.0, 1.0, 1.0]
     gs = fig.add_gridspec(
-        n_rows, n_grid_cols,
+        len(row_ratios), n_grid_cols,
+        height_ratios=row_ratios,
         width_ratios=col_ratios,
         wspace=0.02,
         hspace=0.02,
@@ -804,6 +847,7 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
     )
 
     row_labels = ["Ref H&E"] + [lbl for _, lbl in SWEEP_ALPHA_ROWS]
+    row_to_gs_row = {0: 0, 1: 2, 2: 3, 3: 4}
 
     # Store top-left / top-right axes per attr block for label/line placement
     block_axes: dict[int, dict[str, plt.Axes]] = {}
@@ -818,7 +862,7 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
         block_axes[attr_idx] = {}
         for row in range(n_rows):
             for col in range(n_tiles):
-                ax = fig.add_subplot(gs[row, gs_col0 + col])
+                ax = fig.add_subplot(gs[row_to_gs_row[row], gs_col0 + col])
                 if row == 0 and col == 0:
                     block_axes[attr_idx]["top_left"] = ax
                 if row == 0 and col == n_tiles - 1:
@@ -839,8 +883,8 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
                 # Y-labels only on leftmost column of first attr
                 if attr_idx == 0 and col == 0:
                     ax.set_ylabel(
-                        row_labels[row], fontsize=20, rotation=0,
-                        ha="right", va="center", labelpad=4,
+                        row_labels[row], fontsize=FONT_AXIS_LABEL, rotation=0,
+                        ha="right", va="center", labelpad=4, fontfamily="Nimbus Sans",
                     )
 
     # Add subtitle text and black line above each attr block
@@ -869,11 +913,15 @@ def render_pngs_updated_combined_sweep_grid(out_dir: str | Path, dest_dir: str |
             x_center, text_y,
             SWEEP_ATTR_DISPLAY_NAMES.get(attr, attr),
             ha="center", va="bottom",
-            fontsize=20, fontweight="normal",
+            fontsize=FONT_AXIS_LABEL, fontweight="normal", fontfamily="Nimbus Sans",
         )
 
     output_path = dest_path / "sweep_grid_combined.png"
-    fig.savefig(output_path, dpi=180, bbox_inches="tight", facecolor="white")
+    if target_width_in is not None:
+        # Exact-width render (no tight bbox) so the panel stacks under A+B without rescaling.
+        fig.savefig(output_path, dpi=COMBINED_DPI, facecolor="white")
+    else:
+        fig.savefig(output_path, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
 
@@ -885,77 +933,93 @@ def render_pngs_updated_combined_abc(
     concat_dir: str | Path | None = None,
 ) -> Path:
     """Combined figure: [A: probe_delta | B: specificity_heatmap] on top,
-    [C: sweep_combined] below. Width(A) + Width(B) = Width(C).
+    [C: sweep_combined] below. Width(A) + gap + Width(B) = Width(C).
 
-    A is padded with white below to match B's height. C is scaled to match A+B total width.
+    All three panels are rendered at COMBINED_DPI with the same font point sizes
+    and composited WITHOUT rescaling (C is rendered to the exact target width
+    rather than scaled afterwards), so text is the same physical size in A, B
+    and C. A and B are equal-height squares; B's heatmap is deliberately smaller.
 
     Args:
         concat_dir: Directory containing sweep_grid_combined.png and where
-                    combined_a_b_c.png is written. Defaults to ``dest_dir``.
+                    the combined overview is written. Defaults to ``dest_dir``.
     """
     out_path = Path(out_dir)
     dest_path = ensure_directory(Path(dest_dir))
     concat_path = ensure_directory(Path(concat_dir)) if concat_dir is not None else dest_path
 
-    # Ensure C exists
-    sweep_combined_path = concat_path / "sweep_grid_combined.png"
-    if not sweep_combined_path.is_file():
-        render_pngs_updated_combined_sweep_grid(out_path, concat_path)
+    def _pad_to_size(img: np.ndarray, height: int, width: int) -> np.ndarray:
+        pad_h = height - img.shape[0]
+        pad_w = width - img.shape[1]
+        if pad_h < 0 or pad_w < 0:
+            raise ValueError("cannot pad image to a smaller size")
+        return np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), constant_values=0)
 
-    img_A = np.array(Image.open(dest_path / "probe_delta_r2.png").convert("RGB"))
-    img_B = np.array(Image.open(dest_path / "specificity_heatmap.png").convert("RGB"))
-    img_C = np.array(Image.open(sweep_combined_path).convert("RGB"))
-
+    img_A = np.array(Image.open(dest_path / "probe_delta_r2.png").convert("RGBA"))
+    img_B = np.array(Image.open(dest_path / "specificity_heatmap.png").convert("RGBA"))
     H_A, W_A = img_A.shape[:2]
     H_B, W_B = img_B.shape[:2]
-    H_C, W_C = img_C.shape[:2]
 
-    # Scale A up slightly and B down so both reach the geometric-mean height,
-    # preserving each image's aspect ratio.
-    H_target = round(float(np.sqrt(H_A * H_B)))
-    W_A_new = round(W_A * H_target / H_A)
-    W_B_new = round(W_B * H_target / H_B)
+    # A and B share a height; keep their NATIVE widths (do not stretch A to B's
+    # width) so the plotting squares stay the same size and stay left-anchored.
+    panel_h = max(H_A, H_B)
+    H_target = panel_h
+    img_A_r = _pad_to_size(img_A, panel_h, W_A)
+    img_B_r = _pad_to_size(img_B, panel_h, W_B)
 
-    img_A_r = np.array(Image.fromarray(img_A).resize((W_A_new, H_target), Image.LANCZOS))
-    img_B_r = np.array(Image.fromarray(img_B).resize((W_B_new, H_target), Image.LANCZOS))
-
-    img_AB = np.concatenate([img_A_r, img_B_r], axis=1)  # (H_target, W_A_new+W_B_new, 3)
+    # Transparent gap between A and B so A's right-edge labels do not collide
+    # with B's left-margin y-axis labels.
+    gap_w = max(8, round(COMBINED_GAP_IN * COMBINED_DPI))
+    spacer = np.zeros((panel_h, gap_w, img_A_r.shape[2]), dtype=img_A_r.dtype)
+    img_AB = np.concatenate([img_A_r, spacer, img_B_r], axis=1)
     W_AB = img_AB.shape[1]
 
-    # Scale C so its width matches W_AB
-    H_C_scaled = max(1, round(H_C * W_AB / W_C))
-    img_C_scaled = np.array(
-        Image.fromarray(img_C).resize((W_AB, H_C_scaled), Image.LANCZOS)
+    # Render C at exactly W_AB so it stacks under A+B with NO rescaling: a given
+    # point size is then the same number of pixels in A, B and C.
+    sweep_combined_path = render_pngs_updated_combined_sweep_grid(
+        out_path, concat_path, target_width_in=W_AB / COMBINED_DPI
     )
+    img_C = np.array(Image.open(sweep_combined_path).convert("RGBA"))
+    H_C, W_C = img_C.shape[:2]
 
-    # No separator — stack directly
-    combined = np.concatenate([img_AB, img_C_scaled], axis=0)
+    # Reconcile any ±1-2px rounding so widths match exactly (pad the narrower).
+    W_final = max(W_AB, W_C)
+    img_AB = _pad_to_size(img_AB, panel_h, W_final)
+    img_C = _pad_to_size(img_C, H_C, W_final)
 
-    # Draw panel labels A, B, C using matplotlib (data coords)
-    _DPI = 180
+    combined = np.concatenate([img_AB, img_C], axis=0)
+
+    # Draw panel labels A, B, C at the shared dpi so FONT_PANEL_LETTER is the
+    # same point size (in pixels) as the panel text. Letters use fixed margins so
+    # A/B are horizontally aligned (same y) and A/C are vertically aligned (same x).
+    _DPI = COMBINED_DPI
     fig, ax = plt.subplots(
         figsize=(combined.shape[1] / _DPI, combined.shape[0] / _DPI),
         facecolor="white",
     )
-    ax.imshow(combined, interpolation="bilinear")
+    ax.set_facecolor("white")
+    ax.imshow(combined, interpolation="nearest")
     ax.axis("off")
     fig.subplots_adjust(0, 0, 1, 1, 0, 0)
 
-    label_pad = max(6, int(0.015 * combined.shape[1]))
-    top_pad = max(6, int(0.015 * combined.shape[0]))
+    letter_margin = round(0.04 * COMBINED_DPI)  # ~0.04 in from panel top-left
+    a_label_x = letter_margin
+    a_label_y = letter_margin
+    b_label_x = W_A + gap_w + letter_margin
+    b_label_y = letter_margin                     # same y as A → horizontally aligned
+    c_label_x = letter_margin                     # same x as A → vertically aligned
+    c_label_y = H_target + letter_margin
 
-    # A: top-left of A panel
-    ax.text(label_pad, top_pad, "A", fontsize=20, fontweight="bold",
-            color="black", ha="left", va="top")
-    # B: top-left of B panel
-    ax.text(W_A_new + label_pad, top_pad, "B", fontsize=20, fontweight="bold",
-            color="black", ha="left", va="top")
-    # C: top-left of C panel (starts after H_target rows)
-    ax.text(label_pad, H_target + top_pad, "C", fontsize=20, fontweight="bold",
-            color="black", ha="left", va="top")
+    for lx, ly, letter in (
+        (a_label_x, a_label_y, "A"),
+        (b_label_x, b_label_y, "B"),
+        (c_label_x, c_label_y, "C"),
+    ):
+        ax.text(lx, ly, letter, fontsize=FONT_PANEL_LETTER, fontweight="bold",
+                fontfamily="Nimbus Sans", color="black", ha="left", va="top")
 
-    output_path = concat_path / "combined_a_b_c.png"
-    fig.savefig(output_path, dpi=_DPI, bbox_inches="tight", facecolor="white")
+    output_path = concat_path / COMBINED_ABC_CLEAR_NAME
+    fig.savefig(output_path, dpi=_DPI, facecolor="white")
     plt.close(fig)
     return output_path
 
@@ -976,38 +1040,64 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
 
     vlim = 1.0
 
-    fig, ax = plt.subplots(figsize=(max(6.0, 0.9 * len(edited)), max(6.0, 0.9 * len(edited))))
+    # Absolute-inch geometry: heatmap square == panel A's scatter square
+    # (PANEL_SQUARE_IN) and the panel height matches A exactly.
+    font_name = "Nimbus Sans"
+    fig_w = (PANEL_B_LEFT_IN + PANEL_SQUARE_IN + PANEL_B_CBAR_GAP_IN
+             + PANEL_B_CBAR_W_IN + PANEL_B_CBAR_LABEL_IN)
+    fig_h = PANEL_TOP_IN + PANEL_SQUARE_IN + PANEL_BOT_IN
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="none")
+    ax = fig.add_axes([
+        PANEL_B_LEFT_IN / fig_w,
+        PANEL_BOT_IN / fig_h,
+        PANEL_SQUARE_IN / fig_w,
+        PANEL_SQUARE_IN / fig_h,
+    ])
+    ax.set_facecolor("none")
     im = ax.imshow(grid, cmap="RdBu_r", vmin=-vlim, vmax=vlim, aspect="equal")
     ax.set_xticks(range(len(edited)))
-    ax.set_xticklabels([_display_attr(e) for e in edited], rotation=35, ha="right", fontsize=12)
+    ax.set_xticklabels([_display_attr(e) for e in edited], rotation=35, ha="right", fontsize=FONT_TICK)
     ax.set_yticks(range(len(edited)))
-    ax.set_yticklabels([_display_attr(e) for e in edited], fontsize=12)
+    ax.set_yticklabels([_display_attr(e) for e in edited], fontsize=FONT_TICK)
+    for tick_label in ax.get_xticklabels() + ax.get_yticklabels():
+        tick_label.set_clip_on(False)
+        tick_label.set_fontfamily(font_name)
     ax.set_xticks(np.arange(-0.5, len(edited), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(edited), 1), minor=True)
     ax.grid(which="minor", color="white", linewidth=0.8)
     ax.tick_params(which="minor", bottom=False, left=False)
-    ax.set_xlabel("Edited UNI probe direction", fontsize=13)
-    ax.set_ylabel("Measured tile-level metric", fontsize=13)
+    # Invert the y-axis so the on-target diagonal runs bottom-left → top-right:
+    # the bottom-left cell is "edit Eccentricity" (x) vs "change in Eccentricity" (y).
+    ax.invert_yaxis()
+    ax.set_xlabel("Edited UNI probe direction", fontsize=FONT_AXIS_LABEL, fontfamily=font_name)
+    ax.set_ylabel("Measured tile-level metric", fontsize=FONT_AXIS_LABEL, fontfamily=font_name)
 
     _draw_specificity_diagonal_and_annotations(
         ax,
         edited=edited,
         metrics=[ATTR_TO_PRIMARY_METRIC[attr] for attr in edited],
         annot=annot,
-        fontsize=11,
+        fontsize=FONT_HEATMAP_ANNOT,
         grid=grid,
         vlim=vlim,
     )
 
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="5%", pad=0.12)
+    cax = fig.add_axes(
+        [
+            (PANEL_B_LEFT_IN + PANEL_SQUARE_IN + PANEL_B_CBAR_GAP_IN) / fig_w,
+            PANEL_BOT_IN / fig_h,
+            PANEL_B_CBAR_W_IN / fig_w,
+            PANEL_SQUARE_IN / fig_h,
+        ]
+    )
+    cax.set_facecolor("none")
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
-    cbar.ax.tick_params(labelsize=11)
-    fig.tight_layout()
+    cbar.ax.tick_params(labelsize=FONT_TICK)
+    cbar.set_label("Pearson R", fontsize=FONT_AXIS_LABEL, fontfamily=font_name)
 
     output_path = ensure_directory(Path(dest_dir)) / "specificity_heatmap.png"
-    fig.savefig(output_path, dpi=240, bbox_inches="tight")
+    fig.savefig(output_path, dpi=COMBINED_DPI, facecolor="none", transparent=True)
     plt.close(fig)
     return output_path
 
@@ -1022,7 +1112,7 @@ def render_pngs_updated(
 
     Args:
         dest_dir:   Individual panel outputs (probe_delta, specificity, per-attr grids).
-        concat_dir: Combined outputs (sweep_grid_combined, combined_a_b_c).
+        concat_dir: Combined outputs (sweep_grid_combined, uni_probe_overview).
                     Defaults to ``dest_dir`` when not specified.
     """
     out_path = Path(out_dir)
@@ -1035,7 +1125,7 @@ def render_pngs_updated(
     for attr in _ordered_sweep_attrs(out_path / "sweep"):
         outputs[f"sweep_grid_{attr}"] = render_pngs_updated_sweep_grid(out_path, destination, attr)
     outputs["sweep_grid_combined"] = render_pngs_updated_combined_sweep_grid(out_path, concat_dest)
-    outputs["combined_a_b_c"] = render_pngs_updated_combined_abc(out_path, destination, concat_dir=concat_dest)
+    outputs["uni_probe_overview"] = render_pngs_updated_combined_abc(out_path, destination, concat_dir=concat_dest)
     return outputs
 
 
