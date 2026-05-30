@@ -72,12 +72,14 @@ ATTR_DISPLAY_NAMES: dict[str, str] = {
     "texture_e_correlation": "E correlation",
     "texture_h_dissimilarity": "H dissimilarity",
     "texture_e_dissimilarity": "E dissimilarity",
-    "prolif_fraction": "Prolif fraction",
-    "nonprolif_fraction": "Nonprolif fraction",
-    "healthy_fraction": "Healthy fraction",
-    "cancer_fraction": "Cancer fraction",
-    "immune_fraction": "Immune fraction",
-    "dead_fraction": "Dead fraction",
+    # Cell-composition fractions: use the same short channel names as 07d/09b
+    # (source of truth: tools/color_constants.py) for cross-figure consistency.
+    "prolif_fraction": "Prolif.",
+    "nonprolif_fraction": "Non-prolif.",
+    "healthy_fraction": "Healthy",
+    "cancer_fraction": "Cancer",
+    "immune_fraction": "Immune",
+    "dead_fraction": "Dead",
     "intensity_mean_h": "H intensity",
     "intensity_mean_e": "E intensity",
     "h_mean": "H mean",
@@ -620,16 +622,27 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
         "e_mean": (-0.05 * label_offset_scale, 0.10 * label_offset_scale),
         "h_mean": (0.05 * label_offset_scale, 0.10 * label_offset_scale),
         "nuclei_density": (0.10 * label_offset_scale, -0.04 * label_offset_scale),
-        "prolif_fraction": (0.08 * label_offset_scale, 0.02 * label_offset_scale),
-        "nonprolif_fraction": (0.08 * label_offset_scale, -0.05 * label_offset_scale),
+        # Prolif/Non-prolif points are nearly coincident; seed them just below the
+        # cluster in opposite x directions so adjust_text separates them without
+        # long leaders (labels are short now: "Prolif." / "Non-prolif.").
+        "prolif_fraction": (0.05 * label_offset_scale, 0.005 * label_offset_scale),
+        "nonprolif_fraction": (0.045 * label_offset_scale, -0.055 * label_offset_scale),
         "healthy_fraction": (0.08 * label_offset_scale, 0.03 * label_offset_scale),
         "cancer_fraction": (0.08 * label_offset_scale, -0.05 * label_offset_scale),
-        "nuclear_area_mean": (0.03 * label_offset_scale, 0.06 * label_offset_scale),
+        "nuclear_area_mean": (0.01 * label_offset_scale, -0.08 * label_offset_scale),
         "eccentricity_mean": (-0.05 * label_offset_scale, -0.06 * label_offset_scale),
         "immune_fraction": (0.05 * label_offset_scale, -0.05 * label_offset_scale),
         "dead_fraction": (0.02 * label_offset_scale, 0.04 * label_offset_scale),
     }
+    # "Nuclei density" is too long to fit right of its marker without overflowing
+    # the border, and adjust_text otherwise drops it onto the Prolif/Non-prolif
+    # markers. Place it manually in the gap below the prolif row with a short
+    # leader, and keep it out of adjust_text. Absolute (x, y, ha) in data coords.
+    fixed_labels = {
+        "nuclei_density": (0.70, 0.76, "right"),
+    }
     marker_artists: list = []
+    fixed_label_artists: list = []
     for cat, attr, tme_r2, uni_r2, tme_std, uni_std in points:
         color, marker = _CAT_STYLE[cat]
         legend_label = cat if cat not in plotted_categories else None
@@ -643,9 +656,20 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
             capsize=2.5, markersize=6.5, label=legend_label, zorder=3,
         )
         marker_artists.append(eb.lines[0])
+        _label = _display_attr(attr)
+        if attr in fixed_labels:
+            fx, fy, fha = fixed_labels[attr]
+            ann = ax.annotate(_label, xy=(tme_r2, uni_r2), xytext=(fx, fy),
+                              textcoords="data", ha=fha, va="center",
+                              fontsize=FONT_INAXES, color="black", fontfamily=font_name,
+                              zorder=4, arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5))
+            # adjust_text must steer the other labels clear of this fixed one.
+            fixed_label_artists.append(ann)
+            continue
+        # adjust_text targets must line up with `texts`, so only record the
+        # anchor for labels that adjust_text actually manages.
         point_xs.append(tme_r2)
         point_ys.append(uni_r2)
-        _label = _display_attr(attr)
         label_dx, label_dy = label_offsets.get(attr, (default_label_offset, default_label_offset))
         label_ha = "left" if label_dx >= 0 else "right"
         label_va = "bottom" if label_dy >= 0 else "top"
@@ -663,7 +687,7 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
         y=point_ys,
         target_x=point_xs,
         target_y=point_ys,
-        objects=marker_artists,
+        objects=marker_artists + fixed_label_artists,
         expand=(1.4, 1.6),
         force_text=(0.5, 0.6),
         force_static=(0.5, 0.6),

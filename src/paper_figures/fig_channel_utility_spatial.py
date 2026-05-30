@@ -64,7 +64,7 @@ MARGIN_LEFT_IN = 0.56      # y-axis label + tick labels (panel A)
 MARGIN_GAP_IN = 0.66       # between panel A and panel B (room for B's y-label)
 MARGIN_RIGHT_IN = 0.08
 MARGIN_TOP_IN = 0.22       # panel letters
-MARGIN_XLABEL_IN = 0.44    # x tick labels + "Patch-level R²"
+MARGIN_XLABEL_IN = 0.44    # x tick labels + "Within-tile R²"
 MARGIN_LEGEND_IN = 0.32    # legend row
 # One decimal everywhere (x and y, both panels). ΔPQ is small, so 1-dp y-ticks
 # are necessarily coarse (0.0, 0.1); the 0.05 threshold is shown by the dotted line.
@@ -194,8 +194,16 @@ def _draw_break_marks(fig: plt.Figure, ax_left: plt.Axes, ax_right: plt.Axes) ->
 
 def _plot_point(ax: plt.Axes, *, x: float, y: float, r2_sd: float, y_sem: float,
                 color: str, marker: str) -> None:
+    # Clamp the horizontal (R²) whisker to the visible pane so a huge std (e.g.
+    # Dead: ±9.8, far wider than the axis) is capped at the border instead of
+    # running off the figure. The cap is drawn at the clamped end, signalling the
+    # whisker continues beyond the axis.
+    x_lo, x_hi = ax.get_xlim()
+    margin = 0.04 * (x_hi - x_lo)
+    left_err = x - max(x - r2_sd, x_lo + margin)
+    right_err = min(x + r2_sd, x_hi - margin) - x
     container = ax.errorbar(
-        x, y, xerr=r2_sd, yerr=y_sem,
+        x, y, xerr=[[left_err], [right_err]], yerr=y_sem,
         fmt=marker, markersize=5,
         color=color, ecolor=color, elinewidth=0.7, capsize=2.0,
         markerfacecolor="white", markeredgecolor=color, markeredgewidth=1.2,
@@ -203,7 +211,8 @@ def _plot_point(ax: plt.Axes, *, x: float, y: float, r2_sd: float, y_sem: float,
     )
     # Don't let the axes clip a marker whose vertex pokes a hair past the pane
     # edge (e.g. Glucose sits at R²≈-2.02, right against the left pane's -1.5 edge,
-    # so its right diamond corner was being clipped).
+    # so its right diamond corner was being clipped). The whisker is already
+    # clamped above, so nothing escapes the figure.
     for artist in container.get_children():
         artist.set_clip_on(False)
 
@@ -434,7 +443,7 @@ def build_channel_utility_spatial_figure(
     for x0_in, letter in ((a_x0_in, "A"), (b_x0_in, "B")):
         fig.text((x0_in - 0.48) / fig_w, letter_y, letter, ha="left", va="bottom",
                  fontsize=TITLE_SIZE, fontweight="bold", fontfamily=FONT_NAME)
-        fig.text((x0_in + PANEL_SQ_IN / 2.0) / fig_w, xlabel_y, "Patch-level R²",
+        fig.text((x0_in + PANEL_SQ_IN / 2.0) / fig_w, xlabel_y, "Within-tile R²",
                  ha="center", va="center", fontsize=AXIS_LABEL_SIZE, fontfamily=FONT_NAME)
 
     handles = [

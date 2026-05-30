@@ -70,11 +70,11 @@ PRETTY_SUB = {
     "cell_type_healthy": "Healthy",
     "cell_type_cancer": "Cancer",
     "cell_type_immune": "Immune",
-    "cell_state_prolif": "Prolif",
-    "cell_state_nonprolif": "NonProlif",
+    "cell_state_prolif": "Prolif.",
+    "cell_state_nonprolif": "Non-prolif.",
     "cell_state_dead": "Dead",
     "vasculature": "Vasculature",
-    "oxygen": "Oxygen",
+    "oxygen": "O₂",
     "glucose": "Glucose",
 }
 
