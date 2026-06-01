@@ -35,12 +35,14 @@ DEFAULT_LOO_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subch
 DEFAULT_LAYOUT_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subchannel_layout_summary.csv"
 DEFAULT_OUT_PNG = ROOT / "figures" / "pngs_updated" / "concat" / "09b_channel_color_layout_impact.png"
 
-TITLE_SIZE = 10.5
-AXIS_LABEL_SIZE = 9.5
-TICK_SIZE = 8.5
-POINT_LABEL_SIZE = 7.0
-QUADRANT_LABEL_SIZE = 7.5
-LEGEND_SIZE = 7.5
+# Fonts match the shared 12-13 pt scale (rendered at the ~7.9 in single-column
+# width so they downscale to the print column like the other figures).
+TITLE_SIZE = 13.0
+AXIS_LABEL_SIZE = 12.0
+TICK_SIZE = 11.0
+POINT_LABEL_SIZE = 9.0
+QUADRANT_LABEL_SIZE = 9.5
+LEGEND_SIZE = 11.0
 # Vertical half-spacing of the circled-number cluster, as a fraction of the
 # panel's y-range (keeps circles from overlapping at any y-scale).
 QUADRANT_CLUSTER_DY_FRAC = 0.055
@@ -57,15 +59,15 @@ LAYOUT_Y_MIN = -0.02
 # --- Compact, square panel geometry (absolute inches) ---------------------
 # Each panel's data box (compressed left pane + main right pane) is a
 # PANEL_SQ_IN square; both panels share the same height. Margins are tight.
-PANEL_SQ_IN = 2.05
+PANEL_SQ_IN = 3.0          # → fig ~7.9 in (single-column slot; 2× single = full width)
 PANE_LEFT_RATIO = 1.0      # width share of the compressed (R² < -1) pane
 PANE_RIGHT_RATIO = 3.6     # width share of the main pane
-MARGIN_LEFT_IN = 0.56      # y-axis label + tick labels (panel A)
-MARGIN_GAP_IN = 0.66       # between panel A and panel B (room for B's y-label)
-MARGIN_RIGHT_IN = 0.08
-MARGIN_TOP_IN = 0.22       # panel letters
-MARGIN_XLABEL_IN = 0.44    # x tick labels + "Within-tile R²"
-MARGIN_LEGEND_IN = 0.32    # legend row
+MARGIN_LEFT_IN = 0.82      # y-axis label + tick labels (panel A)
+MARGIN_GAP_IN = 0.96       # between panel A and panel B (room for B's y-label)
+MARGIN_RIGHT_IN = 0.12
+MARGIN_TOP_IN = 0.32       # panel letters
+MARGIN_XLABEL_IN = 0.64    # x tick labels + "Within-tile R²"
+MARGIN_LEGEND_IN = 0.47    # legend row
 # One decimal everywhere (x and y, both panels). ΔPQ is small, so 1-dp y-ticks
 # are necessarily coarse (0.0, 0.1); the 0.05 threshold is shown by the dotted line.
 LAYOUT_Y_TICKS = [0.0, 0.1]

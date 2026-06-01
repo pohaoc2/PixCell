@@ -32,7 +32,12 @@ def build_combined_ablation_grids_figure(path_a: Path, path_b: Path) -> plt.Figu
     img_a = _load_rgb(path_a)
     img_b = _load_rgb(path_b)
 
-    target_h = min(img_a.shape[0], img_b.shape[0])
+    # Target the common full-width figure size (~15.8 in) so this SI figure
+    # downscales to the print column by the same factor as the other figures,
+    # keeping panel-label/title text physically consistent across figures.
+    target_w_px = round(15.8 * _SAVE_DPI)
+    aspect_sum = img_a.shape[1] / img_a.shape[0] + img_b.shape[1] / img_b.shape[0]
+    target_h = round(target_w_px / aspect_sum)
     img_a = _add_label_strip(_scale_to_height(img_a, target_h))
     img_b = _add_label_strip(_scale_to_height(img_b, target_h))
 
@@ -51,19 +56,20 @@ def build_combined_ablation_grids_figure(path_a: Path, path_b: Path) -> plt.Figu
             0.994,
             label,
             transform=ax.transAxes,
-            # Overlay is drawn on 220 DPI raster panels, so this remains in raster-pixel scale.
-            fontsize=28,
+            # Overlay is drawn on 220 DPI raster panels. Point size matches the
+            # FONT_PANEL_LETTER=18 standard used across the paper figures.
+            fontsize=18,
             fontweight="bold",
             va="top",
             ha="left",
             color="black",
         )
         ax.text(
-            0.062,
-            0.989,
+            0.047,
+            0.991,
             _PANEL_TITLES[label],
             transform=ax.transAxes,
-            fontsize=18,
+            fontsize=13,
             fontweight="bold",
             va="top",
             ha="left",

@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 import numpy as np
 from adjustText import adjust_text
@@ -97,7 +98,7 @@ UPDATED_PANEL_DPI = 240
 # composited WITHOUT post-hoc rescaling, so a given point size occupies the same
 # number of pixels in panels A, B and C alike. See vis_guidance.md.
 COMBINED_DPI = UPDATED_PANEL_DPI            # one dpi for A, B and C
-COMBINED_GAP_IN = 0.34                       # horizontal gap between A and B (inches)
+COMBINED_GAP_IN = 0.52                       # horizontal gap between A and B (inches)
 FONT_AXIS_LABEL = 13                         # x/y axis titles, colorbar label
 FONT_TICK = 11                               # tick labels (both axes), colorbar ticks
 FONT_INAXES = 11                             # scatter point labels
@@ -109,9 +110,12 @@ FONT_PANEL_LETTER = 18                        # bold A / B / C panel letters
 # square are exactly the SAME size (PANEL_SQUARE_IN) and the two panels share the
 # same height (PANEL_TOP_IN + PANEL_SQUARE_IN + PANEL_BOT_IN). Margins are kept
 # tight so the A/B row sits close to panel C below it.
-PANEL_SQUARE_IN = 4.0     # shared plotting square: scatter axis == heatmap square
+PANEL_SQUARE_IN = 4.8     # shared plotting square: scatter axis == heatmap square
+# (kept compact while still larger than a single-column panel; the text-sized
+# margins below stay fixed so the 12-13 pt fonts downscale to print like the
+# other figures. Larger values waste space — see the A/B gap and panel C below.)
 PANEL_TOP_IN = 0.16       # space above the square (for the panel letter)
-PANEL_BOT_IN = 1.18       # space below: A = xlabel + legend; B = rotated xticks + xlabel
+PANEL_BOT_IN = 1.02       # space below: A = xlabel + legend; B = rotated xticks + xlabel
 # Panel A (scatter) horizontal margins
 PANEL_A_LEFT_IN = 0.92    # y-axis label + tick labels
 PANEL_A_RIGHT_IN = 0.16
@@ -840,7 +844,7 @@ def render_pngs_updated_combined_sweep_grid(
     # Figure sizing. Margins sized for the shared FONT_AXIS_LABEL row/column text.
     LEFT_M = 0.88   # room for y-labels ("Ref H&E", "α = +1")
     RIGHT_M = 0.04
-    TOP_M = 0.34    # room for subtitle text + line
+    TOP_M = 0.24    # room for subtitle text + line (kept tight so C sits close to A/B)
     BOT_M = 0.04
     REF_ROW_GAP_IN = 0.08
 
@@ -901,6 +905,10 @@ def render_pngs_updated_combined_sweep_grid(
 
                 ax.set_xticks([])
                 ax.set_yticks([])
+                # Tiles are packed tightly; per-tile spines would double up at
+                # shared edges. The Ref H&E row is instead marked with one clean
+                # dashed rectangle per block (drawn below), so the gray dashed
+                # border has uniform weight on all four sides.
                 for sp in ax.spines.values():
                     sp.set_visible(False)
 
@@ -922,6 +930,21 @@ def render_pngs_updated_combined_sweep_grid(
         x_right = pos_tr.x1
         x_center = (x_left + x_right) / 2
         y_tile_top = pos_tl.y1
+
+        # Ref H&E row (row 0) marker: one dashed gray rectangle around the block's
+        # 3 reference tiles. Single perimeter → uniform dash weight on all sides.
+        fig.add_artist(
+            Rectangle(
+                (x_left, pos_tl.y0),
+                x_right - x_left,
+                y_tile_top - pos_tl.y0,
+                transform=fig.transFigure,
+                fill=False,
+                edgecolor="#808080",
+                linewidth=0.7,
+                linestyle=(0, (4.5, 2.2)),
+            )
+        )
 
         line_y = y_tile_top + 0.012
         text_y = line_y + 0.008
@@ -965,8 +988,9 @@ def render_pngs_updated_combined_abc(
     and C. A and B are equal-height squares; B's heatmap is deliberately smaller.
 
     Args:
-        concat_dir: Directory containing sweep_grid_combined.png and where
-                    the combined overview is written. Defaults to ``dest_dir``.
+        concat_dir: Directory where the assembled overview is written.
+                    Defaults to ``dest_dir``. The panel-C sweep grid is always
+                    written to ``dest_dir`` (it is an individual panel).
     """
     out_path = Path(out_dir)
     dest_path = ensure_directory(Path(dest_dir))
@@ -999,9 +1023,11 @@ def render_pngs_updated_combined_abc(
     W_AB = img_AB.shape[1]
 
     # Render C at exactly W_AB so it stacks under A+B with NO rescaling: a given
-    # point size is then the same number of pixels in A, B and C.
+    # point size is then the same number of pixels in A, B and C. The panel-C
+    # PNG (sweep_grid_combined) is an individual panel, so it is written to
+    # dest_path; only the assembled overview goes to concat_path.
     sweep_combined_path = render_pngs_updated_combined_sweep_grid(
-        out_path, concat_path, target_width_in=W_AB / COMBINED_DPI
+        out_path, dest_path, target_width_in=W_AB / COMBINED_DPI
     )
     img_C = np.array(Image.open(sweep_combined_path).convert("RGBA"))
     H_C, W_C = img_C.shape[:2]
@@ -1148,7 +1174,9 @@ def render_pngs_updated(
     }
     for attr in _ordered_sweep_attrs(out_path / "sweep"):
         outputs[f"sweep_grid_{attr}"] = render_pngs_updated_sweep_grid(out_path, destination, attr)
-    outputs["sweep_grid_combined"] = render_pngs_updated_combined_sweep_grid(out_path, concat_dest)
+    # sweep_grid_combined is an individual panel (it is also panel C of the
+    # overview), so it lives under individual/ even when the overview goes to concat/.
+    outputs["sweep_grid_combined"] = render_pngs_updated_combined_sweep_grid(out_path, destination)
     outputs["uni_probe_overview"] = render_pngs_updated_combined_abc(out_path, destination, concat_dir=concat_dest)
     return outputs
 

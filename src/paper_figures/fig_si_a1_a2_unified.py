@@ -202,31 +202,58 @@ def _aggregate_curves(runs: dict[str, list[dict]], metric: str) -> tuple[np.ndar
 def build_figure(*, cache_path: Path, tile_dir: Path) -> plt.Figure:
     apply_style()
     cache = _load_cache(cache_path)
-    fig = plt.figure(figsize=(13.9, 13.7), constrained_layout=False)
+    # Common figure width (~15.8 in) shared with the other paper figures so all
+    # render at the same width and downscale equally to the column at print.
+    # The metrics table is intentionally NOT drawn here; it is an isolated table
+    # rendered as the standalone section panel (SI_A1_A2_section2_metrics.png).
+    fig = plt.figure(figsize=(15.8, 11.6), constrained_layout=False)
 
-    upper = fig.add_gridspec(
-        2, 1,
-        height_ratios=[2.1, 0.92],
-        hspace=0.20,
-        left=0.045, right=0.990,
-        top=0.975, bottom=0.605,
+    curves = cache.get("training_curves", {})
+    all_variants = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
+
+    # The top row (A charts + B) and the tiles row (C) share the SAME left/right
+    # margins, so width(A+B) == width(C) by construction (vis_guidance.md).
+    ROW_LEFT, ROW_RIGHT = 0.050, 0.830
+
+    # Top row: A = training-loss + gradient-norm charts, B = ΔLPIPS sensitivity.
+    # The chart row (row 0) holds A's two charts AND B, all the SAME height; A's
+    # legend lives in a thin strip (row 1) beneath the A charts only, so B's
+    # height matches the A chart height (not chart+legend).
+    top = fig.add_gridspec(
+        2, 3,
+        width_ratios=[1.0, 1.0, 1.12],
+        height_ratios=[1.0, 0.16],
+        wspace=0.27, hspace=0.40,
+        left=ROW_LEFT, right=ROW_RIGHT,
+        top=0.965, bottom=0.700,
     )
-    middle = upper[1].subgridspec(1, 2, width_ratios=[4.15, 1.05], wspace=0.05)
+    ax_loss = fig.add_subplot(top[0, 0])
+    ax_grad = fig.add_subplot(top[0, 1])
+    ax_sens = fig.add_subplot(top[0, 2])
+    legend_ax = fig.add_subplot(top[1, 0:2])
+
+    _plot_loss_curves(ax_loss, curves, all_variants, "Training loss")
+    _plot_gradnorm_curves(ax_grad, curves, all_variants, "Gradient norm")
+    legend_ax.axis("off")
+    legend_ax.legend(
+        handles=_section1_legend_handles(all_variants),
+        loc="center", ncol=4, frameon=False,
+        prop=FontProperties(family=SECTION1_FONT_FAMILY, size=FONT_SIZE_TICK),
+        handlelength=2.0, columnspacing=0.8, handletextpad=0.4,
+    )
+    _draw_section4_sensitivity(ax_sens, cache)   # B
+
+    # C: qualitative tiles (square — see set_box_aspect in _draw_section3_tiles).
     lower = fig.add_gridspec(
         1, 1,
-        left=0.045, right=0.981,
-        top=0.550, bottom=0.015,
+        left=ROW_LEFT, right=ROW_RIGHT,
+        top=0.650, bottom=0.015,
     )
-
-    _draw_section1_curves(fig, upper[0], cache)
-    _draw_section2_table(fig.add_subplot(middle[0]), cache)
-    _draw_section4_sensitivity(fig.add_subplot(middle[1]), cache)
     _draw_section3_tiles(fig, lower[0], cache, tile_dir)
 
-    _add_panel_label(fig, upper[0], "A", x_offset=0.028, y_offset=-0.010)
-    _add_panel_label(fig, middle[0], "B", x_offset=0.028, y_offset=-0.020)
-    _add_panel_label(fig, middle[1], "C", x_offset=0.034, y_offset=-0.020)
-    _add_panel_label(fig, lower[0], "D", x_offset=0.028)
+    _add_panel_label(fig, top[0, 0], "A", x_offset=0.034, y_offset=-0.024)
+    _add_panel_label(fig, top[0, 2], "B", x_offset=0.030, y_offset=-0.024)
+    _add_panel_label(fig, lower[0], "C", x_offset=0.028)
     return fig
 
 
@@ -829,6 +856,9 @@ def _draw_section3_tiles(fig: plt.Figure, gs_slot, cache: dict, tile_dir: Path) 
     for row_idx, variant in enumerate(row_order):
         for col_idx, tile_id in enumerate(tile_ids):
             ax = fig.add_subplot(sub[row_idx, col_idx])
+            # Force a square axis box so the (square) tiles are never distorted,
+            # regardless of the grid cell's aspect ratio.
+            ax.set_box_aspect(1)
             tile = _load_tile(tile_dir, variant, tile_id)
             ax.imshow(tile, aspect="auto")
             _overlay_target_contours(ax, tile_id, (tile.shape[0], tile.shape[1]))

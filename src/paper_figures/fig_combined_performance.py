@@ -12,7 +12,7 @@ from tools.ablation_report.figures import (
 )
 
 _RENDER_DPI = 220
-_LABEL_STRIP_PX = 80
+_LABEL_STRIP_PX = 56
 COMPOSITE_WIDTH_IN = 15.8
 COMPOSITE_TABLE_FONT_SCALE = 1.08
 COMPOSITE_HEATMAP_FONT_SCALE = 1.28
@@ -69,8 +69,10 @@ def build_combined_performance_figure(summaries: list[DatasetSummary]) -> plt.Fi
             0.994,
             label,
             transform=ax.transAxes,
-            # Overlay is drawn on 220 DPI raster panels, so this remains in raster-pixel scale.
-            fontsize=40,
+            # Overlay is drawn on 220 DPI raster panels. Point size matches the
+            # FONT_PANEL_LETTER=18 standard used by uni_probe_overview so the
+            # bold A/B/C letters are the same physical size across paper figures.
+            fontsize=18,
             fontweight="bold",
             va="top",
             ha="left",

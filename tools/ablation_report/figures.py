@@ -198,7 +198,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary], width_inches: fl
     metrics = metric_tradeoff_keys(summaries)
     n_cols = 5
     n_rows = 1
-    fig = plt.figure(figsize=_figsize_with_width((20.0, 5.5), width_inches))
+    fig = plt.figure(figsize=_figsize_with_width((20.0, 4.7), width_inches))
     outer = fig.add_gridspec(n_rows, n_cols, wspace=0.22, hspace=0.28)
 
     from tools.stage3.ablation_vis_utils import condition_metric_key, ordered_subset_condition_tuples
@@ -468,7 +468,7 @@ def build_channel_effect_heatmaps_figure(
     font_scale: float = 1.0,
 ) -> plt.Figure:
     shared_metric_keys = _shared_heatmap_metric_keys(summaries)
-    base_figsize = (7.9 * len(summaries), 3.35 * max(1.0, font_scale * 0.92))
+    base_figsize = (7.9 * len(summaries), 3.0 * max(1.0, font_scale * 0.92))
     fig = plt.figure(figsize=_figsize_with_width(base_figsize, width_inches))
     grid = fig.add_gridspec(1, len(summaries) + 1, width_ratios=[1] * len(summaries) + [0.04], wspace=0.05)
     metric_scales = _heatmap_metric_scales(summaries)

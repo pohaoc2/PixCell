@@ -345,10 +345,12 @@ def build_figure(*, encoder_csvs: dict[str, Path | None], t2_spatial_csv: Path) 
     )
     markers = _load_raw_mx_spatial(Path(t2_spatial_csv))
 
-    fig = plt.figure(figsize=(10.8, 7.5), facecolor="white")
-    outer = fig.add_gridspec(2, 1, height_ratios=[0.74, 0.74], hspace=0.34)
+    # Side-by-side at the common figure width keeps the panel short (compact
+    # height) while sharing the standard 12 pt text with the other figures.
+    fig = plt.figure(figsize=(15.8, 4.6), facecolor="white")
+    outer = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.16)
     ax_a = fig.add_subplot(outer[0, 0])
-    ax_b = fig.add_subplot(outer[1, 0])
+    ax_b = fig.add_subplot(outer[0, 1])
 
     _draw_panel(
         ax_a,
@@ -386,7 +388,7 @@ def build_figure(*, encoder_csvs: dict[str, Path | None], t2_spatial_csv: Path) 
         ha="left",
     )
 
-    fig.subplots_adjust(left=0.11, right=0.99, bottom=0.15, top=0.96)
+    fig.subplots_adjust(left=0.055, right=0.995, bottom=0.22, top=0.93)
     return fig
 
 
