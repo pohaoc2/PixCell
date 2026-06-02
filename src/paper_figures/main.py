@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.paper_figures.fig_ablation_grid import build_representative_ablation_grid
 from src.paper_figures.fig_combined_ablation_grids import build_combined_ablation_grids_figure
+from src.paper_figures.fig_channel_ablation_strip import build_channel_ablation_strip
 from src.paper_figures.fig_combined_performance import build_combined_performance_figure
 from src.paper_figures.fig_inverse_decoding import build_inverse_decoding_figure
 from src.paper_figures.fig_t1_spatial_multi_encoder import build_figure as build_t1_spatial_multi_encoder_figure
@@ -146,6 +147,17 @@ def main() -> None:
         ABLATION / "06_unpaired_ablation_grid.png",
     )
     save_figure_png(fig_ablation_grids, CONCAT_DIR / "ablation_grids_combined.png")
+
+    # individual/: compact single-channel ablation strip (paired | unpaired, 2 tiles)
+    fig_channel_strip = build_channel_ablation_strip(
+        paired_root=PAIRED_METRICS_ROOT,
+        unpaired_root=UNPAIRED_METRICS_ROOT,
+        paired_orion=PAIRED_REFERENCE_ROOT,
+        unpaired_orion=UNPAIRED_REFERENCE_ROOT,
+        layout_root=PAIRED_REFERENCE_ROOT,
+        unpaired_mapping_json=ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
+    )
+    save_figure_png(fig_channel_strip, IND / "channel_ablation_paired_unpaired.png", dpi=300)
 
     # --- concat/: SI A2, A3 supplemental composites ---
     if A2_METRICS_SUMMARY.is_file():

@@ -12,6 +12,13 @@ exact point sizes) in code to satisfy them; keep that detail out of this file.
 - Panel-size relationships hold **by construction** (e.g. the width of a stacked panel equals the combined width of the panels above it), never by stretching a rendered panel.
 - All four axis spines visible and black; no half-open axes.
 
+### Image grids / tile showcases
+
+- For a grid of image tiles (e.g. an ablation strip), the gap between adjacent tiles must be **equal horizontally and vertically** (`wspace == hspace` *visually*). A reader should not be able to tell the row gap from the column gap.
+- Do **not** rely on GridSpec `wspace`/`hspace` numbers to achieve this: they are fractions of the *average cell width/height*, so equal numbers give unequal physical gaps, and the gaps drift whenever the figure width or height is tuned. Instead lay the grid out in **absolute inches** — fixed square cell size + a single gap constant used for both axes — and derive `figsize` from those, so equal gaps hold by construction at any size. (Reference: `src/paper_figures/fig_channel_ablation_strip.py`, the `CELL_IN` / `GAP_IN` layout.)
+- Tiles carry no solid frame unless a border encodes meaning (e.g. a dashed border marking a reference/ground-truth tile).
+- **Header labels / dot indicators above tiles: position them in absolute inches, not axis fractions.** A column label, channel-name, or dot row placed at a *fraction* of a fixed-height header axis barely moves when you change that fraction (the band is only a fraction of an inch tall) and its physical distance to the tiles below shifts whenever figure height changes. Cause: a fraction times a small/variable height is not a stable offset. Fix: draw header glyphs on one figure-wide overlay axis whose coordinates are inches (`set_xlim(0, fig_w)`, `set_ylim(0, fig_h)`), and place them at explicit inch offsets above the first tile row (e.g. dots `DOT_OFF_IN` above the row, names `NAME_OFF_IN` above the dots). "Move the label closer" then becomes a one-number inch edit that holds at any figure size. (Reference: `src/paper_figures/fig_channel_ablation_strip.py`, `_draw_header` + the `DOT_OFF_IN` / `NAME_OFF_IN` overlay.)
+
 ## Panel labels
 
 - Bold letters (A, B, C, …) on every panel.
