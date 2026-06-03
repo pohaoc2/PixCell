@@ -44,7 +44,7 @@ COMPOSITE_WIDTH_IN = 15.8
 COMPOSITE_HEATMAP_FONT_SCALE = 1.28
 
 _SCHEMATIC_ASPECT = 2084 / 1762          # native stage_2_svg.svg width/height
-_ROW1_GAP_PX = 70                        # white gutter between panels A and B
+_ROW1_GAP_PX = 50                        # white gutter between panels A and B
 _PANELB_TARGET_ASPECT = 1.15             # B = loss + ΔLPIPS + legend, ~square to match A
 _PANELB_VARIANTS = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
 _PANEL_LETTER_FS = 18                    # matches FONT_PANEL_LETTER across paper figs
@@ -148,7 +148,7 @@ def _build_panelB_raster(cache: dict, *, width_px: int, height_px: int) -> np.nd
     fig = plt.figure(figsize=(width_px / _RENDER_DPI, height_px / _RENDER_DPI))
     gs = fig.add_gridspec(
         3, 1, height_ratios=[1.0, 0.92, 0.20], hspace=0.55,
-        left=0.21, right=0.965, top=0.955, bottom=0.075,
+        left=0.15, right=0.965, top=0.955, bottom=0.075,
     )
     curves = cache.get("training_curves", {})
     _plot_loss_curves(fig.add_subplot(gs[0]), curves, _PANELB_VARIANTS, "Training loss")
