@@ -390,25 +390,39 @@ def build_channel_utility_spatial_figure(
     spatial_csv: Path = DEFAULT_SPATIAL_CSV,
     loo_csv: Path = DEFAULT_LOO_CSV,
     layout_csv: Path = DEFAULT_LAYOUT_CSV,
+    scale: float = 1.0,
+    panel_letters: bool = True,
 ) -> plt.Figure:
     # Absolute-inch geometry → square, compact panels (see PANEL_* constants).
-    bottom_margin_in = MARGIN_XLABEL_IN + MARGIN_LEGEND_IN
-    fig_w = MARGIN_LEFT_IN + PANEL_SQ_IN + MARGIN_GAP_IN + PANEL_SQ_IN + MARGIN_RIGHT_IN
-    fig_h = MARGIN_TOP_IN + PANEL_SQ_IN + bottom_margin_in
+    # ``scale`` enlarges the whole figure natively (geometry only — fonts stay at
+    # their fixed pt sizes so they remain consistent with neighbouring panels when
+    # this figure is composited). ``panel_letters`` draws the per-pane A/B letters;
+    # set False when an outer composite supplies its own single panel letter.
+    panel_sq = PANEL_SQ_IN * scale
+    m_left = MARGIN_LEFT_IN * scale
+    m_gap = MARGIN_GAP_IN * scale
+    m_right = MARGIN_RIGHT_IN * scale
+    m_top = MARGIN_TOP_IN * scale
+    m_xlabel = MARGIN_XLABEL_IN * scale
+    m_legend = MARGIN_LEGEND_IN * scale
+
+    bottom_margin_in = m_xlabel + m_legend
+    fig_w = m_left + panel_sq + m_gap + panel_sq + m_right
+    fig_h = m_top + panel_sq + bottom_margin_in
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
 
     pane_tot = PANE_LEFT_RATIO + PANE_RIGHT_RATIO
-    left_w_in = PANEL_SQ_IN * PANE_LEFT_RATIO / pane_tot
-    right_w_in = PANEL_SQ_IN * PANE_RIGHT_RATIO / pane_tot
+    left_w_in = panel_sq * PANE_LEFT_RATIO / pane_tot
+    right_w_in = panel_sq * PANE_RIGHT_RATIO / pane_tot
     y0_in = bottom_margin_in
 
     def _rects(x0_in: float):
-        left = (x0_in / fig_w, y0_in / fig_h, left_w_in / fig_w, PANEL_SQ_IN / fig_h)
-        right = ((x0_in + left_w_in) / fig_w, y0_in / fig_h, right_w_in / fig_w, PANEL_SQ_IN / fig_h)
+        left = (x0_in / fig_w, y0_in / fig_h, left_w_in / fig_w, panel_sq / fig_h)
+        right = ((x0_in + left_w_in) / fig_w, y0_in / fig_h, right_w_in / fig_w, panel_sq / fig_h)
         return left, right
 
-    a_x0_in = MARGIN_LEFT_IN
-    b_x0_in = MARGIN_LEFT_IN + PANEL_SQ_IN + MARGIN_GAP_IN
+    a_x0_in = m_left
+    b_x0_in = m_left + panel_sq + m_gap
     lr_a, rr_a = _rects(a_x0_in)
     lr_b, rr_b = _rects(b_x0_in)
 
@@ -440,12 +454,13 @@ def build_channel_utility_spatial_figure(
         plotted_groups |= plotted_groups_b
 
     # Panel letters (figure coords) and x-axis label, centered under each panel.
-    letter_y = (y0_in + PANEL_SQ_IN + 0.03) / fig_h
-    xlabel_y = (MARGIN_LEGEND_IN + 0.10) / fig_h
+    letter_y = (y0_in + panel_sq + 0.03 * scale) / fig_h
+    xlabel_y = (m_legend + 0.10 * scale) / fig_h
     for x0_in, letter in ((a_x0_in, "A"), (b_x0_in, "B")):
-        fig.text((x0_in - 0.48) / fig_w, letter_y, letter, ha="left", va="bottom",
-                 fontsize=TITLE_SIZE, fontweight="bold", fontfamily=FONT_NAME)
-        fig.text((x0_in + PANEL_SQ_IN / 2.0) / fig_w, xlabel_y, "Within-tile R²",
+        if panel_letters:
+            fig.text((x0_in - 0.48 * scale) / fig_w, letter_y, letter, ha="left", va="bottom",
+                     fontsize=TITLE_SIZE, fontweight="bold", fontfamily=FONT_NAME)
+        fig.text((x0_in + panel_sq / 2.0) / fig_w, xlabel_y, "Within-tile R²",
                  ha="center", va="center", fontsize=AXIS_LABEL_SIZE, fontfamily=FONT_NAME)
 
     handles = [

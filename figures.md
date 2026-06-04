@@ -1,13 +1,146 @@
 # Figures
 
 Caption registry for the publication figures in `figures/pngs_updated/concat/`.
-Each section is keyed by the rendered PNG. The "huge" print-preview composite
-(`figures/pngs_updated/concat/_all_figures_preview.png`) pulls its captions from
-this file.
+Each section is keyed by the rendered PNG. The print-preview composites pull
+their captions from this file by PNG basename:
+`_all_figures_preview.png` (main, fig1–fig4) and `_all_SI_figures.png`
+(supplementary). Rebuild both with
+`python -m src.paper_figures.build_concat_preview`.
+
+> Reorganized 2026-06-04: the paper now uses the four `fig1`–`fig4` composites as
+> the main figures. The former standalone panels (`08_uni_tme_decomposition`,
+> `uni_probe_overview`, `07d_t1_spatial_multi_encoder`,
+> `09b_channel_color_layout_impact`) are embedded inside `fig3`/`fig4` and are no
+> longer separate figures; their detailed descriptions are kept under
+> **Archived source-panel captions** at the bottom for manuscript reference.
+> Two panels survive standalone in the SI: the ranking tables
+> (`si_performance_ranking`, was performance Panel B) and the qualitative tile
+> grid (`si_a1a2_qualitative_tiles`, was SI_A1_A2 Panel C).
 
 > Removed 2026-06-01: the `methods` and `cell_summary_figure` entries — their
 > `figures_ec2/pngs/` paths no longer exist anywhere in the repo. If those
 > figures are still in the paper, re-add them here with current paths.
+
+---
+
+# Graphical abstract
+
+## overview_workflow (`figures/pngs_updated/methods/overview_workflow.png`)
+
+**Outline name:** Method-as-narrative pipeline flowchart
+
+### Figure caption
+
+**Graphical abstract. A three-stage pipeline turns paired H&E + multiplex tiles into a per-channel conditioning guide.** (1) Generate paired H&E and multiplex TME tiles; (2) train a ControlNet with multichannel TME conditioning; (3) ablate conditioning variants to isolate per-channel impact, yielding the **output**: a channel-selection guide. The dashed return path (4) applies the trained model to a new, unpaired H&E + MX cohort. Stage colors (blue / orange / green) act as a paper-wide section code matching fig1–fig4.
+
+### Key takeaway
+
+- One-glance statement of the method-as-narrative structure and the blue/orange/green stage color code reused across the main figures.
+
+---
+
+# Main figures
+
+## fig1_approach_data (`figures/pngs_updated/concat/fig1_approach_data.png`)
+
+**Outline name:** Approach & data — paired H&E + multiplex TME tiles (Stage 1)
+
+### Figure caption
+
+**Figure 1. Generating paired H&E + multiplex TME tiles and validating the derived cell, state, and nutrient maps (Stage 1).** **(A)** Stage-1 pipeline: paired H&E / multiplex (MX) tiles are matched, cells are segmented with CellViT, cell types and protein markers are defined, markers are clustered with k-means into cell types and states, and nutrient (oxygen, glucose) fields are estimated by PDE fitting. **(B)** Validation of the derived labels. **(i)** Per-cell-type morphology — nuclear area (µm²) and circularity — for the cancer, immune, and healthy populations (mean ± SD; per-group n shown; pairwise significance marked). **(ii)** Mean marker z-scores per assigned cell type (columns: cancer / immune / healthy; rows: Hoechst, Pan-CK, E-cadherin, CD45, CD4, CD8, CD3, CD68, Ki67), color-scaled from red (low) to blue (high); the block-diagonal structure confirms lineage-consistent assignments. **(C)** Real-data montage for one specimen: whole-slide image → registered H&E with CODEX immunofluorescence channels → k-means cell segmentation/typing → PDE-estimated oxygen and glucose fields.
+
+### Key takeaway
+
+- The conditioning signal is constructed and *validated*, not assumed: marker z-scores and morphology separate the three lineages before any generation.
+- Establishes the data contract for the rest of the paper — H&E paired with cell-type/state density maps, vasculature, and PDE-derived nutrient fields.
+
+## fig2_architecture_performance (`figures/pngs_updated/concat/fig2_architecture_performance.png`)
+
+**Outline name:** Training, conditioning design & performance (Stage 2)
+
+### Figure caption
+
+**Figure 2. Training the multichannel TME-conditioned ControlNet and characterizing its performance (Stage 2).** **(A)** Stage-2 schematic: each TME channel is encoded by a dedicated CNN adapter, H&E semantic features come from a frozen UNI-2h, and a conditioning module guides the frozen diffusion backbone; architecture and hyperparameters are revised when the loss diverges. **(B)** Training loss versus optimization step (top) and ΔLPIPS of the conditioning-architecture variants relative to baseline (bottom; Concat, Grouped, Mask + TME, Per-channel), with the shared variant legend. **(C)** Per-tile performance trade-offs across the 32 channel-group on/off conditions for five metrics — FUD (↓), LPIPS (↓), PQ (↑), DICE (↑), HED (↓); triangles = paired, squares = unpaired inference; shaded band = benchmark mean ± SD. **(D)** Per-group effect-size heatmaps (mean ± SD change attributable to including each group: Cell types, Cell state, Vasculature, Nutrient) across the five metrics, paired (left) and unpaired (right), color-scaled blue (positive) to red (negative). **(E)** Per-channel leave-one-out tile strip: real H&E and the layout/mask followed by generated H&E as each channel is dropped, paired | unpaired.
+
+### Key takeaway
+
+- One figure carries the full Stage-2 story: how the TME signal is injected (A), that Concat/Grouped conditioning trains stably (B), and how conditioning trades off across five metrics and two inference regimes (C–E).
+- Paired beats unpaired across metrics; Cell-state and Nutrient dominate nuclear-segmentation metrics; Vasculature ≈ 0 everywhere.
+
+## fig3_uni_decomposition (`figures/pngs_updated/concat/fig3_uni_decomposition.png`)
+
+**Outline name:** UNI vs TME decomposition + UNI probe interpretability
+
+### Figure caption
+
+**Figure 3. UNI conditioning and TME conditioning contribute near-orthogonally, and frozen UNI embeddings linearly encode interpretable H&E morphology.** **(A)** A representative tile: model inputs (real H&E reference, cell masks) and generated outputs under the four UNI/TME on-off settings (the dot pair beside each row marks which of UNI, TME is active). **(B)** Per-tile mean ± SD for the four conditions across five metrics (FUD/LPIPS/PQ/DICE/HED); the 2-dot label encodes UNI/TME state. **(C)** Two-way decomposition of each metric: UNI effect (full − TME-only), TME effect (full − UNI-only), and UNI × TME interaction, color-scaled blue (most positive) to red (most negative) with values printed per cell. **(D)** Tile-level decodability of each H&E attribute from frozen UNI features (y-axis) versus from the spatial TME channels (x-axis), held-out R²; points colored and shaped by family (appearance, morphology, cell composition); the shaded diagonal marks attributes equally recoverable from either source. **(E)** Specificity matrix for UNI probe edits: each column edits the embedding along one attribute's probe direction, each row reports the Pearson correlation with the measured change in a tile-level morphology metric (−1 red to +1 blue); a strong diagonal indicates isolated control. **(F)** Targeted edit sweeps for six attributes (Eccentricity, Nuclear area, Nuclei density, E contrast, H contrast, H energy): the top row is the real reference H&E, the lower rows are H&E generated after shifting the UNI embedding along that probe direction by α = −1, 0, +1.
+
+### Key takeaway
+
+- **Two signals, two jobs:** UNI = realism/style anchor (FUD, LPIPS, HED); TME = nuclear geometry (PQ, DICE), near-orthogonal contributions with PQ/DICE interaction ≈ 0 — validating TME-only inference for downstream cell counting.
+- UNI features and TME channels are near-interchangeable for many attributes (D), and the probe directions are specific (E) and visually interpretable (F).
+
+## fig4_per_channel_impact (`figures/pngs_updated/concat/fig4_per_channel_impact.png`)
+
+**Outline name:** Per-channel impact → channel-selection guide (Stage 3)
+
+### Figure caption
+
+**Figure 4. Isolating per-channel impact and relating H&E decodability to generative impact (Stage 3).** **(A)** Stage-3 schematic: ridge probes map UNI to each MX channel (recording R²), leave-one-out inference drops each channel, and per-channel impact (PQ and pixel changes) is computed against full conditioning. **(B)** Within-tile decoding R² for each aggregate TME channel (Prolif, Non-prolif, Density, Cancer, Healthy, Immune, Vasculature, Glucose, O₂, Dead) across four frozen H&E encoders (UNI-2h, Virchow2, CTransPath, ResNet-50), one boxplot per encoder per channel. **(C)** Within-tile decoding R² for individual MX marker intensities using the best encoder (UNI-2h), one bar per marker ordered by descending R² (error bars = CV-fold standard error). **(D)** Per-channel generative color impact (ΔE) and **(E)** per-channel layout impact (ΔPQ) under leave-one-out ablation *(placeholder bars pending the LOO metric pass)*. **(F)** Decodability versus generative impact: color impact ΔE (left) and layout impact ΔPQ (right) plotted against within-tile R² (UNI-2h spatial probe); points colored and shaped by group (cell types, cell state, vasculature, microenv), with dotted per-panel quadrant guides.
+
+### Key takeaway
+
+- Turns the analysis into a channel-selection guide: decodability and generative impact are different axes — channels poorly recovered from H&E (Glucose, O₂, Vasculature) drive the largest color shifts, while cell-state channels drive layout/segmentation.
+- Individual MX markers (C) and rare/low-prevalence channels (Dead) carry little decodable signal, so the aggregate TME channels — not raw markers — are the useful conditioning.
+
+---
+
+# Supplementary figures
+
+## si_performance_ranking (`figures/pngs_updated/concat/si_performance_ranking.png`)
+
+**Outline name:** Channel-group ranking tables (paired & unpaired) — was performance Panel B
+
+### Figure caption
+
+**Figure S1. Top- and bottom-ranked channel-group conditions per metric, for paired and unpaired inference.** Top-3 and bottom-3 ranked conditions per metric — FUD (↓), LPIPS (↓), PQ (↑), DICE (↑), HED (↓) — for paired (upper) and unpaired (lower) inference. The dot column encodes active channel groups in the order CT, CS, VA, NU, UNI (filled = included): CT (Cell types) groups the healthy / cancer / immune density maps; CS (Cell state) groups the proliferative / nonproliferative / dead density maps; VA (Vasculature) is the vasculature density channel; NU (Nutrient) groups the oxygen and glucose channels; UNI is the UNI-2h H&E reference embedding (paired-only). The mean and per-tile mean ± SD are listed per ranked condition.
+
+### Key takeaway
+
+- The per-condition ranking behind Fig 2C/2D: shows exactly which channel-group combinations top and bottom each metric in each inference regime.
+
+## ablation_grids_combined (`figures/pngs_updated/concat/ablation_grids_combined.png`)
+
+**Outline name:** Qualitative ablation grids
+
+### Figure caption
+
+**Figure S2. Generated H&E patches under channel-group ablations illustrate ControlNet output for paired and unpaired inference.** **(A)** Paired-inference results for one representative tile. **(B)** Unpaired-inference results for one representative tile. Each block is a 4 × 4 grid; the first cell (gray dashed border, top-left) is the real H&E reference for that tile, and the remaining 15 cells are generated patches sorted by Panoptic Quality (PQ; higher is better) from best to worst across channel-group on/off combinations. The 4-dot header above each cell encodes active channel groups in the order CT, CS, VA, NU (Cell types, Cell state, Vasculature, Nutrient); a filled dot indicates the group is included. Per-cell bar plots report LPIPS (lower is better), PQ (higher is better), DICE (higher is better), and HED (lower is better) for that single patch, with the numeric value printed beside each bar.
+
+### Key takeaway
+
+- Sorting by PQ makes the visual gradient direct — top-left = best segmentation match, bottom-right = worst — so the metric ranking can be eyeballed against image quality.
+- Paired (A) holds stain and gross structure further down the rank list; unpaired (B) drifts in color and nucleus contour faster. CS-off conditions are consistently low-PQ in both regimes, confirming cell-state as load-bearing for nuclear geometry.
+
+## si_a1a2_qualitative_tiles (`figures/pngs_updated/concat/si_a1a2_qualitative_tiles.png`)
+
+**Outline name:** Conditioning-architecture ablation — qualitative tiles (was SI_A1_A2 Panel C)
+
+### Figure caption
+
+**Figure S3. Conditioning-architecture ablation: qualitative H&E for each TME-injection variant.** Qualitative tiles across 10 columns for the conditioning-architecture variants — Grouped TME only, Concat TME encoder, Per-channel TME encoders, additive Mask + TME, and an off-the-shelf Vanilla PixCell ControlNet baseline. The top row is the real reference H&E; each lower row is one variant's generated H&E, with overlaid contours marking segmented nuclei (red = generated, gray = reference) so segmentation fidelity can be compared per tile. The full per-variant metrics table (FUD ↓, DICE ↑, PQ ↑, LPIPS ↓, HED ↓ and trainable parameter count) is provided separately as `individual/si_a1_a2/SI_A1_A2_section2_metrics.png`.
+
+### Key takeaway
+
+- The stable Concat/Grouped encoders reproduce nuclear contours closely; the per-channel and mask-only-bypass variants and the vanilla baseline drift — the visual half of the architecture justification whose quantitative half is in Fig 2B.
+
+---
+
+# Archived source-panel captions
+
+> These figures are now embedded inside the `fig1`–`fig4` composites (or split,
+> with one panel promoted to the SI above). Kept for manuscript reference; they
+> are **not** pulled into either preview composite.
 
 ## performance_paired_unpaired (`figures/pngs_updated/concat/performance_paired_unpaired.png`)
 
@@ -82,20 +215,8 @@ this file.
 - Microenv channels (Glucose, O₂) are low-R² but high color-impact — they supply appearance information H&E cannot reconstruct on its own.
 - The split between panels A and B mirrors the UNI/TME decomposition: color impact ↔ realism, layout impact ↔ nuclear geometry.
 
-## ablation_grids_combined (`figures/pngs_updated/concat/ablation_grids_combined.png`)
-
-**Outline name:** Qualitative ablation grids
-
-### Figure caption
-
-**Figure SI-X. Generated H&E patches under channel-group ablations illustrate ControlNet output for paired and unpaired inference.** **(A)** Paired-inference results for one representative tile. **(B)** Unpaired-inference results for one representative tile. Each block is a 4 × 4 grid; the first cell (gray dashed border, top-left) is the real H&E reference for that tile, and the remaining 15 cells are generated patches sorted by Panoptic Quality (PQ; higher is better) from best to worst across channel-group on/off combinations. The 4-dot header above each cell encodes active channel groups in the order CT, CS, VA, NU (Cell types, Cell state, Vasculature, Nutrient); a filled dot indicates the group is included. Per-cell bar plots report LPIPS (lower is better), PQ (higher is better), DICE (higher is better), and HED (lower is better) for that single patch, with the numeric value printed beside each bar.
-
-### Key takeaway
-
-- Sorting by PQ makes the visual gradient direct — top-left = best segmentation match, bottom-right = worst — so the metric ranking can be eyeballed against image quality.
-- Side-by-side paired (A) vs unpaired (B) shows paired holds stain and gross structure further down the rank list; unpaired drifts in color and nucleus contour faster.
-- CS-off conditions are consistently low-PQ in both regimes, confirming cell-state as load-bearing for nuclear geometry independent of the reference H&E.
-- SI-tier qualitative confirmation of the main-figure trends.
+> `ablation_grids_combined` is **not** archived — it remains a live SI figure
+> (S2) above.
 
 ## SI_A1_A2_unified (`figures/pngs_updated/concat/SI_A1_A2_unified.png`)
 

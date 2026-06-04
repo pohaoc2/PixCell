@@ -574,8 +574,11 @@ def build_leave_one_out_figure(summaries: list[DatasetSummary]) -> plt.Figure:
     lo, hi = _tight_range(values_for_range)
     bar_ax.set_ylim(max(0.0, lo), hi)
     bar_ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
-    bar_ax.spines["top"].set_visible(False)
-    bar_ax.spines["right"].set_visible(False)
+    # All four spines visible and black (vis_guidance.md: no half-open axes).
+    for spine in bar_ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color(INK)
+        spine.set_linewidth(0.8)
     bar_ax.tick_params(axis="y", labelsize=FONT_SIZE_TICK)
     bar_ax.set_axisbelow(True)
     bar_ax.set_ylabel("Mean |\u0394 pixel| (normalized [0, 1])", fontsize=FONT_SIZE_LABEL, color=INK)

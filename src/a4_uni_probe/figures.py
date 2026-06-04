@@ -98,7 +98,7 @@ UPDATED_PANEL_DPI = 240
 # composited WITHOUT post-hoc rescaling, so a given point size occupies the same
 # number of pixels in panels A, B and C alike. See vis_guidance.md.
 COMBINED_DPI = UPDATED_PANEL_DPI            # one dpi for A, B and C
-COMBINED_GAP_IN = 0.52                       # horizontal gap between A and B (inches)
+COMBINED_GAP_IN = 1.0                        # horizontal gap between A and B (inches)
 FONT_AXIS_LABEL = 13                         # x/y axis titles, colorbar label
 FONT_TICK = 11                               # tick labels (both axes), colorbar ticks
 FONT_INAXES = 11                             # scatter point labels
@@ -110,10 +110,10 @@ FONT_PANEL_LETTER = 18                        # bold A / B / C panel letters
 # square are exactly the SAME size (PANEL_SQUARE_IN) and the two panels share the
 # same height (PANEL_TOP_IN + PANEL_SQUARE_IN + PANEL_BOT_IN). Margins are kept
 # tight so the A/B row sits close to panel C below it.
-PANEL_SQUARE_IN = 4.8     # shared plotting square: scatter axis == heatmap square
-# (kept compact while still larger than a single-column panel; the text-sized
-# margins below stay fixed so the 12-13 pt fonts downscale to print like the
-# other figures. Larger values waste space — see the A/B gap and panel C below.)
+PANEL_SQUARE_IN = 3.5     # shared plotting square: scatter axis == heatmap square
+# At 3.5 in the D+gap+E row is ≈11.44 in ≈ 1.5× the top half's 7.53 in, so
+# the 18 pt D/E/F panel letters appear the same size as the 12 pt A/B/C labels
+# when both are scaled to the composite width (18/11.44 ≈ 12/7.53).
 PANEL_TOP_IN = 0.16       # space above the square (for the panel letter)
 PANEL_BOT_IN = 1.02       # space below: A = xlabel + legend; B = rotated xticks + xlabel
 # Panel A (scatter) horizontal margins
@@ -978,6 +978,9 @@ def render_pngs_updated_combined_abc(
     dest_dir: str | Path,
     *,
     concat_dir: str | Path | None = None,
+    panel_letters: tuple[str, str, str] = ("A", "B", "C"),
+    sweep_grid_png: str | Path | None = None,
+    out_name: str | None = None,
 ) -> Path:
     """Combined figure: [A: probe_delta | B: specificity_heatmap] on top,
     [C: sweep_combined] below. Width(A) + gap + Width(B) = Width(C).
@@ -1026,9 +1029,15 @@ def render_pngs_updated_combined_abc(
     # point size is then the same number of pixels in A, B and C. The panel-C
     # PNG (sweep_grid_combined) is an individual panel, so it is written to
     # dest_path; only the assembled overview goes to concat_path.
-    sweep_combined_path = render_pngs_updated_combined_sweep_grid(
-        out_path, dest_path, target_width_in=W_AB / COMBINED_DPI
-    )
+    if sweep_grid_png is not None:
+        # Reuse an already-rendered panel-C ribbon (avoids re-loading the heavy
+        # sweep tile data). It was rendered against the same A+B widths, so W_C
+        # matches W_AB to within rounding; the pad-to-max below reconciles it.
+        sweep_combined_path = Path(sweep_grid_png)
+    else:
+        sweep_combined_path = render_pngs_updated_combined_sweep_grid(
+            out_path, dest_path, target_width_in=W_AB / COMBINED_DPI
+        )
     img_C = np.array(Image.open(sweep_combined_path).convert("RGBA"))
     H_C, W_C = img_C.shape[:2]
 
@@ -1061,14 +1070,14 @@ def render_pngs_updated_combined_abc(
     c_label_y = H_target + letter_margin
 
     for lx, ly, letter in (
-        (a_label_x, a_label_y, "A"),
-        (b_label_x, b_label_y, "B"),
-        (c_label_x, c_label_y, "C"),
+        (a_label_x, a_label_y, panel_letters[0]),
+        (b_label_x, b_label_y, panel_letters[1]),
+        (c_label_x, c_label_y, panel_letters[2]),
     ):
         ax.text(lx, ly, letter, fontsize=FONT_PANEL_LETTER, fontweight="bold",
                 fontfamily="Nimbus Sans", color="black", ha="left", va="top")
 
-    output_path = concat_path / COMBINED_ABC_CLEAR_NAME
+    output_path = concat_path / (out_name or COMBINED_ABC_CLEAR_NAME)
     fig.savefig(output_path, dpi=_DPI, facecolor="white")
     plt.close(fig)
     return output_path

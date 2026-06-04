@@ -17,32 +17,49 @@ import matplotlib
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
-CONCAT_DIR = ROOT / "figures" / "pngs_updated" / "concat"
+PNGS_ROOT = ROOT / "figures" / "pngs_updated"
+CONCAT_DIR = PNGS_ROOT / "concat"
 FIGURES_MD = ROOT / "figures.md"
 OUT_PATH = CONCAT_DIR / "_all_figures_preview.png"
+OUT_PATH_SI = CONCAT_DIR / "_all_SI_figures.png"
 
 MASTER_DPI = 150
 
-# Order figures main-text first, then supplementary. sweep_grid_combined is
-# omitted: it is panel C of uni_probe_overview, not a standalone figure.
-FIGURE_ORDER = [
-    "performance_paired_unpaired.png",
-    "uni_probe_overview.png",
-    "08_uni_tme_decomposition.png",
-    "07d_t1_spatial_multi_encoder.png",
-    "09b_channel_color_layout_impact.png",
+# Entries containing "/" resolve relative to PNGS_ROOT (e.g. the graphical
+# abstract under methods/); bare basenames resolve against CONCAT_DIR.
+# Basenames listed here get an unnumbered "Graphical abstract" header instead of
+# a "Figure N" header and do not advance the figure counter.
+UNNUMBERED = {"overview_workflow.png"}
+
+# Main-text figures: the graphical abstract on top, then the reorganized
+# fig1-fig4 composites (fig4 = v1, the bar-chart D/E variant; fig4_*_v2 is the
+# radar alternative, not in the paper). The former standalone panels
+# (08, uni_probe, 07d, 09b) are now embedded inside fig3/fig4 and are
+# intentionally not listed separately.
+MAIN_FIGURE_ORDER = [
+    "methods/overview_workflow.png",
+    "fig1_approach_data.png",
+    "fig2_architecture_performance.png",
+    "fig3_uni_decomposition.png",
+    "fig4_per_channel_impact.png",
+]
+
+# Supplementary figures: the panels that survive the reorganization as
+# standalone SI items. performance Panel A/C and SI_A1_A2 Panel A/B were
+# promoted into fig2, leaving only the ranking tables (Panel B) and the
+# qualitative tile grid (Panel C) for the SI.
+SI_FIGURE_ORDER = [
+    "si_performance_ranking.png",
     "ablation_grids_combined.png",
-    "SI_A1_A2_unified.png",
+    "si_a1a2_qualitative_tiles.png",
 ]
 
 # Figures intended for a single (half-page) column — left at their native width
 # in the preview. Every other figure is a full-width figure and is resized up to
-# the common full width, so figures that came out a bit too narrow (e.g. the SI
-# composite, uni_probe) fill the column instead of floating narrow.
-SINGLE_COLUMN = {
-    "08_uni_tme_decomposition.png",
-    "09b_channel_color_layout_impact.png",
-}
+# the common full width, so figures that came out a bit too narrow fill the
+# column instead of floating narrow. The fig1-fig4 composites and the SI items
+# are all full-width, so this is empty.
+SINGLE_COLUMN: set[str] = set()
 
 # Point sizes (rendered at MASTER_DPI). Caption matches ~11 pt body text.
 PT_CAPTION = 11
@@ -120,7 +137,13 @@ def wrap_caption(draw, runs, max_w, pt):
     return lines, space_w
 
 
-def build() -> Path:
+def build(
+    figure_order: list[str],
+    out_path: Path,
+    *,
+    title: str,
+    label_prefix: str = "Figure",
+) -> Path:
     captions = parse_captions(FIGURES_MD)
 
     margin = _pt_to_px(28)            # ~0.39 in page margin
@@ -130,30 +153,46 @@ def build() -> Path:
     cap_leading = round(_pt_to_px(PT_CAPTION) * 1.42)
     hdr_h = round(_pt_to_px(PT_HEADER) * 1.5)
 
-    # Load every figure and record its native physical width (inches).
+    # Load every figure and record its native physical width (inches). Each entry
+    # carries a precomputed header string (so the graphical abstract can be
+    # unnumbered) and its basename (the caption / SINGLE_COLUMN key).
     raw = []
-    for idx, name in enumerate(FIGURE_ORDER, start=1):
-        path = CONCAT_DIR / name
+    fig_num = 0
+    for name in figure_order:
+        path = (PNGS_ROOT / name) if "/" in name else (CONCAT_DIR / name)
         if not path.is_file():
             print(f"skip (missing): {name}")
             continue
-        im = Image.open(path).convert("RGB")
-        dpi = float(im.info.get("dpi", (MASTER_DPI, MASTER_DPI))[0])
-        raw.append((idx, name, im, im.width / dpi))
+        basename = Path(name).name
+        src = Image.open(path)
+        dpi = float(src.info.get("dpi", (MASTER_DPI, MASTER_DPI))[0])
+        if src.mode == "RGBA":
+            # Flatten transparency onto white so a transparent abstract background
+            # doesn't fall back to black under convert("RGB").
+            im = Image.new("RGB", src.size, "white")
+            im.paste(src, mask=src.split()[-1])
+        else:
+            im = src.convert("RGB")
+        if basename in UNNUMBERED:
+            header = "Graphical abstract"
+        else:
+            fig_num += 1
+            header = f"{label_prefix}{fig_num}"
+        raw.append((header, basename, im, im.width / dpi))
 
     # Full-width = widest of the full-width (non-single-column) figures. Resize
     # every full-width figure up/down to that width so any that came out too
     # narrow (SI composite, uni_probe) fill the column instead of floating narrow.
     # Single-column figures keep their native width (aspect preserved throughout).
     # The source PNGs are unchanged — this only affects the preview composite.
-    full_w_in = max(w_in for _idx, name, _im, w_in in raw if name not in SINGLE_COLUMN)
+    full_w_in = max(w_in for _h, base, _im, w_in in raw if base not in SINGLE_COLUMN)
     content_w = round(full_w_in * MASTER_DPI)
     items = []
-    for idx, name, im, w_in in raw:
-        target_w = round(w_in * MASTER_DPI) if name in SINGLE_COLUMN else content_w
+    for header, base, im, w_in in raw:
+        target_w = round(w_in * MASTER_DPI) if base in SINGLE_COLUMN else content_w
         new_h = max(1, round(im.height / im.width * target_w))
         im = im.resize((target_w, new_h), Image.LANCZOS)
-        items.append((idx, name, im, captions.get(name)))
+        items.append((header, base, im, captions.get(base)))
 
     canvas_w = content_w + 2 * margin
 
@@ -162,13 +201,13 @@ def build() -> Path:
     ddraw = ImageDraw.Draw(dummy)
 
     title_lines, _ = wrap_caption(
-        ddraw, [("PixCell concat figures - paper preview (full-width figures filled to column; single-column figures at native width, %d dpi)" % MASTER_DPI, True)],
+        ddraw, [(title, True)],
         content_w, PT_TITLE,
     )
     title_h = len(title_lines) * round(_pt_to_px(PT_TITLE) * 1.4)
 
     layout = []
-    for idx, name, im, cap in items:
+    for header, base, im, cap in items:
         # Caption wraps to the figure's own width (paper convention) so it never
         # extends past the figure — single-column figures get taller captions.
         cap_w = im.width
@@ -180,7 +219,7 @@ def build() -> Path:
                               ddraw.textlength(" ", font=_font(False, PT_CAPTION)))
         cap_h = len(lines) * cap_leading
         block_h = hdr_h + gap_hdr + im.height + gap_cap + cap_h
-        layout.append((idx, name, im, lines, space_w, block_h))
+        layout.append((header, base, im, lines, space_w, block_h))
 
     total_h = margin + title_h + gap_fig + sum(b[-1] + gap_fig for b in layout) + margin
 
@@ -199,9 +238,9 @@ def build() -> Path:
     y += gap_fig
 
     hf = _font(True, PT_HEADER)
-    for idx, name, im, lines, space_w, block_h in layout:
+    for header, base, im, lines, space_w, block_h in layout:
         # Header label
-        draw.text((margin, y), f"Figure {idx}  -  {name}", font=hf, fill=(90, 90, 90))
+        draw.text((margin, y), f"{header}  -  {base}", font=hf, fill=(90, 90, 90))
         y += hdr_h + gap_hdr
         # Image (left-aligned at native physical size)
         canvas.paste(im, (margin, y))
@@ -215,10 +254,25 @@ def build() -> Path:
             y += cap_leading
         y += gap_fig
 
-    canvas.save(OUT_PATH, dpi=(MASTER_DPI, MASTER_DPI))
-    print(f"wrote {OUT_PATH}  ({canvas_w} x {total_h} px @ {MASTER_DPI} dpi)")
-    return OUT_PATH
+    canvas.save(out_path, dpi=(MASTER_DPI, MASTER_DPI))
+    print(f"wrote {out_path}  ({canvas_w} x {total_h} px @ {MASTER_DPI} dpi)")
+    return out_path
+
+
+def main() -> None:
+    build(
+        MAIN_FIGURE_ORDER,
+        OUT_PATH,
+        title="PixCell main figures - paper preview (fig1-fig4, filled to common column width, %d dpi)" % MASTER_DPI,
+        label_prefix="Figure ",
+    )
+    build(
+        SI_FIGURE_ORDER,
+        OUT_PATH_SI,
+        title="PixCell supplementary figures - paper preview (filled to common column width, %d dpi)" % MASTER_DPI,
+        label_prefix="Figure S",
+    )
 
 
 if __name__ == "__main__":
-    build()
+    main()
