@@ -13,8 +13,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import matplotlib
 from PIL import Image, ImageDraw, ImageFont
+from PIL import JpegImagePlugin  # noqa: F401 - registers Pillow's PDF RGB writer
+
+try:
+    import matplotlib
+except ModuleNotFoundError:  # preview/PDF export only needs the bundled fonts
+    matplotlib = None
 
 ROOT = Path(__file__).resolve().parents[2]
 PNGS_ROOT = ROOT / "figures" / "pngs_updated"
@@ -22,6 +27,8 @@ CONCAT_DIR = PNGS_ROOT / "concat"
 FIGURES_MD = ROOT / "figures.md"
 OUT_PATH = CONCAT_DIR / "_all_figures_preview.png"
 OUT_PATH_SI = CONCAT_DIR / "_all_SI_figures.png"
+OUT_PATH_PDF = OUT_PATH.with_suffix(".pdf")
+OUT_PATH_SI_PDF = OUT_PATH_SI.with_suffix(".pdf")
 
 MASTER_DPI = 150
 
@@ -66,7 +73,11 @@ PT_CAPTION = 11
 PT_HEADER = 13
 PT_TITLE = 18
 
-_FONT_DIR = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+_FONT_DIRS = [
+    Path(matplotlib.get_data_path()) / "fonts" / "ttf" if matplotlib is not None else None,
+    Path("/usr/share/fonts/truetype/dejavu"),
+    Path("/usr/share/fonts/dejavu-sans-fonts"),
+]
 
 
 def _pt_to_px(pt: float) -> int:
@@ -75,7 +86,13 @@ def _pt_to_px(pt: float) -> int:
 
 def _font(bold: bool, pt: float) -> ImageFont.FreeTypeFont:
     name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
-    return ImageFont.truetype(str(_FONT_DIR / name), _pt_to_px(pt))
+    for font_dir in _FONT_DIRS:
+        if font_dir is None:
+            continue
+        font_path = font_dir / name
+        if font_path.is_file():
+            return ImageFont.truetype(str(font_path), _pt_to_px(pt))
+    return ImageFont.load_default(size=_pt_to_px(pt))
 
 
 def parse_captions(md_path: Path) -> dict[str, str]:
@@ -240,7 +257,7 @@ def build(
     hf = _font(True, PT_HEADER)
     for header, base, im, lines, space_w, block_h in layout:
         # Header label
-        draw.text((margin, y), f"{header}  -  {base}", font=hf, fill=(90, 90, 90))
+        draw.text((margin, y), f"({base})", font=hf, fill=(90, 90, 90))
         y += hdr_h + gap_hdr
         # Image (left-aligned at native physical size)
         canvas.paste(im, (margin, y))
@@ -259,18 +276,187 @@ def build(
     return out_path
 
 
+def _load_pdf_items(figure_order: list[str]):
+    captions = parse_captions(FIGURES_MD)
+    raw = []
+    for name in figure_order:
+        path = (PNGS_ROOT / name) if "/" in name else (CONCAT_DIR / name)
+        if not path.is_file():
+            print(f"skip PDF page (missing): {name}")
+            continue
+        basename = Path(name).name
+        src = Image.open(path)
+        dpi = float(src.info.get("dpi", (MASTER_DPI, MASTER_DPI))[0])
+        if src.mode == "RGBA":
+            im = Image.new("RGB", src.size, "white")
+            im.paste(src, mask=src.split()[-1])
+        else:
+            im = src.convert("RGB")
+        raw.append((basename, im, im.width / dpi, captions.get(basename)))
+    if not raw:
+        return []
+
+    full_w_in = max(w_in for base, _im, w_in, _cap in raw if base not in SINGLE_COLUMN)
+    content_w = round(full_w_in * MASTER_DPI)
+    items = []
+    for base, im, w_in, cap in raw:
+        target_w = round(w_in * MASTER_DPI) if base in SINGLE_COLUMN else content_w
+        new_h = max(1, round(im.height / im.width * target_w))
+        items.append((base, im.resize((target_w, new_h), Image.LANCZOS), cap))
+    return items
+
+
+def _draw_wrapped_lines(
+    draw: ImageDraw.ImageDraw,
+    lines,
+    *,
+    x: int,
+    y: int,
+    space_w: float,
+    fill: tuple[int, int, int],
+    leading: int,
+) -> int:
+    for line in lines:
+        xx = x
+        for word, font, width in line:
+            draw.text((xx, y), word, font=font, fill=fill)
+            xx += width + space_w
+        y += leading
+    return y
+
+
+def _render_pdf_page(
+    items: list[tuple[str, Image.Image, str | None]],
+    *,
+    page_title: str | None = None,
+) -> Image.Image:
+    margin = _pt_to_px(28)
+    gap_fig = _pt_to_px(28)
+    gap_cap = _pt_to_px(10)
+    gap_hdr = _pt_to_px(6)
+    cap_leading = round(_pt_to_px(PT_CAPTION) * 1.42)
+    hdr_h = round(_pt_to_px(PT_HEADER) * 1.5)
+    title_leading = round(_pt_to_px(PT_TITLE) * 1.4)
+
+    content_w = max(im.width for _base, im, _cap in items)
+    dummy = Image.new("RGB", (10, 10), "white")
+    ddraw = ImageDraw.Draw(dummy)
+
+    title_lines = []
+    title_h = 0
+    if page_title:
+        title_lines, _ = wrap_caption(ddraw, [(page_title, True)], content_w, PT_TITLE)
+        title_h = len(title_lines) * title_leading + gap_fig
+
+    blocks = []
+    for base, im, cap in items:
+        if cap:
+            lines, space_w = wrap_caption(ddraw, md_to_runs(cap), im.width, PT_CAPTION)
+        else:
+            missing = "(no caption in figures.md)"
+            lines = [[(missing, _font(False, PT_CAPTION), ddraw.textlength(missing, font=_font(False, PT_CAPTION)))]]
+            space_w = ddraw.textlength(" ", font=_font(False, PT_CAPTION))
+        cap_h = len(lines) * cap_leading
+        block_h = hdr_h + gap_hdr + im.height + gap_cap + cap_h
+        blocks.append((base, im, lines, space_w, block_h))
+
+    page_w = content_w + 2 * margin
+    page_h = margin + title_h + sum(block[-1] for block in blocks) + gap_fig * (len(blocks) - 1) + margin
+    page = Image.new("RGB", (page_w, page_h), "white")
+    draw = ImageDraw.Draw(page)
+
+    y = margin
+    if title_lines:
+        y = _draw_wrapped_lines(
+            draw,
+            title_lines,
+            x=margin,
+            y=y,
+            space_w=draw.textlength(" ", font=_font(True, PT_TITLE)),
+            fill=(20, 20, 20),
+            leading=title_leading,
+        )
+        y += gap_fig
+
+    hf = _font(True, PT_HEADER)
+    for idx, (base, im, lines, space_w, _block_h) in enumerate(blocks):
+        draw.text((margin, y), f"({base})", font=hf, fill=(90, 90, 90))
+        y += hdr_h + gap_hdr
+        page.paste(im, (margin, y))
+        y += im.height + gap_cap
+        y = _draw_wrapped_lines(
+            draw,
+            lines,
+            x=margin,
+            y=y,
+            space_w=space_w,
+            fill=(15, 15, 15),
+            leading=cap_leading,
+        )
+        if idx < len(blocks) - 1:
+            y += gap_fig
+    return page
+
+
+def build_pdf(
+    figure_order: list[str],
+    out_path: Path,
+    *,
+    title: str,
+    combine_first_two: bool = False,
+) -> Path | None:
+    items = _load_pdf_items(figure_order)
+    if not items:
+        print(f"skip PDF (no figures): {out_path}")
+        return None
+
+    page_groups: list[list[tuple[str, Image.Image, str | None]]] = []
+    if combine_first_two and len(items) >= 2 and items[0][0] in UNNUMBERED:
+        page_groups.append(items[:2])
+        page_groups.extend([item] for item in items[2:])
+    else:
+        page_groups.extend([item] for item in items)
+
+    pages = [
+        _render_pdf_page(group, page_title=title if i == 0 else None)
+        for i, group in enumerate(page_groups)
+    ]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pages[0].save(
+        out_path,
+        save_all=True,
+        append_images=pages[1:],
+        resolution=MASTER_DPI,
+    )
+    print(f"wrote {out_path}  ({len(pages)} pages @ {MASTER_DPI} dpi)")
+    return out_path
+
+
 def main() -> None:
+    main_title = "PixCell main figures - paper preview (fig1-fig4, filled to common column width, %d dpi)" % MASTER_DPI
+    si_title = "PixCell supplementary figures - paper preview (filled to common column width, %d dpi)" % MASTER_DPI
     build(
         MAIN_FIGURE_ORDER,
         OUT_PATH,
-        title="PixCell main figures - paper preview (fig1-fig4, filled to common column width, %d dpi)" % MASTER_DPI,
+        title=main_title,
         label_prefix="Figure ",
+    )
+    build_pdf(
+        MAIN_FIGURE_ORDER,
+        OUT_PATH_PDF,
+        title=main_title,
+        combine_first_two=True,
     )
     build(
         SI_FIGURE_ORDER,
         OUT_PATH_SI,
-        title="PixCell supplementary figures - paper preview (filled to common column width, %d dpi)" % MASTER_DPI,
+        title=si_title,
         label_prefix="Figure S",
+    )
+    build_pdf(
+        SI_FIGURE_ORDER,
+        OUT_PATH_SI_PDF,
+        title=si_title,
     )
 
 

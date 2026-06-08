@@ -330,3 +330,133 @@ def build_channel_ablation_strip(
     )
 
     return fig
+
+
+def build_channel_ablation_strip_split(
+    *,
+    split: str,
+    paired_root: Path,
+    unpaired_root: Path,
+    paired_orion: Path,
+    unpaired_orion: Path,
+    layout_root: Path,
+    unpaired_mapping_json: Path,
+    target_width_in: float | None = None,
+    target_height_in: float | None = None,
+    n_tiles: int = 2,
+    seed: int = 1,
+) -> plt.Figure:
+    """Build a one-split qualitative strip for Fig. 2 D/E.
+
+    The grid is laid out directly at the requested print width in absolute
+    inches. No rendered raster is squeezed to fit the Fig. 2 composite.
+    """
+    if split not in {"paired", "unpaired"}:
+        raise ValueError("split must be 'paired' or 'unpaired'")
+
+    apply_style()
+    unpaired_mapping = load_style_mapping(unpaired_mapping_json)
+    tiles = _pick_tiles(
+        paired_root,
+        unpaired_root,
+        paired_orion,
+        unpaired_orion,
+        layout_root,
+        unpaired_mapping,
+        n_tiles=n_tiles,
+        seed=seed,
+    )
+
+    cache_root = paired_root if split == "paired" else unpaired_root
+    orion_root = paired_orion if split == "paired" else unpaired_orion
+    style_mapping = None if split == "paired" else unpaired_mapping
+    is_unpaired = split == "unpaired"
+
+    grid: list[list[Path]] = []
+    layout_masks: list[Path] = []
+    for tile_id in tiles:
+        paths = _half_image_paths(
+            cache_root,
+            orion_root,
+            layout_root,
+            tile_id,
+            style_mapping=style_mapping,
+        )
+        if paths is None:
+            raise RuntimeError(f"Tile {tile_id} no longer resolves for {split}.")
+        grid.append(paths)
+        lm = _layout_mask_path(layout_root, tile_id)
+        if lm is None:
+            raise RuntimeError(f"Missing layout mask for {tile_id}.")
+        layout_masks.append(lm)
+
+    GAP_IN = 0.045
+    DOT_OFF_IN = 0.065
+    NAME_OFF_IN = 0.065
+    HEADER_IN = DOT_OFF_IN + NAME_OFF_IN + 0.08
+    M_L, M_R, M_T, M_B = 0.04, 0.04, 0.03, 0.05
+
+    if target_height_in is not None:
+        usable_h = target_height_in - M_T - HEADER_IN - M_B - (n_tiles - 1) * GAP_IN
+        CELL_IN = usable_h / n_tiles
+        if CELL_IN <= 0:
+            raise ValueError("target_height_in is too small for the requested qualitative grid")
+        fig_h = target_height_in
+        fig_w = M_L + N_COLS_PER_HALF * CELL_IN + (N_COLS_PER_HALF - 1) * GAP_IN + M_R
+    elif target_width_in is not None:
+        usable_w = target_width_in - M_L - M_R - (N_COLS_PER_HALF - 1) * GAP_IN
+        CELL_IN = usable_w / N_COLS_PER_HALF
+        if CELL_IN <= 0:
+            raise ValueError("target_width_in is too small for the requested qualitative grid")
+        fig_w = target_width_in
+        fig_h = M_T + HEADER_IN + n_tiles * CELL_IN + (n_tiles - 1) * GAP_IN + M_B
+    else:
+        raise ValueError("Provide target_width_in or target_height_in")
+
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+
+    def _col_x0(c: int) -> float:
+        return M_L + c * (CELL_IN + GAP_IN)
+
+    images_top = fig_h - M_T - HEADER_IN
+
+    def _row_y0(r: int) -> float:
+        return images_top - r * (CELL_IN + GAP_IN) - CELL_IN
+
+    def _add_ax(x0: float, y0: float, w: float, h: float) -> plt.Axes:
+        return fig.add_axes([x0 / fig_w, y0 / fig_h, w / fig_w, h / fig_h])
+
+    overlay = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    overlay.set_xlim(0.0, fig_w)
+    overlay.set_ylim(0.0, fig_h)
+    overlay.axis("off")
+    overlay.set_facecolor("none")
+    overlay.patch.set_alpha(0.0)
+    overlay.set_zorder(5)
+
+    dots_y_in = images_top + DOT_OFF_IN
+    names_y_in = dots_y_in + NAME_OFF_IN
+    for c, (kind, label) in enumerate(COLUMNS):
+        _draw_header(
+            overlay,
+            kind,
+            label,
+            x0_in=_col_x0(c),
+            cell_in=CELL_IN,
+            dots_y_in=dots_y_in,
+            names_y_in=names_y_in,
+            show_group_labels=(kind == "all"),
+        )
+
+    for r, paths in enumerate(grid):
+        for c, (kind, _) in enumerate(COLUMNS):
+            ax = _add_ax(_col_x0(c), _row_y0(r), CELL_IN, CELL_IN)
+            _draw_cell(
+                ax,
+                kind,
+                paths[c],
+                layout_mask=layout_masks[r],
+                is_unpaired=is_unpaired,
+            )
+
+    return fig

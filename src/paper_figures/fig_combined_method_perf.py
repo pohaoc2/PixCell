@@ -6,8 +6,8 @@ Five panels, four rows, full-width composite consistent with the other
     Row 1:  A = training/architecture schematic (stage_2_svg.svg)
             B = conditioning-encoder ablation (SI ΔLPIPS bars)
     Row 2:  C = metric trade-offs across channel conditions (performance A)
-    Row 3:  D = channel-group effect sizes (performance C)
-    Row 4:  E = per-channel ablation tile strip (paired | unpaired)
+    Row 3:  D = paired channel-group effect sizes + qualitative strip
+    Row 4:  E = unpaired channel-group effect sizes + qualitative strip
 
 Text-size consistency (vis_guidance: never rescale a rendered panel) is held by
 rendering every matplotlib panel directly at its final pixel size and only ever
@@ -36,6 +36,7 @@ from src.paper_figures.fig_si_a1_a2_unified import (
     _plot_loss_curves,
     _section1_legend_handles,
 )
+from src.paper_figures.fig_channel_ablation_strip import build_channel_ablation_strip_split
 from src.paper_figures.style import FONT_SIZE_TICK
 
 _RENDER_DPI = 220
@@ -48,6 +49,9 @@ _ROW1_GAP_PX = 50                        # white gutter between panels A and B
 _PANELB_TARGET_ASPECT = 1.15             # B = loss + ΔLPIPS + legend, ~square to match A
 _PANELB_VARIANTS = ["production", "a1_concat", "a1_per_channel", PRIMARY_A2_VARIANT]
 _PANEL_LETTER_FS = 18                    # matches FONT_PANEL_LETTER across paper figs
+_DE_ROW_GAP_IN = 0.05
+_DE_HEATMAP_W_IN = 6.55
+_DE_QUAL_W_IN = COMPOSITE_WIDTH_IN - _DE_HEATMAP_W_IN - _DE_ROW_GAP_IN
 
 
 def _fig_to_rgb(fig: plt.Figure, *, tight: bool = True) -> np.ndarray:
@@ -189,31 +193,114 @@ def _pad_row_height(img: np.ndarray, h: int) -> np.ndarray:
     return np.pad(img, ((0, pad), (0, 0), (0, 0)), constant_values=255)
 
 
+def _pad_to_height(img: np.ndarray, height_px: int, *, valign: str = "center") -> np.ndarray:
+    if img.shape[0] >= height_px:
+        return img
+    pad = height_px - img.shape[0]
+    if valign == "top":
+        top = 0
+    elif valign == "bottom":
+        top = pad
+    else:
+        top = pad // 2
+    bottom = pad - top
+    return np.pad(img, ((top, bottom), (0, 0), (0, 0)), constant_values=255)
+
+
+def _build_dataset_de_row(
+    summary: DatasetSummary,
+    *,
+    paired_root: Path,
+    unpaired_root: Path,
+    paired_orion: Path,
+    unpaired_orion: Path,
+    layout_root: Path,
+    unpaired_mapping_json: Path,
+) -> np.ndarray:
+    """One Fig. 2 D/E row: heatmap at left, matching split qualitative at right."""
+    img_heat = _fig_to_rgb(
+        build_channel_effect_heatmaps_figure(
+            [summary],
+            width_inches=_DE_HEATMAP_W_IN,
+            font_scale=COMPOSITE_HEATMAP_FONT_SCALE,
+        )
+    )
+    img_qual = _fig_to_rgb(
+        build_channel_ablation_strip_split(
+            split=summary.slug,
+            paired_root=paired_root,
+            unpaired_root=unpaired_root,
+            paired_orion=paired_orion,
+            unpaired_orion=unpaired_orion,
+            layout_root=layout_root,
+            unpaired_mapping_json=unpaired_mapping_json,
+            target_height_in=img_heat.shape[0] / _RENDER_DPI,
+            n_tiles=3,
+        ),
+        tight=False,
+    )
+
+    target_h = img_heat.shape[0]
+    if img_qual.shape[0] != target_h:
+        img_qual = _pad_to_height(img_qual, target_h, valign="center")
+    gap = np.full((target_h, round(_DE_ROW_GAP_IN * _RENDER_DPI), 3), 255, dtype=np.uint8)
+    return np.concatenate([img_heat, gap, img_qual], axis=1)
+
+
 def build_combined_method_perf_figure(
     summaries: list[DatasetSummary],
     *,
     svg_path: Path,
     sensitivity_cache_path: Path,
     channel_ablation_png: Path,
+    paired_root: Path | None = None,
+    unpaired_root: Path | None = None,
+    paired_orion: Path | None = None,
+    unpaired_orion: Path | None = None,
+    layout_root: Path | None = None,
+    unpaired_mapping_json: Path | None = None,
 ) -> plt.Figure:
     # Full-width text-bearing panels rendered at native point sizes.
     img_c = _fig_to_rgb(build_metric_trends_figure(summaries, width_inches=COMPOSITE_WIDTH_IN))
-    img_d = _fig_to_rgb(
-        build_channel_effect_heatmaps_figure(
-            summaries,
-            width_inches=COMPOSITE_WIDTH_IN,
-            font_scale=COMPOSITE_HEATMAP_FONT_SCALE,
-        )
+    if paired_root is None:
+        paired_root = channel_ablation_png.parents[3] / "inference_output" / "concat_ablation_1000" / "paired_ablation" / "ablation_results"
+    if unpaired_root is None:
+        unpaired_root = channel_ablation_png.parents[3] / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "ablation_results"
+    if paired_orion is None:
+        paired_orion = channel_ablation_png.parents[3] / "data" / "orion-crc33"
+    if unpaired_orion is None:
+        unpaired_orion = paired_orion
+    if layout_root is None:
+        layout_root = paired_orion
+    if unpaired_mapping_json is None:
+        unpaired_mapping_json = channel_ablation_png.parents[3] / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json"
+
+    summary_by_slug = {summary.slug: summary for summary in summaries}
+    img_d = _build_dataset_de_row(
+        summary_by_slug["paired"],
+        paired_root=paired_root,
+        unpaired_root=unpaired_root,
+        paired_orion=paired_orion,
+        unpaired_orion=unpaired_orion,
+        layout_root=layout_root,
+        unpaired_mapping_json=unpaired_mapping_json,
     )
-    img_e = _load_rgb(channel_ablation_png)
+    img_e = _build_dataset_de_row(
+        summary_by_slug["unpaired"],
+        paired_root=paired_root,
+        unpaired_root=unpaired_root,
+        paired_orion=paired_orion,
+        unpaired_orion=unpaired_orion,
+        layout_root=layout_root,
+        unpaired_mapping_json=unpaired_mapping_json,
+    )
 
     # Common full width = widest text panel; narrower text panels are padded
     # (centred on white), never stretched, so their fonts stay consistent.
-    full_width = max(img_c.shape[1], img_d.shape[1])
+    full_width = max(img_c.shape[1], img_d.shape[1], img_e.shape[1])
     img_c = _pad_to_width(img_c, full_width)
     img_d = _pad_to_width(img_d, full_width)
-    # Align E's paired|unpaired divider to D's heatmap gutter (cross-panel consistency).
-    img_e = _place_strip_aligned(img_e, full_width, _detect_gutter_frac(img_d))
+    img_e = _pad_to_width(img_e, full_width)
 
     cache = _load_cache(sensitivity_cache_path)
     row1, w_a = _build_row1(svg_path, cache, full_width)
@@ -286,6 +373,12 @@ if __name__ == "__main__":
         sensitivity_cache_path=ROOT / "inference_output" / "si_a1_a2" / "cache.json",
         channel_ablation_png=ROOT / "figures" / "pngs_updated" / "individual"
         / "channel_ablation_paired_unpaired.png",
+        paired_root=ROOT / "inference_output" / "concat_ablation_1000" / "paired_ablation" / "ablation_results",
+        unpaired_root=ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "ablation_results",
+        paired_orion=ROOT / "data" / "orion-crc33",
+        unpaired_orion=ROOT / "data" / "orion-crc33",
+        layout_root=ROOT / "data" / "orion-crc33",
+        unpaired_mapping_json=ROOT / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json",
     )
     out = ROOT / "figures" / "pngs_updated" / "concat" / "fig2_architecture_performance.png"
     save_figure_png(fig, out)

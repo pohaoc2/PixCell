@@ -89,6 +89,23 @@ def _scaled(font_size: float, scale: float) -> float:
     return float(font_size) * float(scale)
 
 
+def _benchmark_annotation_label(label: object) -> str:
+    text = str(label)
+    suffixes = (
+        " proposed PQ",
+        " proposed DICE",
+        " FUD",
+        " LPIPS",
+        " PQ",
+        " DICE",
+        " HED",
+    )
+    for suffix in suffixes:
+        if text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
 def _render_condition_glyph_axes(ax: plt.Axes, condition: object, *, center_x: float, center_y: float, dx: float) -> None:
     active_groups = set()
     for token in str(condition).split("+"):
@@ -297,14 +314,14 @@ def build_metric_trends_figure(summaries: list[DatasetSummary], width_inches: fl
             band.set_edgecolor("#8A8A8A")
             band.set_linewidth(0.0)
             y_span = hi - lo
-            label_y = min(hi - 0.03 * y_span, band_hi + 0.04 * y_span)
+            label_y = min(hi - 0.08 * y_span, band_hi - 0.04 * y_span)
             ax.text(
                 0.02,
                 label_y,
-                str(reference["label"]),
+                _benchmark_annotation_label(reference["label"]),
                 transform=ax.get_yaxis_transform(),
                 ha="left",
-                va="bottom",
+                va="top",
                 fontsize=FONT_SIZE_TITLE,
                 color="#666666",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
@@ -318,7 +335,7 @@ def build_metric_trends_figure(summaries: list[DatasetSummary], width_inches: fl
             ax.text(
                 0.02,
                 label_y,
-                str(reference["label"]),
+                _benchmark_annotation_label(reference["label"]),
                 transform=ax.get_yaxis_transform(),
                 ha="left",
                 va="bottom",
