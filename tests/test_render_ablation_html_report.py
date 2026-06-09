@@ -468,7 +468,7 @@ def test_render_comparison_table_includes_all_metrics_for_both_slugs() -> None:
 
 def test_fud_uses_fud_labels_in_report_config() -> None:
     assert METRIC_LABELS["fud"] == "FUD"
-    assert TRADEOFF_REFERENCE_BANDS["fud"]["label"] == "PixCell Cond FUD"
+    assert TRADEOFF_REFERENCE_BANDS["fud"]["label"] == "PixCell FUD"
 
 
 def test_load_fud_scores_prefers_fud_over_fvd_and_fid(tmp_path: Path) -> None:

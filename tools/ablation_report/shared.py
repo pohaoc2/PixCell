@@ -55,11 +55,11 @@ METRIC_LABELS = {
 TRADEOFF_METRIC_ORDER = ("fud", "lpips", "pq", "dice", "style_hed")
 TRADEOFF_HIGHER_IS_BETTER = {"dice": True}
 TRADEOFF_REFERENCE_BANDS = {
-    "fud": {"label": "PixCell Cond FUD", "mean": 95.57},
-    "lpips": {"label": "In-house H&E LPIPS", "mean": 0.5463145887851715, "std": 0.07918112947937929},
-    "pq": {"label": "CellViT proposed PQ", "mean": 0.6696, "std": 0.034},
-    "dice": {"label": "PixCell ControlNet DICE", "mean": 0.653},
-    "style_hed": {"label": "In-house H&E HED", "mean": 0.29301873219646307, "std": 0.21293019104543082},
+    "fud": {"label": "PixCell FUD", "mean": 95.57},
+    "lpips": {"label": "ORION H&E LPIPS", "mean": 0.5463145887851715, "std": 0.07918112947937929},
+    "pq": {"label": "CellViT PQ", "mean": 0.6696, "std": 0.034},
+    "dice": {"label": "ControlNet DICE", "mean": 0.653},
+    "style_hed": {"label": "ORION H&E HED", "mean": 0.29301873219646307, "std": 0.21293019104543082},
 }
 CHANNEL_EFFECT_CMAP = plt.get_cmap("RdBu")
 

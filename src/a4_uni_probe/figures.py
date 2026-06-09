@@ -99,6 +99,7 @@ UPDATED_PANEL_DPI = 240
 # number of pixels in panels A, B and C alike. See vis_guidance.md.
 COMBINED_DPI = UPDATED_PANEL_DPI            # one dpi for A, B and C
 COMBINED_GAP_IN = 1.0                        # horizontal gap between A and B (inches)
+COMBINED_ROW_GAP_IN = 0.32                   # vertical gap between the A/B row and panel C below
 FONT_AXIS_LABEL = 13                         # x/y axis titles, colorbar label
 FONT_TICK = 11                               # tick labels (both axes), colorbar ticks
 FONT_INAXES = 11                             # scatter point labels
@@ -793,6 +794,7 @@ def render_pngs_updated_combined_sweep_grid(
     dest_dir: str | Path,
     *,
     target_width_in: float | None = None,
+    attrs: list[str] | None = None,
 ) -> Path:
     """6 attribute sweep grids in one matplotlib figure (horizontal ribbon).
 
@@ -811,7 +813,8 @@ def render_pngs_updated_combined_sweep_grid(
     out_path = Path(out_dir)
     dest_path = ensure_directory(Path(dest_dir))
 
-    n_attrs = len(SWEEP_ATTRS)  # 6
+    sweep_attrs = list(attrs) if attrs else list(SWEEP_ATTRS)
+    n_attrs = len(sweep_attrs)
     n_tiles = 3
     n_rows = 4  # Ref H&E + 3 alpha rows
 
@@ -819,7 +822,7 @@ def render_pngs_updated_combined_sweep_grid(
 
     # Pre-load all tile data
     attr_data: dict[str, dict] = {}
-    for attr in SWEEP_ATTRS:
+    for attr in sweep_attrs:
         attr_dir = out_path / "sweep" / attr
         tile_dirs = _pick_sweep_tiles(attr_dir, n_tiles=n_tiles)
         tile_ids = [td.name for td in tile_dirs]
@@ -880,7 +883,7 @@ def render_pngs_updated_combined_sweep_grid(
     # Store top-left / top-right axes per attr block for label/line placement
     block_axes: dict[int, dict[str, plt.Axes]] = {}
 
-    for attr_idx, attr in enumerate(SWEEP_ATTRS):
+    for attr_idx, attr in enumerate(sweep_attrs):
         data = attr_data[attr]
         tile_dirs = data["tile_dirs"]
         tile_ids = data["tile_ids"]
@@ -922,7 +925,7 @@ def render_pngs_updated_combined_sweep_grid(
     # Add subtitle text and black line above each attr block
     fig.canvas.draw()
 
-    for attr_idx, attr in enumerate(SWEEP_ATTRS):
+    for attr_idx, attr in enumerate(sweep_attrs):
         pos_tl = block_axes[attr_idx]["top_left"].get_position()
         pos_tr = block_axes[attr_idx]["top_right"].get_position()
 
@@ -980,7 +983,9 @@ def render_pngs_updated_combined_abc(
     concat_dir: str | Path | None = None,
     panel_letters: tuple[str, str, str] = ("A", "B", "C"),
     sweep_grid_png: str | Path | None = None,
+    sweep_attrs: list[str] | None = None,
     out_name: str | None = None,
+    row_gap_in: float = COMBINED_ROW_GAP_IN,
 ) -> Path:
     """Combined figure: [A: probe_delta | B: specificity_heatmap] on top,
     [C: sweep_combined] below. Width(A) + gap + Width(B) = Width(C).
@@ -1036,7 +1041,7 @@ def render_pngs_updated_combined_abc(
         sweep_combined_path = Path(sweep_grid_png)
     else:
         sweep_combined_path = render_pngs_updated_combined_sweep_grid(
-            out_path, dest_path, target_width_in=W_AB / COMBINED_DPI
+            out_path, dest_path, target_width_in=W_AB / COMBINED_DPI, attrs=sweep_attrs
         )
     img_C = np.array(Image.open(sweep_combined_path).convert("RGBA"))
     H_C, W_C = img_C.shape[:2]
@@ -1046,7 +1051,14 @@ def render_pngs_updated_combined_abc(
     img_AB = _pad_to_size(img_AB, panel_h, W_final)
     img_C = _pad_to_size(img_C, H_C, W_final)
 
-    combined = np.concatenate([img_AB, img_C], axis=0)
+    # Transparent row gap so panel B's rotated x-tick labels / x-axis title do
+    # not collide with panel C (the sweep grid) directly below.
+    row_gap_h = max(0, round(row_gap_in * COMBINED_DPI))
+    if row_gap_h:
+        row_spacer = np.zeros((row_gap_h, W_final, img_AB.shape[2]), dtype=img_AB.dtype)
+        combined = np.concatenate([img_AB, row_spacer, img_C], axis=0)
+    else:
+        combined = np.concatenate([img_AB, img_C], axis=0)
 
     # Draw panel labels A, B, C at the shared dpi so FONT_PANEL_LETTER is the
     # same point size (in pixels) as the panel text. Letters use fixed margins so
@@ -1067,7 +1079,7 @@ def render_pngs_updated_combined_abc(
     b_label_x = W_A + gap_w + letter_margin
     b_label_y = letter_margin                     # same y as A → horizontally aligned
     c_label_x = letter_margin                     # same x as A → vertically aligned
-    c_label_y = H_target + letter_margin
+    c_label_y = H_target + row_gap_h + letter_margin
 
     for lx, ly, letter in (
         (a_label_x, a_label_y, panel_letters[0]),
@@ -1113,7 +1125,7 @@ def render_pngs_updated_specificity_heatmap(out_dir: str | Path, dest_dir: str |
         PANEL_SQUARE_IN / fig_h,
     ])
     ax.set_facecolor("none")
-    im = ax.imshow(grid, cmap="RdBu_r", vmin=-vlim, vmax=vlim, aspect="equal")
+    im = ax.imshow(grid, cmap="RdBu", vmin=-vlim, vmax=vlim, aspect="equal")
     ax.set_xticks(range(len(edited)))
     ax.set_xticklabels([_display_attr(e) for e in edited], rotation=35, ha="right", fontsize=FONT_TICK)
     ax.set_yticks(range(len(edited)))

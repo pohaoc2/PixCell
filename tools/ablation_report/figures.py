@@ -305,6 +305,10 @@ def build_metric_trends_figure(summaries: list[DatasetSummary], width_inches: fl
             dot_ax.axvline(end_idx + 0.5, color="#D0D0D0", linewidth=0.9, linestyle=(0, (3, 2.5)), zorder=1)
         ax.set_xlim(-0.55, len(condition_keys) - 0.45)
         ax.set_xticks([])
+        # Reserve a clear strip at the top so the benchmark source tag never
+        # collides with data markers (which stay within the original lo..hi).
+        if reference is not None:
+            hi = hi + 0.16 * (hi - lo)
         ax.set_ylim(lo, hi)
         band_limits = _reference_band_limits(metric_key)
         if band_limits is not None and reference is not None:
@@ -313,36 +317,20 @@ def build_metric_trends_figure(summaries: list[DatasetSummary], width_inches: fl
             band.set_hatch("////")
             band.set_edgecolor("#8A8A8A")
             band.set_linewidth(0.0)
-            y_span = hi - lo
-            label_y = min(hi - 0.08 * y_span, band_hi - 0.04 * y_span)
+        elif reference is not None:
+            ax.axhline(float(reference["mean"]), color="#8A8A8A", linewidth=1.1, linestyle=(0, (5, 2.5)), zorder=1)
+        if reference is not None:
             ax.text(
-                0.02,
-                label_y,
+                0.015,
+                0.97,
                 _benchmark_annotation_label(reference["label"]),
-                transform=ax.get_yaxis_transform(),
+                transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=FONT_SIZE_TITLE,
-                color="#666666",
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
-                zorder=5,
-            )
-        elif reference is not None:
-            mean = float(reference["mean"])
-            ax.axhline(mean, color="#8A8A8A", linewidth=1.1, linestyle=(0, (5, 2.5)), zorder=1)
-            y_span = hi - lo
-            label_y = min(hi - 0.03 * y_span, mean + 0.035 * y_span)
-            ax.text(
-                0.02,
-                label_y,
-                _benchmark_annotation_label(reference["label"]),
-                transform=ax.get_yaxis_transform(),
-                ha="left",
-                va="bottom",
-                fontsize=FONT_SIZE_TITLE,
-                color="#666666",
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
-                zorder=5,
+                fontsize=FONT_SIZE_TICK,
+                color="#555555",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9, "pad": 1.0},
+                zorder=6,
             )
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.8)
         ax.spines["top"].set_visible(False)

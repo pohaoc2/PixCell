@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 
 from src.a2_decomposition.metrics import (
@@ -36,13 +35,6 @@ from src.paper_figures.style import (
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ORION_ROOT = ROOT / "data" / "orion-crc33"
 DEFAULT_OUT_PNG = ROOT / "figures" / "pngs" / "08_uni_tme_decomposition.png"
-_GENERATED_GRID: list[tuple[str, bool]] = [
-    ("uni_plus_tme", True),
-    ("uni_only", False),
-    ("tme_only", False),
-    ("neither", False),
-]
-_GENERATED_POSITIONS: list[tuple[int, int]] = [(1, 0), (1, 1), (2, 0), (2, 1)]
 MODE_USE_UNI = {"uni_plus_tme": True, "uni_only": True, "tme_only": False, "neither": False}
 MODE_USE_TME = {"uni_plus_tme": True, "uni_only": False, "tme_only": True, "neither": False}
 DISPLAY_METRICS = ("fud", "lpips", "pq", "dice", "style_hed")
@@ -177,40 +169,52 @@ def _render_image_cell(
         spine.set_linestyle(border_linestyle)
 
 
-def _render_panel_a_row_labels(ax: plt.Axes) -> None:
-    ax.text(
-        -0.055,
-        0.835,
-        "Inputs",
-        transform=ax.transAxes,
-        rotation=90,
-        ha="center",
-        va="center",
-        fontsize=FONT_SIZE_DENSE_TITLE,
-        fontweight="bold",
-        color=INK,
-        clip_on=False,
+def _draw_panel_a_headers(
+    fig: plt.Figure, *, fig_w: float, fig_h: float, x0: float, y_top: float, cell: float, gap: float
+) -> None:
+    """Column-group headers above A's transposed 2x3 grid, in absolute-inch
+    positions: 'Inputs' over the left column, 'Generated outputs' centred over
+    the two generated columns."""
+    y = (y_top + 0.03) / fig_h
+    fig.text(
+        (x0 + cell / 2) / fig_w, y, "Inputs",
+        ha="center", va="bottom", fontsize=FONT_SIZE_DENSE_TITLE, fontweight="bold", color=INK,
     )
+    fig.text(
+        (x0 + 2 * cell + 1.5 * gap) / fig_w, y, "Generated outputs",
+        ha="center", va="bottom", fontsize=FONT_SIZE_DENSE_TITLE, fontweight="bold", color=INK,
+    )
+
+
+def _fig_letter(fig: plt.Figure, *, fig_w: float, fig_h: float, x_in: float, y_in: float, letter: str) -> None:
+    """Bold panel letter at an absolute-inch position (top-left anchored)."""
+    fig.text(
+        x_in / fig_w, y_in / fig_h, letter,
+        ha="left", va="top", fontsize=FONT_SIZE_LABEL, fontweight="bold", color=INK,
+    )
+
+
+def _render_cell_caption(ax: plt.Axes, text: str) -> None:
+    """Small in-cell identifier (white bbox) for the input tiles."""
     ax.text(
-        -0.055,
-        0.335,
-        "Generated outputs",
+        0.04,
+        0.96,
+        text,
         transform=ax.transAxes,
-        rotation=90,
-        ha="center",
-        va="center",
-        fontsize=FONT_SIZE_DENSE_TITLE,
-        fontweight="bold",
+        ha="left",
+        va="top",
+        fontsize=FONT_SIZE_DENSE_LABEL,
         color=INK,
-        clip_on=False,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8, "pad": 1.0},
+        zorder=5,
     )
 
 
 def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) -> None:
     """Draw UNI/TME ●/○ dots stacked at bottom-right corner of an image axes."""
     rows = [
-        (0.88, 0.15, "UNI", MODE_USE_UNI[mode_key]),
-        (0.88, 0.05, "TME", MODE_USE_TME[mode_key]),
+        (0.84, 0.20, "UNI", MODE_USE_UNI[mode_key]),
+        (0.84, 0.08, "TME", MODE_USE_TME[mode_key]),
     ]
     for x_dot, y_dot, label, active in rows:
         ax.scatter(
@@ -224,45 +228,62 @@ def _render_mode_indicator(ax: plt.Axes, mode_key: str, *, show_labels: bool) ->
             zorder=5,
         )
         if show_labels:
-            ax.text(x_dot - 0.06, y_dot, label, transform=ax.transAxes,
+            ax.text(x_dot - 0.09, y_dot, label, transform=ax.transAxes,
                     ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
 
 
 def _render_panel_a(
     fig: plt.Figure,
-    subgrid,
     *,
+    fig_w: float,
+    fig_h: float,
+    x0: float,
+    y_top: float,
+    cell: float,
+    gap: float,
     generated_root: Path,
     orion_root: Path,
     tile_id: str,
 ) -> None:
-    outer_ax = fig.add_subplot(subgrid)
-    outer_ax.axis("off")
-    _panel_label(outer_ax, "A")
-    _render_panel_a_row_labels(outer_ax)
-
+    """Transposed 2 rows x 3 cols image grid placed in absolute inches so the
+    cell gap is equal horizontally and vertically (`wspace == hspace`) at any
+    figure size. Col 0 = inputs (Real H&E over cell masks); cols 1-2 = generated
+    2x2 (rows = UNI on/off, cols = TME on/off)."""
     tile_id = _resolve_panel_a_tile(generated_root=generated_root, preferred_tile_id=tile_id)
-
-    grid = subgrid.subgridspec(3, 2, wspace=0.03, hspace=0.03)
     sample = _load_rgb(generated_root / tile_id / "uni_plus_tme.png")
     size = sample.size
 
-    ref_ax = fig.add_subplot(grid[0, 0])
+    def _cell_ax(col: int, row: int) -> plt.Axes:
+        cx = x0 + col * (cell + gap)
+        cy = y_top - cell - row * (cell + gap)
+        return fig.add_axes([cx / fig_w, cy / fig_h, cell / fig_w, cell / fig_h])
+
+    ref_ax = _cell_ax(0, 0)
     ref_path = orion_root / "he" / f"{tile_id}.png"
     ref_img = _load_rgb(ref_path, size=size) if ref_path.is_file() else _blank_image(size=size)
-    _render_image_cell(ref_ax, ref_img, "Real H&E", border_color="#999999", border_linestyle="--")
+    _render_image_cell(ref_ax, ref_img, "", border_color="#999999", border_linestyle="--")
+    _render_cell_caption(ref_ax, "Real H&E")
 
-    tme_ax = fig.add_subplot(grid[0, 1])
+    tme_ax = _cell_ax(0, 1)
     _render_image_cell(
         tme_ax, _load_tme_thumbnail(orion_root, tile_id, size=size),
-        "cell masks", border_color="#999999", border_linestyle="--",
+        "", border_color="#999999", border_linestyle="--",
     )
+    _render_cell_caption(tme_ax, "cell masks")
 
-    for (mode_key, show_text), (row, col) in zip(_GENERATED_GRID, _GENERATED_POSITIONS, strict=True):
-        ax = fig.add_subplot(grid[row, col])
+    generated_layout = [
+        ("uni_plus_tme", (1, 0)),  # (col, row)
+        ("uni_only", (2, 0)),
+        ("tme_only", (1, 1)),
+        ("neither", (2, 1)),
+    ]
+    for mode_key, (col, row) in generated_layout:
+        ax = _cell_ax(col, row)
         image = _load_rgb(generated_root / tile_id / f"{mode_key}.png", size=size)
         _render_image_cell(ax, image, "")
-        _render_mode_indicator(ax, mode_key, show_labels=show_text)
+        _render_mode_indicator(ax, mode_key, show_labels=(mode_key == "uni_plus_tme"))
+
+    _draw_panel_a_headers(fig, fig_w=fig_w, fig_h=fig_h, x0=x0, y_top=y_top, cell=cell, gap=gap)
 
 
 def _values_for_metric(summary: dict[str, dict], metric_key: str) -> tuple[list[float], list[float | None]]:
@@ -301,26 +322,27 @@ def _tight_ylim(values: list[float], errors: list[float | None]) -> tuple[float,
 
 def _render_dot_key_single(key_ax: plt.Axes, *, show_labels: bool) -> None:
     """One column of the dot-key strip. show_labels=True only for the leftmost column."""
-    key_ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
+    key_ax.set_xlim(-1.25, len(MODE_KEYS) - 0.5)
     key_ax.set_ylim(-0.5, 1.5)
     for x, mode_key in enumerate(MODE_KEYS):
         key_ax.scatter(x, 1, s=20, facecolors=INK if MODE_USE_UNI[mode_key] else "white", edgecolors=INK, linewidths=0.8)
         key_ax.scatter(x, 0, s=20, facecolors=INK if MODE_USE_TME[mode_key] else "white", edgecolors=INK, linewidths=0.8)
     if show_labels:
-        key_ax.text(-0.8, 1, "UNI", ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
-        key_ax.text(-0.8, 0, "TME", ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
+        key_ax.text(-0.95, 1, "UNI", ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
+        key_ax.text(-0.95, 0, "TME", ha="right", va="center", fontsize=FONT_SIZE_DENSE_LABEL, color=INK)
     key_ax.axis("off")
 
 
-def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict], *, label_subgrid=None) -> None:
-    label_ax = fig.add_subplot(label_subgrid if label_subgrid is not None else subgrid)
-    label_ax.axis("off")
-    _panel_label(label_ax, "B")
+def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict], *, label_subgrid=None, draw_label: bool = True) -> None:
+    if draw_label:
+        label_ax = fig.add_subplot(label_subgrid if label_subgrid is not None else subgrid)
+        label_ax.axis("off")
+        _panel_label(label_ax, "B")
 
     _SHARED_METRICS = {"lpips", "pq", "dice", "style_hed"}
     _SHARED_LIST = [m for m in DISPLAY_METRICS if m in _SHARED_METRICS]
 
-    outer_grid = subgrid.subgridspec(2, 1, height_ratios=[5.5, 0.85], hspace=0.05)
+    outer_grid = subgrid.subgridspec(2, 1, height_ratios=[4.8, 1.0], hspace=0.05)
 
     # FUD gets its own cell; LPIPS/PQ/DICE/HED share a tighter sub-grid
     m_outer = outer_grid[0, 0].subgridspec(1, 2, width_ratios=[1, len(_SHARED_LIST)], wspace=0.25)
@@ -364,7 +386,7 @@ def _render_panel_b(fig: plt.Figure, subgrid, summary: dict[str, dict], *, label
         row = summary.get("uni_plus_tme", {}).get(metric_key)
         raw_dir = row.direction if row is not None else ""
         arrow = {"up": "↑", "down": "↓"}.get(raw_dir.lower(), raw_dir)
-        ax.set_title(f"{label} ({arrow})", fontsize=FONT_SIZE_DENSE_TITLE, pad=2)
+        ax.set_title(f"{label}\n({arrow})", fontsize=FONT_SIZE_DENSE_TITLE, pad=1, linespacing=0.9)
         ax.set_xlim(-0.5, len(MODE_KEYS) - 0.5)
         ax.set_xticks([])
         ax.grid(True, axis="y", color=SOFT_GRID, linewidth=0.7)
@@ -399,9 +421,10 @@ def _fmt_val(v: float) -> str:
     return f"{v:.2f}"
 
 
-def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
-    ax = fig.add_subplot(subgrid)
-    _panel_label(ax, "C")
+def _render_panel_c(fig: plt.Figure, ax: plt.Axes, cax: plt.Axes, summary: dict[str, dict]) -> None:
+    # Cells are square by construction: the host axes rect is sized 5*CELL x
+    # 3*CELL (5 metric columns, 3 effect rows), so aspect="auto" fills it with
+    # square cells.
     # Raw (non-oriented) differences so annotations match intuition per metric
     effect_names = ["UNI effect", "TME effect", "Interaction"]
     effects: dict[str, dict[str, float | None]] = {n: {} for n in effect_names}
@@ -445,10 +468,11 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
     finite = matrix[np.isfinite(matrix)]
     if finite.size == 0:
         ax.axis("off")
+        cax.axis("off")
         ax.text(0.5, 0.5, "Effect metrics missing", ha="center", va="center", transform=ax.transAxes)
         return
 
-    # Oriented color matrix: flip sign for lower-is-better metrics so red=good, blue=bad
+    # Oriented color matrix: flip sign for lower-is-better metrics so blue=good, red=bad
     color_matrix = np.full_like(matrix, np.nan)
     for col_idx, metric_key in enumerate(cols):
         direction = "up"
@@ -468,7 +492,7 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
         col_max = float(np.max(np.abs(col_finite))) if col_finite.size else 1.0
         norm_matrix[:, col_idx] = col_vals / (col_max or 1.0)
 
-    im = ax.imshow(norm_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    im = ax.imshow(norm_matrix, cmap="RdBu", vmin=-1, vmax=1, aspect="auto")
     ax.set_xticks(range(len(cols)))
     ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in cols], rotation=35, ha="right", fontsize=FONT_SIZE_DENSE_LABEL)
     ax.set_yticks(range(len(rows)))
@@ -485,8 +509,6 @@ def _render_panel_c(fig: plt.Figure, subgrid, summary: dict[str, dict]) -> None:
                 sd = effect_sds[rows[row_idx]].get(cols[col_idx])
                 label = _fmt_val(value) if sd is None else f"{_fmt_val(value)}\n±{_fmt_val(sd)}"
                 ax.text(col_idx, row_idx, label, ha="center", va="center", fontsize=FONT_SIZE_CELL_TEXT, color=text_color)
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="5%", pad=0.06)
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_ticks([-1, 0, 1])
     cbar.set_ticklabels(["most\nneg.", "0", "most\npos."])
@@ -516,13 +538,63 @@ def build_uni_tme_decomposition_figure(
         representative_json=Path(representative_json),
     )
 
-    fig = plt.figure(figsize=(7.2, 3.95))
-    outer = fig.add_gridspec(1, 2, width_ratios=[0.78, 1.22], wspace=0.22)
-    _render_panel_a(fig, outer[0, 0], generated_root=generated_root, orion_root=Path(orion_root), tile_id=tile_id)
-    right = outer[0, 1].subgridspec(2, 1, height_ratios=[1.15, 1.0], hspace=0.38)
-    _render_panel_b(fig, right[0, 0], summary, label_subgrid=outer[0, 1])
-    _render_panel_c(fig, right[1, 0], summary)
-    fig.subplots_adjust(left=0.02, right=0.96, bottom=0.08, top=0.97)
+    # ---- Absolute-inch layout (vis_guidance: equal cell gaps + data-region
+    # alignment). A's image grid and B's plot band share the SAME x-extent
+    # [PLOT_L, PLOT_L + W_AB], so width(A) == width(B) by construction. C is a
+    # square-celled heatmap placed to the right of the A/B stack. ----
+    M_L, M_R, M_T, M_B = 0.05, 0.06, 0.09, 0.08
+    YLABEL_IN = 0.42          # room left of the plot band for B's y-tick labels
+    HEADER_IN = 0.18          # room above A for the column-group headers + letters
+    GAP_A = 0.05              # equal cell gap in A (rows AND columns)
+    CELL_A = 0.92             # square image cell
+    GAP_AB = 0.44             # vertical gap between A and B (B's metric titles live here)
+    B_H = 1.20               # reduced B height
+    GAP_LR = 0.40             # gap between the A/B block and C's y labels
+    C_YLAB, C_XLAB = 0.58, 0.46
+    CBAR_GAP, CBAR_W, CBAR_LAB = 0.07, 0.11, 0.66
+
+    fig_w = 7.2               # held constant so the composite scales A-F letters consistently
+    PLOT_L = M_L + YLABEL_IN
+    W_AB = 3 * CELL_A + 2 * GAP_A
+    A_H = 2 * CELL_A + GAP_A
+    C_W = (fig_w - PLOT_L - W_AB - GAP_LR - M_R) - (C_YLAB + CBAR_GAP + CBAR_W + CBAR_LAB)
+    CELL_C = C_W / 5.0        # 5 metric columns; square cells -> 3*CELL_C tall
+    C_H = 3 * CELL_C
+    fig_h = M_T + HEADER_IN + A_H + GAP_AB + B_H + M_B
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    a_top = fig_h - M_T - HEADER_IN
+    a_bot = a_top - A_H
+    b_top = a_bot - GAP_AB
+    b_bot = b_top - B_H
+
+    _render_panel_a(
+        fig, fig_w=fig_w, fig_h=fig_h, x0=PLOT_L, y_top=a_top, cell=CELL_A, gap=GAP_A,
+        generated_root=generated_root, orion_root=Path(orion_root), tile_id=tile_id,
+    )
+
+    # B: gridspec constrained to the same horizontal band as A.
+    b_gs = fig.add_gridspec(
+        1, 1, left=PLOT_L / fig_w, right=(PLOT_L + W_AB) / fig_w,
+        bottom=b_bot / fig_h, top=b_top / fig_h,
+    )
+    _render_panel_b(fig, b_gs[0, 0], summary, draw_label=False)
+
+    # C: square-celled heatmap + colorbar, vertically centred against the A/B
+    # stack (a 3x5 matrix is too short to span the stack without oversized cells).
+    c_left = PLOT_L + W_AB + GAP_LR + C_YLAB
+    c_top = (a_top + b_bot) / 2 + C_H / 2
+    ax_c = fig.add_axes([c_left / fig_w, (c_top - C_H) / fig_h, C_W / fig_w, C_H / fig_h])
+    cax_c = fig.add_axes(
+        [(c_left + C_W + CBAR_GAP) / fig_w, (c_top - C_H) / fig_h, CBAR_W / fig_w, C_H / fig_h]
+    )
+    _render_panel_c(fig, ax_c, cax_c, summary)
+
+    # Panel letters (A/B share the left edge; C sits above its centred heatmap).
+    _fig_letter(fig, fig_w=fig_w, fig_h=fig_h, x_in=M_L, y_in=a_top + HEADER_IN, letter="A")
+    _fig_letter(fig, fig_w=fig_w, fig_h=fig_h, x_in=M_L, y_in=b_top + 0.16, letter="B")
+    _fig_letter(fig, fig_w=fig_w, fig_h=fig_h, x_in=c_left - C_YLAB, y_in=c_top + 0.16, letter="C")
     return fig
 
 

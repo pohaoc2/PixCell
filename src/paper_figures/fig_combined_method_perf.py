@@ -216,8 +216,13 @@ def _build_dataset_de_row(
     unpaired_orion: Path,
     layout_root: Path,
     unpaired_mapping_json: Path,
-) -> np.ndarray:
-    """One Fig. 2 D/E row: heatmap at left, matching split qualitative at right."""
+) -> tuple[np.ndarray, int]:
+    """One Fig. 2 D/E row: heatmap at left, matching split qualitative at right.
+
+    Returns the composited row and the pixel x of the heatmap|qualitative
+    boundary (left edge of the qualitative strip), used to place the (i)/(ii)
+    sub-panel labels.
+    """
     img_heat = _fig_to_rgb(
         build_channel_effect_heatmaps_figure(
             [summary],
@@ -244,7 +249,8 @@ def _build_dataset_de_row(
     if img_qual.shape[0] != target_h:
         img_qual = _pad_to_height(img_qual, target_h, valign="center")
     gap = np.full((target_h, round(_DE_ROW_GAP_IN * _RENDER_DPI), 3), 255, dtype=np.uint8)
-    return np.concatenate([img_heat, gap, img_qual], axis=1)
+    divider_px = img_heat.shape[1] + gap.shape[1]
+    return np.concatenate([img_heat, gap, img_qual], axis=1), divider_px
 
 
 def build_combined_method_perf_figure(
@@ -276,7 +282,7 @@ def build_combined_method_perf_figure(
         unpaired_mapping_json = channel_ablation_png.parents[3] / "inference_output" / "concat_ablation_1000" / "unpaired_ablation" / "metadata" / "unpaired_mapping.json"
 
     summary_by_slug = {summary.slug: summary for summary in summaries}
-    img_d = _build_dataset_de_row(
+    img_d, div_d = _build_dataset_de_row(
         summary_by_slug["paired"],
         paired_root=paired_root,
         unpaired_root=unpaired_root,
@@ -285,7 +291,7 @@ def build_combined_method_perf_figure(
         layout_root=layout_root,
         unpaired_mapping_json=unpaired_mapping_json,
     )
-    img_e = _build_dataset_de_row(
+    img_e, div_e = _build_dataset_de_row(
         summary_by_slug["unpaired"],
         paired_root=paired_root,
         unpaired_root=unpaired_root,
@@ -298,6 +304,8 @@ def build_combined_method_perf_figure(
     # Common full width = widest text panel; narrower text panels are padded
     # (centred on white), never stretched, so their fonts stay consistent.
     full_width = max(img_c.shape[1], img_d.shape[1], img_e.shape[1])
+    d_left = max(0, (full_width - img_d.shape[1]) // 2)
+    e_left = max(0, (full_width - img_e.shape[1]) // 2)
     img_c = _pad_to_width(img_c, full_width)
     img_d = _pad_to_width(img_d, full_width)
     img_e = _pad_to_width(img_e, full_width)
@@ -316,14 +324,20 @@ def build_combined_method_perf_figure(
     gs = fig.add_gridspec(len(rows), 1, height_ratios=heights, hspace=0)
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    row_letters = [("A", "B"), ("C",), ("D",), ("E",)]
     b_x = (w_a + _ROW1_GAP_PX) / full_width
-    for i, (img, letters) in enumerate(zip(rows, row_letters)):
+    # D/E each split into a heatmap (i) and a qualitative-H&E (ii) sub-panel;
+    # label both at their respective left edges.
+    row_label_specs = [
+        [("A", 0.006), ("B", b_x + 0.006)],
+        [("C", 0.006)],
+        [("D (i)", d_left / full_width + 0.006), ("D (ii)", (d_left + div_d) / full_width + 0.006)],
+        [("E (i)", e_left / full_width + 0.006), ("E (ii)", (e_left + div_e) / full_width + 0.006)],
+    ]
+    for i, (img, specs) in enumerate(zip(rows, row_label_specs)):
         ax = fig.add_subplot(gs[i, 0])
         ax.imshow(img, interpolation="none")
         ax.axis("off")
-        xs = [0.006] if len(letters) == 1 else [0.006, b_x + 0.006]
-        for letter, x in zip(letters, xs):
+        for letter, x in specs:
             ax.text(
                 x,
                 0.992,
