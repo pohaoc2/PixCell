@@ -26,8 +26,10 @@ PNGS_ROOT = ROOT / "figures" / "pngs_updated"
 CONCAT_DIR = PNGS_ROOT / "concat"
 FIGURES_MD = ROOT / "figures.md"
 OUT_PATH = CONCAT_DIR / "_all_figures_preview.png"
+OUT_PATH_V2 = CONCAT_DIR / "_all_figures_preview_v2.png"
 OUT_PATH_SI = CONCAT_DIR / "_all_SI_figures.png"
 OUT_PATH_PDF = OUT_PATH.with_suffix(".pdf")
+OUT_PATH_PDF_V2 = OUT_PATH_V2.with_suffix(".pdf")
 OUT_PATH_SI_PDF = OUT_PATH_SI.with_suffix(".pdf")
 
 MASTER_DPI = 150
@@ -39,15 +41,15 @@ MASTER_DPI = 150
 UNNUMBERED = {"overview_workflow.png"}
 
 # Main-text figures: the graphical abstract on top, then the reorganized
-# fig1-fig4 composites (fig4 = v1, the bar-chart D/E variant; fig4_*_v2 is the
-# radar alternative, not in the paper). The former standalone panels
-# (08, uni_probe, 07d, 09b) are now embedded inside fig3/fig4 and are
-# intentionally not listed separately.
+# fig1-fig4 composites. Fig 3 uses the v2 side-by-side layout. Fig 4 uses the
+# v1 bar-chart D/E variant; fig4_*_v2 is kept as an alternate render and is not
+# listed in the main paper preview. The former standalone panels are embedded
+# inside fig3/fig4 and are intentionally not listed separately.
 MAIN_FIGURE_ORDER = [
     "methods/overview_workflow.png",
     "fig1_approach_data.png",
     "fig2_architecture_performance.png",
-    "fig3_uni_decomposition.png",
+    "fig3_uni_decomposition_v2.png",
     "fig4_per_channel_impact.png",
 ]
 
@@ -433,17 +435,17 @@ def build_pdf(
 
 
 def main() -> None:
-    main_title = "PixCell main figures - paper preview (fig1-fig4, filled to common column width, %d dpi)" % MASTER_DPI
-    si_title = "PixCell supplementary figures - paper preview (filled to common column width, %d dpi)" % MASTER_DPI
+    main_title = "Main figures - paper preview (fig1-fig4, filled to common column width, %d dpi)" % MASTER_DPI
+    si_title = "Supplementary figures - paper preview (filled to common column width, %d dpi)" % MASTER_DPI
     build(
         MAIN_FIGURE_ORDER,
-        OUT_PATH,
+        OUT_PATH_V2,
         title=main_title,
         label_prefix="Figure ",
     )
     build_pdf(
         MAIN_FIGURE_ORDER,
-        OUT_PATH_PDF,
+        OUT_PATH_PDF_V2,
         title=main_title,
         combine_first_two=True,
     )

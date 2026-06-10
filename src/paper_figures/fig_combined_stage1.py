@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from PIL import Image
 from scipy import stats as _scipy_stats
 
 from src.paper_figures.style import (
@@ -326,6 +327,16 @@ def _fig_to_array(fig: plt.Figure) -> np.ndarray:
     return arr
 
 
+def _load_rgb_on_white(path: Path) -> np.ndarray:
+    """Load an image, flattening transparency onto white before RGB conversion."""
+    image = Image.open(path)
+    if image.mode == "RGBA":
+        bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        bg.alpha_composite(image)
+        return np.array(bg.convert("RGB"))
+    return np.array(image.convert("RGB"))
+
+
 # ── Composite ───────────────────────────────────────────────────────────────
 def build_stage1_figure(data: dict, *, svg_path: Path, results_png: Path) -> plt.Figure:
     from PIL import Image
@@ -345,7 +356,7 @@ def build_stage1_figure(data: dict, *, svg_path: Path, results_png: Path) -> plt
     row1 = np.concatenate([img_a, gutter, img_b], axis=1)
 
     # Row 2: C (montage) resized to full width.
-    row2 = _resize_to_width(_load_rgb(results_png), full_width)
+    row2 = _resize_to_width(_load_rgb_on_white(results_png), full_width)
 
     rows = [_add_label_strip(r) for r in (row1, row2)]
     heights = [r.shape[0] for r in rows]

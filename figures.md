@@ -67,7 +67,7 @@ their captions from this file by PNG basename:
 - One figure carries the full Stage-2 story: how the TME signal is injected (A), that Concat/Grouped conditioning trains stably (B), and how conditioning trades off across five metrics and two inference regimes (C–E).
 - Paired beats unpaired across metrics; Cell-state and Nutrient dominate nuclear-segmentation metrics; Vasculature ≈ 0 everywhere.
 
-## fig3_uni_decomposition (`figures/pngs_updated/concat/fig3_uni_decomposition.png`)
+## fig3_uni_decomposition_v2 (`figures/pngs_updated/concat/fig3_uni_decomposition_v2.png`)
 
 **Outline name:** UNI vs TME decomposition + UNI probe interpretability
 

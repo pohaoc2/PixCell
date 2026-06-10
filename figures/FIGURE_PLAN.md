@@ -48,12 +48,12 @@ Builder: `src/paper_figures/fig_combined_method_perf.py`
   height; E's dashed paired|unpaired divider auto-aligned to D's heatmap gutter.
 
 ### Fig 3 — UNI vs TME decomposition (information content)  ✅ BUILT
-File: `concat/fig3_uni_decomposition.png`
-Builder: `src/paper_figures/fig_combined_uni_decomp.py`
-- Top **A/B/C** = `08_uni_tme_decomposition.png` (tile + 4-condition metrics +
+File: `concat/fig3_uni_decomposition_v2.png`
+Builder: `src/paper_figures/fig_combined_uni_decomp_v2.py`
+- Left **A/B/C** = UNI/TME decomposition panels (tile + 4-condition metrics +
   two-way decomposition heatmap)
-- Bottom **D/E/F** = `uni_probe_overview.png` relettered (UNI-vs-TME decodability
-  scatter + probe specificity matrix + edit sweeps)
+- Right **D/E/F** = UNI-vs-TME decodability scatter + probe specificity matrix +
+  edit sweeps in the side-by-side v2 layout
 - Sources (now embedded, archived in `figures.md`): `concat/08_uni_tme_decomposition.png`,
   `concat/uni_probe_overview.png`
 

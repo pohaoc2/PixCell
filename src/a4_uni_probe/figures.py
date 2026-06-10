@@ -707,7 +707,8 @@ def render_pngs_updated_probe_delta(out_dir: str | Path, dest_dir: str | Path) -
     handles = [
         Line2D([0], [0], marker=_CAT_STYLE[cat][1], color=_CAT_STYLE[cat][0],
                markerfacecolor="white", markeredgecolor=_CAT_STYLE[cat][0],
-               markeredgewidth=1.2, markersize=8, linestyle="none", label=cat)
+               markeredgewidth=1.2, markersize=8, linestyle="none",
+               label={"cell composition": "cell comp."}.get(cat, cat))
         for cat in ("appearance", "morphology", "cell composition")
         if cat in plotted_categories
     ]
