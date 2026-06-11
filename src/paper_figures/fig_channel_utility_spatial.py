@@ -392,19 +392,23 @@ def build_channel_utility_spatial_figure(
     layout_csv: Path = DEFAULT_LAYOUT_CSV,
     scale: float = 1.0,
     panel_letters: bool = True,
+    legend: str = "bottom",
 ) -> plt.Figure:
     # Absolute-inch geometry → square, compact panels (see PANEL_* constants).
     # ``scale`` enlarges the whole figure natively (geometry only — fonts stay at
     # their fixed pt sizes so they remain consistent with neighbouring panels when
     # this figure is composited). ``panel_letters`` draws the per-pane A/B letters;
     # set False when an outer composite supplies its own single panel letter.
+    # ``legend="none"`` drops the bottom legend row entirely (and its margin) so an
+    # outer composite can supply a single shared legend and the data squares fill
+    # more of the figure height.
     panel_sq = PANEL_SQ_IN * scale
     m_left = MARGIN_LEFT_IN * scale
     m_gap = MARGIN_GAP_IN * scale
     m_right = MARGIN_RIGHT_IN * scale
     m_top = MARGIN_TOP_IN * scale
     m_xlabel = MARGIN_XLABEL_IN * scale
-    m_legend = MARGIN_LEGEND_IN * scale
+    m_legend = (MARGIN_LEGEND_IN if legend == "bottom" else 0.0) * scale
 
     bottom_margin_in = m_xlabel + m_legend
     fig_w = m_left + panel_sq + m_gap + panel_sq + m_right
@@ -471,7 +475,7 @@ def build_channel_utility_spatial_figure(
         for g in GROUP_COLORS.keys()
         if g in plotted_groups
     ]
-    if handles:
+    if handles and legend == "bottom":
         fig.legend(
             handles=handles,
             loc="lower center",

@@ -86,12 +86,12 @@ their captions from this file by PNG basename:
 
 ### Figure caption
 
-**Figure 4. Isolating per-channel impact and relating H&E decodability to generative impact (Stage 3).** **(A)** Stage-3 schematic: ridge probes map UNI to each MX channel (recording R²), leave-one-out inference drops each channel, and per-channel impact (PQ and pixel changes) is computed against full conditioning. **(B)** Within-tile decoding R² for each aggregate TME channel (Prolif, Non-prolif, Density, Cancer, Healthy, Immune, Vasculature, Glucose, O₂, Dead) across four frozen H&E encoders (UNI-2h, Virchow2, CTransPath, ResNet-50), one boxplot per encoder per channel. **(C)** Within-tile decoding R² for individual MX marker intensities using the best encoder (UNI-2h), one bar per marker ordered by descending R² (error bars = CV-fold standard error). **(D)** Per-channel generative color impact (ΔE) and **(E)** per-channel layout impact (ΔPQ) under leave-one-out ablation *(placeholder bars pending the LOO metric pass)*. **(F)** Decodability versus generative impact: color impact ΔE (left) and layout impact ΔPQ (right) plotted against within-tile R² (UNI-2h spatial probe); points colored and shaped by group (cell types, cell state, vasculature, microenv), with dotted per-panel quadrant guides.
+**Figure 4. Relating H&E decodability to generative impact yields a channel-selection guide (Stage 3).** **(A)** Stage-3 schematic: ridge probes map UNI to each MX channel (recording R²), leave-one-out inference drops each channel, and per-channel impact (PQ and pixel changes) is computed against full conditioning. **(B)** Decodability versus generative impact: color impact ΔE (left) and layout impact ΔPQ (right) plotted against within-tile decoding R² (UNI-2h spatial probe); points colored and shaped by group (cell types, cell state, vasculature, microenv), with dotted per-panel quadrant guides. The supporting decodability measurements and the ranked per-channel impacts are provided in the SI (Fig. S4).
 
 ### Key takeaway
 
 - Turns the analysis into a channel-selection guide: decodability and generative impact are different axes — channels poorly recovered from H&E (Glucose, O₂, Vasculature) drive the largest color shifts, while cell-state channels drive layout/segmentation.
-- Individual MX markers (C) and rare/low-prevalence channels (Dead) carry little decodable signal, so the aggregate TME channels — not raw markers — are the useful conditioning.
+- The quadrant guide makes the conditioning recommendation direct: keep the channels in the high-impact halves, and prefer aggregate TME channels over raw markers (Fig. S4).
 
 ---
 
@@ -133,6 +133,19 @@ their captions from this file by PNG basename:
 ### Key takeaway
 
 - The stable Concat/Grouped encoders reproduce nuclear contours closely; the per-channel and mask-only-bypass variants and the vanilla baseline drift — the visual half of the architecture justification whose quantitative half is in Fig 2B.
+
+## si_channel_decodability_impact (`figures/pngs_updated/si/si_channel_decodability_impact.png`)
+
+**Outline name:** Decodability and ranked per-channel generative impact (Fig 4 supporting panels)
+
+### Figure caption
+
+**Figure S4. H&E decodability of TME channels/markers and the ranked per-channel generative impact behind Fig 4B.** **(A)** Within-tile decoding R² for each aggregate TME channel (Prolif, Non-prolif, Density, Cancer, Healthy, Immune, Vasculature, Glucose, O₂, Dead) across four frozen H&E encoders (UNI-2h, Virchow2, CTransPath, ResNet-50), one boxplot per encoder per channel. **(B)** Within-tile decoding R² for individual MX marker intensities using the best encoder (UNI-2h), one bar per marker ordered by descending R² (error bars = CV-fold standard error). Panels A–B are the decodability axis (x) of Fig 4B. **(C)** Per-channel color impact, mean CIEDE2000 ΔE between full-conditioning and leave-one-out generations, measured over 300 tiles from the sub-channel ablation (mean ± SEM; bars colored by group). **(D)** Per-channel layout impact, drop in Panoptic Quality (ΔPQ) of CellViT-segmented nuclei relative to full conditioning. Channels in C–D are ranked descending; these are the impact axes (y) of Fig 4B.
+
+### Key takeaway
+
+- UNI-2h leads all encoders; cell-type and cell-state density channels are the most decodable, while Glucose, O₂, Vasculature and Dead carry little decodable signal from H&E. Individual MX markers (B) decode worse than the aggregate TME channels, so the aggregate channels — not raw markers — are the useful conditioning.
+- The impact axes are not interchangeable: Glucose, Vasculature and O₂ drive the largest color shifts (C), while cell-state Non-prolif and microenv Glucose drive the largest layout/segmentation changes (D). Dead (and, for layout, Vasculature) sit near zero on both axes, consistent with their low prevalence and low decodability.
 
 ---
 

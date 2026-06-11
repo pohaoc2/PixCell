@@ -20,7 +20,6 @@ MAIN_WIDTH_NORMALIZE = [
     "fig2_architecture_performance.png",
     "fig3_uni_decomposition_v2.png",
     "fig4_per_channel_impact.png",
-    "fig4_per_channel_impact_v2.png",
 ]
 
 

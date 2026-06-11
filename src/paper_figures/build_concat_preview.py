@@ -41,10 +41,9 @@ MASTER_DPI = 150
 UNNUMBERED = {"overview_workflow.png"}
 
 # Main-text figures: the graphical abstract on top, then the reorganized
-# fig1-fig4 composites. Fig 3 uses the v2 side-by-side layout. Fig 4 uses the
-# v1 bar-chart D/E variant; fig4_*_v2 is kept as an alternate render and is not
-# listed in the main paper preview. The former standalone panels are embedded
-# inside fig3/fig4 and are intentionally not listed separately.
+# fig1-fig4 composites. Fig 3 uses the v2 side-by-side layout. Fig 4 (restructured
+# 2026-06-11) carries only A (schematic) + B (decodability-vs-impact guide); its
+# former decodability and ranked-impact panels moved to the SI items below.
 MAIN_FIGURE_ORDER = [
     "methods/overview_workflow.png",
     "fig1_approach_data.png",
@@ -55,12 +54,14 @@ MAIN_FIGURE_ORDER = [
 
 # Supplementary figures: the panels that survive the reorganization as
 # standalone SI items. performance Panel A/C and SI_A1_A2 Panel A/B were
-# promoted into fig2, leaving only the ranking tables (Panel B) and the
-# qualitative tile grid (Panel C) for the SI.
+# promoted into fig2, leaving the ranking tables (Panel B) and the qualitative
+# tile grid (Panel C); si_channel_decodability_impact holds Fig 4's former B/C
+# decodability and D/E ranked-impact panels in one four-panel figure.
 SI_FIGURE_ORDER = [
     "si_performance_ranking.png",
     "ablation_grids_combined.png",
     "si_a1a2_qualitative_tiles.png",
+    "si/si_channel_decodability_impact.png",
 ]
 
 # Figures intended for a single (half-page) column — left at their native width

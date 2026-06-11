@@ -1,30 +1,32 @@
-"""Combined Fig 4: Per-channel impact — channel-selection guide (Stage 3).
+"""Fig 4 + SI: per-channel impact — channel-selection guide (Stage 3).
 
-Layout (two blocks, schematic on the left):
+Restructured 2026-06-11: the main figure carries only the schematic and the
+decodability-vs-impact guide; the raw decodability and ranked-impact panels move
+to the SI.
 
-    ┌───────────────────────────┬──────────────────────────┐
-    │  A  stage_3 schematic     │  B  UNI→channel decode    │
-    │  (raster, tall left col)  ├──────────────────────────┤
-    │                           │  C  per-protein decode    │
-    ├──────────────────────────┬┴──────────────────────────┤
-    │  D  per-channel impact    │                           │
-    ├──────────────────────────┤   F  color / layout        │
-    │  E  per-channel impact    │      quadrants             │
-    └──────────────────────────┴───────────────────────────┘
+Main ``fig4_per_channel_impact.png`` — two panels, side by side:
 
-A is scaled (preserving its aspect) so its height equals the B+C stack, so the
-top block reads as one band.  Because that makes A wider, B/C are *re-rendered*
-at a smaller width (never horizontally squashed — see `vis_guidance.md`, "never
-distort a rendered image").  D/E are wide-bar placeholders stacked in the left
-column; F is the color/layout quadrant pair, enlarged slightly and stripped of
-its internal A/B sub-labels (the composite supplies the single "F").
+    ┌───────────┬──────────────────────────┐
+    │ A         │ B  decodability vs impact │
+    │ Stage-3   │  ┌─────────┐┌──────────┐  │
+    │ schematic │  │ ΔE color││ ΔPQ layout│  │
+    │           │  │  vs R²  ││   vs R²   │  │
+    └───────────┴──────────────────────────┘
 
-Panels are edge-aligned to the figure margins (A/D/E to the left, B/C/F to the
-right) so F can be wider than B/C while every column still lines up on a figure
-edge.  Every data panel is rendered **natively at one shared DPI**
-(`RENDER_DPI`) with the project's shared point sizes, then placed at its native
-pixel size — never resized — so one nominal font size renders at one physical
-size across panels (see `vis_guidance.md`, Cross-panel consistency).
+B is today's compact color / layout quadrant pair, stripped of its internal A/B
+sub-labels (the composite supplies the single "B") with its group legend inside;
+A is scaled (aspect preserved) so its height equals B's, so the two read as one
+band.
+
+SI ``si_channel_decodability_impact.png`` — a 2×2 grid: decodability on the left
+(A: UNI→channel R²; B: per-protein R²), ranked per-channel generative impact on
+the right (C: color ΔE; D: layout ΔPQ), real LOO metrics from the 300-tile
+sub-channel ablation, ranked descending, bars colored by group.
+
+Every panel is rendered at one shared DPI (`RENDER_DPI`) with the project's
+shared point sizes, then placed at its native pixel size — never resized — so one
+nominal font size renders at one physical size across panels (see
+`vis_guidance.md`, Cross-panel consistency).
 
 Run:  python -m src.paper_figures.fig_combined_per_channel
 """
@@ -56,6 +58,12 @@ from src.paper_figures.fig_channel_utility_spatial import (
     MARGIN_XLABEL_IN as F_M_XLABEL_IN,
     MARGIN_LEGEND_IN as F_M_LEGEND_IN,
 )
+from src.paper_figures.fig_channel_utility import (
+    GROUP_COLORS,
+    GROUP_LABELS,
+    PRETTY_SUB,
+    SUB_GROUP,
+)
 from tools.ablation_report.shared import ROOT
 
 # F's native (scale 1.0) figure size — used to pick the scale that makes F's
@@ -72,8 +80,14 @@ RENDER_DPI = 220
 
 # ── Source paths ─────────────────────────────────────────────────────────────
 _SVG_PATH = ROOT / "figures" / "pngs_updated" / "methods" / "stage_3_simple_svg.svg"
-OUT_PNG = ROOT / "figures" / "pngs_updated" / "concat" / "fig4_per_channel_impact.png"
-OUT_PNG_V2 = ROOT / "figures" / "pngs_updated" / "concat" / "fig4_per_channel_impact_v2.png"
+_CONCAT_DIR = ROOT / "figures" / "pngs_updated" / "concat"
+_SI_DIR = ROOT / "figures" / "pngs_updated" / "si"
+OUT_PNG = _CONCAT_DIR / "fig4_per_channel_impact.png"
+OUT_SI_COMBINED = _SI_DIR / "si_channel_decodability_impact.png"
+
+# Real LOO metric tables (300-tile sub-channel ablation).
+_LOO_COLOR_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subchannel_summary.csv"
+_LOO_LAYOUT_CSV = ROOT / "inference_output" / "subchannel_loo_n300" / "per_subchannel_layout_summary.csv"
 
 _ENCODER_CSVS: dict[str, Path] = {
     "UNI-2h": ROOT / "src/a1_probe_mlp_spatial/out/uni_16/mlp_spatial_probe_results.csv",
@@ -216,236 +230,197 @@ def _render_panel_c(width_in: float, height_in: float) -> np.ndarray:
     return _fig_to_rgb(fig)
 
 
-def _render_placeholder_bar(width_in: float, height_in: float, *, ylabel: str,
-                            seed: int) -> np.ndarray:
-    """A wide-bar placeholder panel (D / E), styled like the real data panels."""
-    apply_style()
-    rng = np.random.default_rng(seed)
-    n = 12
-    vals = np.sort(rng.uniform(0.15, 1.0, n))[::-1]
-    fig = plt.figure(figsize=(width_in, height_in), facecolor="white")
-    ax = _abs_axes(fig, width_in, height_in, left=0.74, right=0.12,
-                   top=PH_TOP_M_IN, bottom=PH_BOT_M_IN)
-    x = np.arange(n)
-    ax.bar(x, vals, width=0.72, color="#d7dde6", edgecolor="black", linewidth=0.8)
+def _read_loo_csv(csv_path: Path, value_col: str, sem_col: str) -> list[tuple[str, float, float]]:
+    """Return [(sub_channel, value, sem), …] for the real LOO metric table,
+    sorted by descending value (ranked impact)."""
+    import csv as _csv
+
+    rows: list[tuple[str, float, float]] = []
+    with csv_path.open(newline="") as fh:
+        for row in _csv.DictReader(fh):
+            sub = row["sub_channel"]
+            if sub not in SUB_GROUP:
+                continue
+            try:
+                val = float(row[value_col])
+                sem = float(row.get(sem_col, 0.0) or 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            rows.append((sub, val, sem))
+    rows.sort(key=lambda r: r[1], reverse=True)
+    return rows
+
+
+def _draw_impact_bar(ax: plt.Axes, csv_path: Path, *, value_col: str, sem_col: str,
+                     ylabel: str, legend: bool) -> None:
+    """Ranked per-channel impact bars, colored by group (real LOO metrics)."""
+    data = _read_loo_csv(csv_path, value_col, sem_col)
+    x = np.arange(len(data))
+    vals = [v for _s, v, _e in data]
+    sems = [e for _s, _v, e in data]
+    colors = [GROUP_COLORS[SUB_GROUP[s]] for s, _v, _e in data]
+    ax.bar(x, vals, width=0.72, color=colors, edgecolor="black", linewidth=0.8, zorder=2)
+    ax.errorbar(x, vals, yerr=sems, fmt="none", ecolor="black", elinewidth=0.7,
+                capsize=2.0, zorder=3)
     ax.set_xticks(x)
-    ax.set_xticklabels([f"ch{i + 1}" for i in range(n)], fontfamily=FONT_FAMILY)
-    ax.set_xlim(-0.7, n - 0.3)
-    ax.set_ylim(0, 1.12)
+    ax.set_xticklabels([PRETTY_SUB[s] for s, _v, _e in data], fontfamily=FONT_FAMILY,
+                       rotation=35, ha="right")
+    ax.set_xlim(-0.7, len(data) - 0.3)
+    ax.set_ylim(0, max(v + e for _s, v, e in data) * 1.12)
     ax.set_ylabel(ylabel, fontfamily=FONT_FAMILY)
     for spine in ax.spines.values():
         spine.set_color("black")
         spine.set_linewidth(0.8)
     ax.set_axisbelow(True)
-    ax.text(0.5, 0.90, "Placeholder", transform=ax.transAxes, ha="center", va="top",
-            fontsize=13, fontstyle="italic", color="#9aa3ad", fontfamily=FONT_FAMILY)
-    return _fig_to_rgb(fig)
+    if legend:
+        handles = [Line2D([0], [0], marker="s", linestyle="none", markersize=7,
+                          markerfacecolor=GROUP_COLORS[g], markeredgecolor="black",
+                          markeredgewidth=0.6, label=GROUP_LABELS[g])
+                   for g in GROUP_COLORS]
+        ax.legend(handles=handles, loc="upper right", frameon=False,
+                  prop={"family": FONT_FAMILY, "size": 9}, handletextpad=0.3,
+                  labelspacing=0.3)
 
 
-def _render_panel_f(scale: float) -> np.ndarray:
+def _render_panel_f(scale: float, *, legend: str = "bottom") -> np.ndarray:
     """F: color (ΔE) and layout (ΔPQ) impact quadrants (09b), enlarged, no A/B."""
-    fig = build_channel_utility_spatial_figure(scale=scale, panel_letters=False)
+    fig = build_channel_utility_spatial_figure(scale=scale, panel_letters=False,
+                                               legend=legend)
     return _fig_to_rgb(fig)
 
 
-# 10 TME channels (matches panel B's x-axis order) and the two impact overlays.
-_RADAR_CHANNELS = ["Prolif", "Nonprolif", "Density", "Cancer", "Healthy",
-                   "Immune", "Vasc", "Glucose", "O$_2$", "Dead"]
-_RADAR_COLOR_D = "#3b6fb6"   # impact D  (colorblind-safe blue)
-_RADAR_COLOR_E = "#d55e00"   # impact E  (Okabe-Ito vermillion)
-
-
-def _render_radar(diameter_in: float) -> np.ndarray:
-    """D (v2): one radar, 10 channel spokes, both impacts overlaid as two
-    translucent polygons.  Square figure so the web stays circular."""
+def _render_impact_panel(csv_path: Path, *, value_col: str, sem_col: str,
+                         ylabel: str, legend: bool,
+                         width_in: float = RIGHT_COL_IN, height_in: float = 2.7) -> np.ndarray:
+    """One ranked per-channel impact bar panel, rendered at the shared SI width so
+    it stacks flush with the decodability panels (same y-axis left margin)."""
     apply_style()
-    n = len(_RADAR_CHANNELS)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
-    closed = angles + angles[:1]
-
-    rng = np.random.default_rng(3)
-    vals_d = rng.uniform(0.35, 1.0, n)
-    vals_e = rng.uniform(0.35, 1.0, n)
-    dc = np.concatenate([vals_d, vals_d[:1]])
-    ec = np.concatenate([vals_e, vals_e[:1]])
-
-    fig = plt.figure(figsize=(diameter_in, diameter_in), facecolor="white")
-    # Big web: keep just enough margin for the spoke labels + the legend strip.
-    ax = fig.add_axes([0.11, 0.13, 0.78, 0.78], polar=True)  # square → circular web
-    ax.set_theta_offset(np.pi / 2)
-    ax.set_theta_direction(-1)
-    ax.set_xticks(angles)
-    ax.set_xticklabels(_RADAR_CHANNELS, fontfamily=FONT_FAMILY, fontsize=11)
-    ax.tick_params(axis="x", pad=2)
-    ax.set_ylim(0, 1.05)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=8,
-                       fontfamily=FONT_FAMILY, color="#555")
-    ax.set_rlabel_position(180.0 / n)
-    ax.grid(color="#cccccc", linewidth=0.6)
-    for spine in ax.spines.values():
-        spine.set_color("#888888")
-        spine.set_linewidth(0.8)
-
-    for series, color in ((dc, _RADAR_COLOR_D), (ec, _RADAR_COLOR_E)):
-        ax.plot(closed, series, color=color, linewidth=1.6, zorder=4)
-        ax.fill(closed, series, color=color, alpha=0.22, zorder=3)
-
-    handles = [
-        Line2D([0], [0], color=_RADAR_COLOR_D, lw=2.4, label="Impact D"),
-        Line2D([0], [0], color=_RADAR_COLOR_E, lw=2.4, label="Impact E"),
-    ]
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.03),
-              ncol=2, frameon=False, prop={"family": FONT_FAMILY, "size": 11},
-              handlelength=1.4, columnspacing=1.2, handletextpad=0.4)
-    fig.text(0.5, 0.5, "Placeholder", ha="center", va="center", fontsize=11,
-             fontstyle="italic", color="#9aa3ad", fontfamily=FONT_FAMILY, alpha=0.7)
+    fig = plt.figure(figsize=(width_in, height_in), facecolor="white")
+    ax = _abs_axes(fig, width_in, height_in, left=0.66, right=0.10, top=0.10, bottom=1.05)
+    _draw_impact_bar(ax, csv_path, value_col=value_col, sem_col=sem_col,
+                     ylabel=ylabel, legend=legend)
     return _fig_to_rgb(fig)
 
 
 # ── Compositing ────────────────────────────────────────────────────────────────
 
-def build_per_channel_figure(*, bottom_left: str = "bars") -> plt.Figure:
-    """``bottom_left="bars"`` → D and E wide-bar placeholders (default fig 4).
-    ``bottom_left="radar"`` → a single radar (the v2 variant): 10 channel spokes
-    with both impacts overlaid as two translucent polygons."""
-    aspect = _svg_aspect(_SVG_PATH)
-    col_gap_px = _px(COL_GAP_IN)
-    label_strip_px = _px(LABEL_STRIP_IN)
-    row_gap_px = _px(ROW_GAP_IN)
-    right_col_px = _px(RIGHT_COL_IN)
+def _letter(ax: plt.Axes, x_px: float, y_px: float, letter: str,
+            full_w: int, total_h: int) -> None:
+    ax.text(x_px / full_w, 1.0 - y_px / total_h, letter, transform=ax.transAxes,
+            fontsize=_PANEL_LETTER_FS, fontweight="bold", fontfamily=FONT_FAMILY,
+            va="center", ha="left", color="black")
 
-    # ── TOP block: schematic green box spans B-bars + gap + C-bars ────────────
-    # Data-region band (from B's bar-area top to C's bar-area bottom), measured
-    # in B/C figure-stack inches. The wide BC_GAP_IN is what makes this band
-    # tall enough that A renders at a sensible width.
-    band_top_in = B_TOP_M_IN
-    band_bot_in = B_HEIGHT_IN + BC_GAP_IN + (C_HEIGHT_IN - C_BOT_M_IN)
-    band_h_in = band_bot_in - band_top_in
 
-    # Green box vspan (scale-invariant), measured on a small reference render.
-    g_top_f, g_bot_f = _green_box_vspan_frac(_svg_to_rgb(_SVG_PATH, _px(6.0)))
-    a_total_h_in = band_h_in / (g_bot_f - g_top_f)   # A scaled so green box == band
-    left_col_in = a_total_h_in * aspect
-    left_col_px = _px(left_col_in)
-
-    img_A = _svg_to_rgb(_SVG_PATH, left_col_px)
-    img_B = _render_panel_b(RIGHT_COL_IN, B_HEIGHT_IN)[:, :right_col_px]
-    img_C = _render_panel_c(RIGHT_COL_IN, C_HEIGHT_IN)[:, :right_col_px]
-
-    full_w = left_col_px + col_gap_px + right_col_px
-    right_x = left_col_px + col_gap_px                 # shared left edge of B / C / F
-
-    # Place A so its green-box top aligns with B's bar top; everything shifted so
-    # the topmost element sits at the block origin.
-    a_top0 = band_top_in - g_top_f * a_total_h_in
-    b_top0, c_top0 = 0.0, B_HEIGHT_IN + BC_GAP_IN
-    shift = -min(a_top0, b_top0, c_top0)
-    a_top_px, b_top_px, c_top_px = _px(a_top0 + shift), _px(b_top0 + shift), _px(c_top0 + shift)
-
-    top_h = max(a_top_px + img_A.shape[0], b_top_px + img_B.shape[0], c_top_px + img_C.shape[0])
-    top = np.full((top_h, full_w, 3), 255, dtype=np.uint8)
-    top[a_top_px:a_top_px + img_A.shape[0], :img_A.shape[1]] = img_A
-    top[b_top_px:b_top_px + img_B.shape[0], right_x:right_x + img_B.shape[1]] = img_B
-    top[c_top_px:c_top_px + img_C.shape[0], right_x:right_x + img_C.shape[1]] = img_C
-
-    # ── BOTTOM block: F (right column), D/E (left column) ─────────────────────
-    radar = bottom_left == "radar"
-
-    if radar:
-        # One radar replacing D+E. To fill the row with no large blank, the radar
-        # (square) and F (landscape) are made the **same height** and sized so
-        # radar + gap + F span the full width: a circle can't fill the wide left
-        # column on its own, so F is re-rendered wider and right-aligned to soak up
-        # the remaining width. Radar left-aligned, F right-aligned, both top-flush.
-        full_w_in = left_col_in + COL_GAP_IN + RIGHT_COL_IN
-        f_aspect = _F_NATIVE_W_IN / _F_NATIVE_H_IN
-        row_h_in = (full_w_in - COL_GAP_IN) / (1.0 + f_aspect)   # radar diam == F height
-        img_R = _render_radar(row_h_in)
-        img_F = _render_panel_f(row_h_in * f_aspect / _F_NATIVE_W_IN)
-
-        bot_h = max(img_R.shape[0], img_F.shape[0])
-        bot = np.full((bot_h, full_w, 3), 255, dtype=np.uint8)
-        bot[:img_R.shape[0], :img_R.shape[1]] = img_R                     # radar, left
-        fx = full_w - img_F.shape[1]                                      # F, right-aligned
-        bot[:img_F.shape[0], fx:fx + img_F.shape[1]] = img_F
-        radar_right_x = fx                                                # F letter x
-        vE_px = 0                                                         # unused
-    else:
-        s_F = RIGHT_COL_IN / _F_NATIVE_W_IN            # F width == shared column
-        img_F = _render_panel_f(s_F)[:, :right_col_px]
-        bot_h = img_F.shape[0]
-        bot = np.full((bot_h, full_w, 3), 255, dtype=np.uint8)
-        bot[:img_F.shape[0], right_x:right_x + img_F.shape[1]] = img_F
-        radar_right_x = right_x                         # F letter x (shared column)
-
-        # D/E wide-bar placeholders: their stacked bar-areas span F's plot square.
-        band_top_b = F_M_TOP_IN * s_F                  # F plot-square top inset
-        band_h_b = F_PANEL_SQ_IN * s_F                 # F plot-square height
-        p = (band_h_b - PH_TOP_M_IN - PH_BOT_M_IN - DE_GAP_IN) / 2.0
-        de_fig_h_in = p + PH_TOP_M_IN + PH_BOT_M_IN
-
-        img_D = _render_placeholder_bar(left_col_in, de_fig_h_in,
-                                        ylabel="Impact", seed=0)[:, :left_col_px]
-        img_E = _render_placeholder_bar(left_col_in, de_fig_h_in,
-                                        ylabel="Impact", seed=7)[:, :left_col_px]
-
-        v_D0 = band_top_b - PH_TOP_M_IN                # align D bar top to F plot top
-        v_E0 = v_D0 + de_fig_h_in + DE_GAP_IN
-        shift_b = -min(0.0, v_D0, v_E0)
-        vD_px, vE_px = _px(v_D0 + shift_b), _px(v_E0 + shift_b)
-        bot_h = max(bot_h, vD_px + img_D.shape[0], vE_px + img_E.shape[0])
-        if bot.shape[0] < bot_h:                       # grow if D/E stack is taller (rare)
-            grown = np.full((bot_h, full_w, 3), 255, dtype=np.uint8)
-            grown[:bot.shape[0]] = bot
-            bot = grown
-        bot[vD_px:vD_px + img_D.shape[0], :img_D.shape[1]] = img_D
-        bot[vE_px:vE_px + img_E.shape[0], :img_E.shape[1]] = img_E
-
-    # ── Stack blocks with label strips and a row gap ──────────────────────────
-    strip = lambda: np.full((label_strip_px, full_w, 3), 255, dtype=np.uint8)
-    row_gap = np.full((row_gap_px, full_w, 3), 255, dtype=np.uint8)
-    composite = np.concatenate([strip(), top, row_gap, strip(), bot], axis=0)
-    total_h = composite.shape[0]
-
-    y_top_strip = label_strip_px / 2
-    y_C_abs = label_strip_px + c_top_px                          # C letter at C figure top
-    bot_origin = label_strip_px + top_h + row_gap_px + label_strip_px
-    y_bot_strip = bot_origin - label_strip_px / 2
-
-    # ── Render composite + bold panel letters ─────────────────────────────────
-    fig = plt.figure(figsize=(full_w / RENDER_DPI, total_h / RENDER_DPI))
+def _array_figure(composite: np.ndarray) -> tuple[plt.Figure, plt.Axes]:
+    """Wrap a raster composite in a full-bleed figure at RENDER_DPI."""
+    h, w = composite.shape[:2]
+    fig = plt.figure(figsize=(w / RENDER_DPI, h / RENDER_DPI))
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.imshow(composite, interpolation="none", aspect="auto")
     ax.axis("off")
+    return fig, ax
 
-    def _frac(x_px: float, y_px: float) -> tuple[float, float]:
-        return x_px / full_w, 1.0 - y_px / total_h
 
+def _stack_column(panels: list[tuple[str, np.ndarray]], *, gap_in: float = 0.20
+                  ) -> tuple[np.ndarray, list[tuple[str, float]]]:
+    """Vertical stack of (letter, img) into one column raster (letters not drawn);
+    returns the column array and each letter's (label, y_px)."""
+    label_strip_px = _px(LABEL_STRIP_IN)
+    gap_px = _px(gap_in)
+    w = max(img.shape[1] for _l, img in panels)
+    rows: list[np.ndarray] = []
+    letters: list[tuple[str, float]] = []
+    y = 0
+    for i, (letter, img) in enumerate(panels):
+        if i > 0:
+            rows.append(np.full((gap_px, w, 3), 255, dtype=np.uint8)); y += gap_px
+        rows.append(np.full((label_strip_px, w, 3), 255, dtype=np.uint8))
+        letters.append((letter, y + label_strip_px / 2)); y += label_strip_px
+        if img.shape[1] < w:
+            padded = np.full((img.shape[0], w, 3), 255, dtype=np.uint8)
+            padded[:, :img.shape[1]] = img; img = padded
+        rows.append(img); y += img.shape[0]
+    return np.concatenate(rows, axis=0), letters
+
+
+def _compose_two_columns(left: list[tuple[str, np.ndarray]],
+                         right: list[tuple[str, np.ndarray]], *,
+                         col_gap_in: float = 0.5) -> plt.Figure:
+    """Two stacked columns side by side (left A/B, right C/D), top-aligned."""
+    col_l, letters_l = _stack_column(left)
+    col_r, letters_r = _stack_column(right)
+    gap_px = _px(col_gap_in)
+    h = max(col_l.shape[0], col_r.shape[0])
+    rx = col_l.shape[1] + gap_px
+    full_w = rx + col_r.shape[1]
+    canvas = np.full((h, full_w, 3), 255, dtype=np.uint8)
+    canvas[:col_l.shape[0], :col_l.shape[1]] = col_l
+    canvas[:col_r.shape[0], rx:rx + col_r.shape[1]] = col_r
+    fig, ax = _array_figure(canvas)
     lm = _px(0.04)
-    positions = [
-        ("A", lm, y_top_strip),
-        ("B", right_x + lm, y_top_strip),
-        ("C", right_x + lm, y_C_abs),
-        ("D", lm, y_bot_strip),
-        ("F", radar_right_x + lm, y_bot_strip),
-    ]
-    if not radar:
-        positions.append(("E", lm, bot_origin + vE_px))         # E letter at E figure top
-    for letter, x_px, y_px in positions:
-        xf, yf = _frac(x_px, y_px)
-        ax.text(xf, yf, letter, transform=ax.transAxes,
-                fontsize=_PANEL_LETTER_FS, fontweight="bold",
-                fontfamily=FONT_FAMILY, va="center", ha="left", color="black")
+    for letter, y_px in letters_l:
+        _letter(ax, lm, y_px, letter, full_w, h)
+    for letter, y_px in letters_r:
+        _letter(ax, rx + lm, y_px, letter, full_w, h)
     return fig
+
+
+def build_fig4_main() -> plt.Figure:
+    """Fig 4: A (Stage-3 schematic) | B (compact decodability-vs-impact guide),
+    side by side.  A is scaled (aspect preserved) so its height equals B's, so the
+    two panels read as one band."""
+    apply_style()
+    aspect = _svg_aspect(_SVG_PATH)
+    img_B = _render_panel_f(1.0)                         # native, compact; legend inside
+    h = img_B.shape[0]
+    img_A = _svg_to_rgb(_SVG_PATH, max(1, round(aspect * h)))
+    if img_A.shape[0] != h:                              # absorb rounding to exact height
+        fixed = np.full((h, img_A.shape[1], 3), 255, dtype=np.uint8)
+        k = min(h, img_A.shape[0]); fixed[:k] = img_A[:k]; img_A = fixed
+
+    gap_px = _px(COL_GAP_IN)
+    label_strip_px = _px(LABEL_STRIP_IN)
+    full_w = img_A.shape[1] + gap_px + img_B.shape[1]
+    body = np.full((h, full_w, 3), 255, dtype=np.uint8)
+    body[:, :img_A.shape[1]] = img_A
+    bx = img_A.shape[1] + gap_px
+    body[:, bx:bx + img_B.shape[1]] = img_B
+    strip = np.full((label_strip_px, full_w, 3), 255, dtype=np.uint8)
+    composite = np.concatenate([strip, body], axis=0)
+
+    fig, ax = _array_figure(composite)
+    lm = _px(0.04)
+    _letter(ax, lm, label_strip_px / 2, "A", full_w, composite.shape[0])
+    _letter(ax, bx + lm, label_strip_px / 2, "B", full_w, composite.shape[0])
+    return fig
+
+
+def build_si_combined() -> plt.Figure:
+    """SI 2×2: decodability on the left (A: UNI→channel R²; B: per-protein R²),
+    ranked per-channel generative impact on the right (C: color ΔE; D: layout ΔPQ).
+    All four panels share one width and height so rows/columns align."""
+    apply_style()
+    panel_h = 2.7
+    img_A = _render_panel_b(RIGHT_COL_IN, panel_h)
+    img_B = _render_panel_c(RIGHT_COL_IN, panel_h)
+    img_C = _render_impact_panel(_LOO_COLOR_CSV, value_col="delta_e_mean_mean",
+                                 sem_col="delta_e_mean_sem", ylabel="Color impact  ΔE",
+                                 legend=True, height_in=panel_h)
+    img_D = _render_impact_panel(_LOO_LAYOUT_CSV, value_col="pq_drop_mean",
+                                 sem_col="pq_drop_sem", ylabel="Layout impact  ΔPQ",
+                                 legend=False, height_in=panel_h)
+    return _compose_two_columns([("A", img_A), ("B", img_B)], [("C", img_C), ("D", img_D)])
 
 
 def main() -> None:
     apply_style()
-    OUT_PNG.parent.mkdir(parents=True, exist_ok=True)
-    for out, mode in ((OUT_PNG, "bars"), (OUT_PNG_V2, "radar")):
-        fig = build_per_channel_figure(bottom_left=mode)
+    for builder, out in (
+        (build_fig4_main, OUT_PNG),
+        (build_si_combined, OUT_SI_COMBINED),
+    ):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig = builder()
         fig.savefig(out, dpi=RENDER_DPI, facecolor="white")
         plt.close(fig)
         print("wrote", out)
